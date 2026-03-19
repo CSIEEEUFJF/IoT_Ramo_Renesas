@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "main.h"
+#include "storage.h"
 #include "hardware/lcd.h"
 #include "assets/arial_font_asset.h"
 #include "assets/ramo_logo_asset.h"
@@ -38,9 +39,13 @@
 #define UI_PIN_DISPLAY_HEIGHT  52
 #define UI_ENROLL_BACK_X       20
 #define UI_ENROLL_BACK_Y       264
-#define UI_ENROLL_BACK_WIDTH   200
+#define UI_ENROLL_BACK_WIDTH   92
 #define UI_ENROLL_BACK_HEIGHT  40
 #define UI_ENROLL_BACK_HIT_PAD 12
+#define UI_ENROLL_SAVE_X       128
+#define UI_ENROLL_SAVE_Y       264
+#define UI_ENROLL_SAVE_WIDTH   92
+#define UI_ENROLL_SAVE_HEIGHT  40
 #define UI_TOUCH_SDA           IOPORT_PORT_05_PIN_11
 #define UI_TOUCH_SCL           IOPORT_PORT_05_PIN_12
 #define UI_TOUCH_IRQ           IOPORT_PORT_00_PIN_04
@@ -157,6 +162,7 @@ static bool ui_point_in_rect(int32_t x, int32_t y, int32_t rx, int32_t ry, int32
 static bool ui_pin_hit_test(int32_t touch_x, int32_t touch_y, int32_t row, int32_t col);
 static bool ui_pin_enter_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_enroll_back_hit_test(int32_t touch_x, int32_t touch_y);
+static bool ui_enroll_save_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_touch_accept_action(void);
 
 static void ui_flush_pending_events(void)
@@ -973,9 +979,19 @@ static bool ui_enroll_back_hit_test(int32_t touch_x, int32_t touch_y)
 {
     return ui_point_in_rect(touch_x,
                             touch_y,
-                            8,
+                            UI_ENROLL_BACK_X - UI_ENROLL_BACK_HIT_PAD,
                             UI_ENROLL_BACK_Y - 12,
-                            UI_SCREEN_WIDTH - 16,
+                            UI_ENROLL_BACK_WIDTH + (UI_ENROLL_BACK_HIT_PAD * 2),
+                            UI_SCREEN_HEIGHT - UI_ENROLL_BACK_Y + 12);
+}
+
+static bool ui_enroll_save_hit_test(int32_t touch_x, int32_t touch_y)
+{
+    return ui_point_in_rect(touch_x,
+                            touch_y,
+                            UI_ENROLL_SAVE_X - UI_ENROLL_BACK_HIT_PAD,
+                            UI_ENROLL_SAVE_Y - 12,
+                            UI_ENROLL_SAVE_WIDTH + (UI_ENROLL_BACK_HIT_PAD * 2),
                             UI_SCREEN_HEIGHT - UI_ENROLL_BACK_Y + 12);
 }
 
@@ -1224,6 +1240,13 @@ static void ui_draw_enroll_wait_screen(const ui_status_t *status)
                    UI_ENROLL_BACK_HEIGHT,
                    "Voltar",
                    UI_COLOR_WARN,
+                   UI_COLOR_BG);
+    ui_draw_button(UI_ENROLL_SAVE_X,
+                   UI_ENROLL_SAVE_Y,
+                   UI_ENROLL_SAVE_WIDTH,
+                   UI_ENROLL_SAVE_HEIGHT,
+                   "Salvar",
+                   UI_COLOR_OK,
                    UI_COLOR_BG);
 }
 
@@ -1590,6 +1613,36 @@ static void ui_handle_touch(ui_status_t *status, const ui_touch_event_t *touch_e
         if (ui_enroll_back_hit_test(x, y) && ui_touch_accept_action())
         {
             ui_enter_idle(status);
+            *force_redraw = true;
+            return;
+        }
+
+        if (ui_enroll_save_hit_test(x, y) && ui_touch_accept_action())
+        {
+            if (storage_persist_now())
+            {
+                ui_set_status(status,
+                              "",
+                              "Cadastros salvos",
+                              "Toque para voltar",
+                              UI_COLOR_OK,
+                              UI_STATUS_HOLD_TICKS,
+                              false);
+            }
+            else
+            {
+                ui_set_status(status,
+                              "",
+                              "Falha ao salvar",
+                              "Tente novamente",
+                              UI_COLOR_ERROR,
+                              UI_STATUS_HOLD_TICKS,
+                              false);
+            }
+
+            status->view = UI_VIEW_RESULT;
+            app_set_ui_mode(APP_UI_MODE_IDLE);
+            app_set_enrollment_mode(false);
             *force_redraw = true;
         }
         return;

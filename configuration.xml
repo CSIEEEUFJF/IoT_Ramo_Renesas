@@ -848,7 +848,7 @@
       <property id="module.el.nx.packet_pool.packet_size" value="1568"/>
       <property id="module.el.nx.packet_pool.number_of_packets" value="16"/>
       <property id="module.el.nx.packet_pool.init_function" value="packet_pool_init0"/>
-      <property id="module.el.nx.packet_pool.init" value="module.el.nx.packet_pool.init.disable"/>
+      <property id="module.el.nx.packet_pool.init" value="module.el.nx.packet_pool.init.enable"/>
     </module>
     <module id="module.el.nxd_common.1140041235">
       <property id="module.el.nxd_common.init_function" value="nx_common_init0"/>
@@ -860,7 +860,7 @@
       <property id="module.el.nx_http_server.authentication_function" value="authentication_check"/>
       <property id="module.el.nx_http_server.request_notify_function" value="request_notify"/>
       <property id="module.el.nx_http_server.init_function" value="http_server_init0"/>
-      <property id="module.el.nx_http_server.init" value="module.el.nx_http_server.init.disable"/>
+      <property id="module.el.nx_http_server.init" value="module.el.nx_http_server.init.enable"/>
     </module>
     <module id="module.el.nxd.ip.520563958">
       <property id="module.el.nx.ip.name" value="g_ip0"/>
@@ -870,7 +870,7 @@
       <property id="module.el.nx.ipv6.address_global" value="2001:0:0:0:0:0:0:1"/>
       <property id="module.el.nx.ipv6.address_local" value="0:0:0:0:0:0:0:0"/>
       <property id="module.el.nx.ip.stack_size" value="2048"/>
-      <property id="module.el.nx.ip.priority" value="3"/>
+      <property id="module.el.nx.ip.priority" value="10"/>
       <property id="module.el.nx.ip.arp" value="module.el.nx.ip.arp.enable"/>
       <property id="module.el.nx.ip.arp_cache_size_units" value="module.el.nx.ip.arp_cache_size_units.bytes"/>
       <property id="module.el.nx.ip.arp_cache_size" value="520"/>
@@ -881,7 +881,7 @@
       <property id="module.el.nx.ip.igmp" value="module.el.nx.ip.igmp.enable"/>
       <property id="module.el.nx.ip.fragmentation" value="module.el.nx.ip.fragmentation.disable"/>
       <property id="module.el.nx.ip.init_function" value="ip_init0"/>
-      <property id="module.el.nx.ip.init" value="module.el.nx.ip.init.disable"/>
+      <property id="module.el.nx.ip.init" value="module.el.nx.ip.init.enable"/>
       <property id="module.el.nx.ip.link_change_callback" value="NULL"/>
     </module>
     <module id="module.el.nxd_http_common.1998994492"/>
@@ -1227,7 +1227,7 @@
       <property id="_symbol" value="main_thread"/>
       <property id="rtos.threadx.thread.name" value="Main Thread"/>
       <property id="rtos.threadx.thread.stack" value="4096"/>
-      <property id="rtos.threadx.thread.priority" value="1"/>
+      <property id="rtos.threadx.thread.priority" value="5"/>
       <property id="rtos.threadx.thread.autostart" value="rtos.threadx.thread.autostart.enabled"/>
       <property id="rtos.threadx.thread.timeslice" value="1"/>
       <stack module="module.driver.spi_on_rspi.1464990927">
@@ -1668,7 +1668,7 @@
     <config id="config.el.nxd_http_server">
       <property id="config.el.nxd_http_server.filex" value="config.el.nxd_http_server.filex.enable"/>
       <property id="config.el.nxd_http_server.multipart" value="config.el.nxd_http_server.multipart.disable"/>
-      <property id="config.el.nxd_http_server.priority" value="16"/>
+      <property id="config.el.nxd_http_server.priority" value="8"/>
       <property id="config.el.nxd_http_server.time_slice" value="2"/>
       <property id="config.el.nxd_http_server.server_window_size" value="2048"/>
       <property id="config.el.nxd_http_server.server_timeout" value="10"/>

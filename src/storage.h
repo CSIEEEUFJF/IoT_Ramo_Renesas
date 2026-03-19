@@ -8,5 +8,7 @@ int  storage_user_count(void);
 bool storage_user_get(int index, char *out_name, char *out_uid);
 bool storage_add_user(const char *uid_str, const char *name);
 bool storage_remove_uid(const char *uid_str);
+bool storage_persist_now(void);
+unsigned int storage_persist_status(void);
 
 #endif /* STORAGE_H */

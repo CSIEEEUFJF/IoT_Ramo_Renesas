@@ -713,13 +713,14 @@ uint32_t fx_media_init0_open(void) {
 void fx_media_init0(void) {
 #if SF_EL_FX_FORMAT_MEDIA_ENABLE_g_fx_media0
 
-	ssp_err_t err_format = fx_media_init0_format();
+                ssp_err_t err_format = fx_media_init0_format();
+                    
+                if(err_format != SSP_SUCCESS)
+                {
+                    g_fx_media0_err_callback((void *)&g_fx_media0,&err_format);
+                }
 
-	if (err_format != SSP_SUCCESS) {
-		g_fx_media0_err_callback((void*) &g_fx_media0, &err_format);
-	}
-
-#endif
+                #endif
 
 	uint32_t err_open = fx_media_init0_open();
 
@@ -842,7 +843,7 @@ void ip_init0(void) {
 	/* Create an IP instance. */
 	g_ip0_err = nx_ip_create(&g_ip0, "g_ip0 IP Instance",
 			IP_ADDRESS(0, 0, 0, 0), IP_ADDRESS(0, 0, 0, 0), &g_packet_pool0,
-			g_sf_el_nx, &g_ip0_stack_memory[0], 2048, 3);
+			g_sf_el_nx, &g_ip0_stack_memory[0], 2048, 10);
 	if (NX_SUCCESS != g_ip0_err) {
 		g_ip0_err_callback((void*) &g_ip0, &g_ip0_err);
 	}
@@ -1024,11 +1025,11 @@ void g_common_init(void) {
 	nx_common_init0();
 #endif
 	/** Call initialization function if user has selected to do so. */
-#if (0)
-                packet_pool_init0();
-            #endif
+#if (1)
+	packet_pool_init0();
+#endif
 	/** Call initialization function if user has selected to do so. */
-#if (0)
-                 ip_init0();
-            #endif
+#if (1)
+	ip_init0();
+#endif
 }

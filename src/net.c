@@ -83,12 +83,12 @@ volatile ULONG g_net_debug_linkmd_status = 0U;
 volatile ULONG g_net_debug_linkmd_result = 0U;
 volatile ULONG g_net_debug_linkmd_distance = 0U;
 
-#define DEVICE_IP_ADDR           IP_ADDRESS(192, 168, 15, 180)
-#define DEVICE_NETMASK           IP_ADDRESS(255, 255, 255, 0)
-#define DEVICE_GATEWAY_ADDR      IP_ADDRESS(192, 168, 15, 1)
 #define HTML_BUFFER_SIZE         8192
 #define RESOURCE_BUFFER_SIZE      96
 #define QUERY_BUFFER_SIZE        256
+#define DEVICE_IP_ADDR           IP_ADDRESS(192, 168, 15, 180)
+#define DEVICE_NETMASK           IP_ADDRESS(255, 255, 255, 0)
+#define DEVICE_GATEWAY_ADDR      IP_ADDRESS(192, 168, 15, 1)
 
 static void network_stack_init_once(void)
 {
@@ -364,15 +364,21 @@ static UINT send_redirect(NX_HTTP_SERVER *server, const char *location)
 
 static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
 {
-    char html[HTML_BUFFER_SIZE];
+    /* ADICIONADO 'static' PARA EVITAR STACK OVERFLOW! */
+    static char html[HTML_BUFFER_SIZE];
+    static char rows[5200];
+
     char ip_text[20];
     char netmask_text[20];
     char gateway_text[20];
     char last_uid[UID_MAX_LEN];
     char last_user[NAME_MAX_LEN];
-    char rows[5200];
+
+    /* Variáveis restauradas para a leitura do storage */
     char user_name[NAME_MAX_LEN];
     char user_uid[UID_MAX_LEN];
+    const char *persist_text = "ociosa";
+
     ULONG ip_address;
     ULONG network_mask;
     ULONG link_status = 0U;
@@ -395,6 +401,22 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
 
     rows[0] = '\0';
     user_count = storage_user_count();
+
+    switch (storage_persist_status())
+    {
+        case 1U:
+            persist_text = "pendente";
+            break;
+        case 2U:
+            persist_text = "ok";
+            break;
+        case 3U:
+            persist_text = "falhou";
+            break;
+        default:
+            persist_text = "ociosa";
+            break;
+    }
 
     for (int i = 0; i < user_count; i++)
     {
@@ -450,6 +472,8 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
              "<label>Nome</label><input type='text' name='name' maxlength='31' placeholder='Nome do usuario'>"
              "<label>UID</label><input type='text' name='uid' maxlength='20' value='%s' placeholder='UID lido do cartao'>"
              "<button class='btn' type='submit'>Salvar usuario</button></form>"
+             "<p><a class='small' href='/save_users'>Persistir cadastros</a></p>"
+             "<p class='muted'>Persistencia QSPI: <strong>%s</strong></p>"
              "<p class='muted'>Ultimo cartao lido: <strong>%s</strong></p>"
              "<p class='muted'>Ultimo usuario: <strong>%s</strong></p>"
              "<p><a class='small' href='/portaon'>Abrir porta</a></p></div>"
@@ -463,6 +487,7 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
              (0U != link_status) ? "conectado" : "sem link",
              (NULL != message) ? message : "",
              last_uid,
+             persist_text,
              (last_uid[0] != '\0') ? last_uid : "-",
              (last_user[0] != '\0') ? last_user : "-",
              rows);
@@ -484,7 +509,7 @@ static UINT handle_add_user(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, c
     if (storage_add_user(uid, name))
     {
         app_post_event(EVENT_USER_ADDED, uid);
-        return render_home_page(server_ptr, packet_ptr, "<div class='card ok'>Usuario salvo com sucesso.</div>");
+        return render_home_page(server_ptr, packet_ptr, "<div class='card ok'>Usuario salvo em runtime. Clique em \"Persistir cadastros\" para salvar na QSPI.</div>");
     }
 
     return render_home_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel salvar o usuario.</div>");
@@ -502,10 +527,20 @@ static UINT handle_remove_user(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr
     if (storage_remove_uid(uid))
     {
         app_post_event(EVENT_USER_REMOVED, uid);
-        return render_home_page(server_ptr, packet_ptr, "<div class='card ok'>Usuario removido.</div>");
+        return render_home_page(server_ptr, packet_ptr, "<div class='card ok'>Usuario removido em runtime. Clique em \"Persistir cadastros\" para salvar na QSPI.</div>");
     }
 
     return render_home_page(server_ptr, packet_ptr, "<div class='card warn'>Usuario nao encontrado.</div>");
+}
+
+static UINT handle_save_users(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
+{
+    if (storage_persist_now())
+    {
+        return render_home_page(server_ptr, packet_ptr, "<div class='card ok'>Persistencia solicitada. Aguarde alguns segundos e recarregue a pagina.</div>");
+    }
+
+    return render_home_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel persistir os cadastros agora.</div>");
 }
 
 UINT authentication_check(NX_HTTP_SERVER *server_ptr,
@@ -560,6 +595,10 @@ UINT request_notify(NX_HTTP_SERVER *server_ptr, UINT request_type, CHAR *resourc
         if (0 == strcmp(path, "/remove_user"))
         {
             return handle_remove_user(server_ptr, packet_ptr, query);
+        }
+        if (0 == strcmp(path, "/save_users"))
+        {
+            return handle_save_users(server_ptr, packet_ptr);
         }
         if (0 == strcmp(path, "/portaon"))
         {

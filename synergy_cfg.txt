@@ -172,7 +172,7 @@ Synergy Configuration
       P703 11 ETHERC_RMII1_RXD1 Ethernet_Controller_1_RMII_RMII1_RXD1 High - "Peripheral mode" CMOS None "ETHERC_MII0: ERXD0; ETHERC_RMII0: RXD1; GPT6: GTIOCB; PDC0: PIXD0" - IO - - 
       P704 12 ETHERC_RMII1_RX_ER Ethernet_Controller_1_RMII_RMII1_RX_ER High - "Peripheral mode" CMOS None "ETHERC_MII0: RX_CLK; ETHERC_RMII0: RX_ER; PDC0: HSYNC" - IO - - 
       P705 13 ETHERC_RMII1_CRS_DV Ethernet_Controller_1_RMII_RMII1_CRS_DV High - "Peripheral mode" CMOS None "ETHERC_MII0: CRS; ETHERC_RMII0: CRS_DV; PDC0: PIXCLK" - IO - - 
-      P706 14 SCI3_RXD ETH_PHY_RESET Medium None "Peripheral mode" CMOS None "ICU0: IRQ07; SCI3: RXD; SCI3: SCL; USB_HS0: OVRCURB" - IO - - 
+      P706 14 SCI3_RXD SCI3_RXD3_SCL3_MISO3 Medium None "Peripheral mode" CMOS None "ICU0: IRQ07; SCI3: RXD; SCI3: SCL; USB_HS0: OVRCURB" - IO - - 
       P707 15 SCI3_TXD SCI3_TXD3_SDA3_MOSI3 Medium None "Peripheral mode" CMOS None "ICU0: IRQ08; SCI3: SDA; SCI3: TXD; USB_HS0: OVRCURA" - IO - - 
       P800 133 GPIO GPIO13 Medium - "Output mode (Initial Low)" CMOS - "BUS_ASYNCH_BUS_SDRAM0: D_DQ14" - IO - - 
       P801 134 GPIO GPIO14 Medium - "Output mode (Initial Low)" CMOS - "BUS_ASYNCH_BUS_SDRAM0: D_DQ15; SDHI1: DAT4" - IO - - 
@@ -349,7 +349,7 @@ Synergy Configuration
       P703 11 - Ethernet_Controller_1_RMII_RMII1_RXD1 Low - Disabled CMOS None "ETHERC_MII0: ERXD0; ETHERC_RMII0: RXD1; GPT6: GTIOCB; PDC0: PIXD0" - IO - - 
       P704 12 - Ethernet_Controller_1_RMII_RMII1_RX_ER Low - Disabled CMOS None "ETHERC_MII0: RX_CLK; ETHERC_RMII0: RX_ER; PDC0: HSYNC" - IO - - 
       P705 13 - Ethernet_Controller_1_RMII_RMII1_CRS_DV Low - Disabled CMOS None "ETHERC_MII0: CRS; ETHERC_RMII0: CRS_DV; PDC0: PIXCLK" - IO - - 
-      P706 14 - ETH_PHY_RESET Low None Disabled CMOS None "ICU0: IRQ07; SCI3: RXD; SCI3: SCL; USB_HS0: OVRCURB" - IO - - 
+      P706 14 - SCI3_RXD3_SCL3_MISO3 Low None Disabled CMOS None "ICU0: IRQ07; SCI3: RXD; SCI3: SCL; USB_HS0: OVRCURB" - IO - - 
       P707 15 - SCI3_TXD3_SDA3_MOSI3 Low None Disabled CMOS None "ICU0: IRQ08; SCI3: SDA; SCI3: TXD; USB_HS0: OVRCURA" - IO - - 
       P800 133 - GPIO13 Low - Disabled CMOS - "BUS_ASYNCH_BUS_SDRAM0: D_DQ14" - IO - - 
       P801 134 - GPIO14 Low - Disabled CMOS - "BUS_ASYNCH_BUS_SDRAM0: D_DQ15; SDHI1: DAT4" - IO - - 
@@ -442,7 +442,7 @@ Synergy Configuration
     
   Module "CGC Driver on r_cgc"
     Parameter Checking: Default (BSP)
-    Main Oscillator Wait Time: 2087 us (547 cycles)
+    Main Oscillator Wait Time: 31139 us (8163 cycles)
     Main Oscillator Clock Source: Crystal or Resonator
     Subclock Drive: Standard (12.5pf)
     Configure Subclock Drive On Reset: Enabled
@@ -475,7 +475,7 @@ Synergy Configuration
   Module "NetX Duo HTTP Server"
     FileX Support: Enable
     Multipart HTTP requests support: Disable
-    Internal thread priority: 16
+    Internal thread priority: 8
     Internal thread time slicing interval (ticks): 2
     Server socket window size (bytes): 2048
     Server time out (seconds): 10
@@ -733,12 +733,12 @@ Synergy Configuration
     Channel 0 Phy Reset Pin: IOPORT_PORT_09_PIN_03
     Channel 0 MAC Address High Bits: 0x00002E09
     Channel 0 MAC Address Low Bits: 0x0A0076C7
-    Channel 1 Phy Reset Pin: IOPORT_PORT_07_PIN_06
+    Channel 1 Phy Reset Pin: IOPORT_PORT_08_PIN_06
     Channel 1 MAC Address High Bits: 0x00002E09
     Channel 1 MAC Address Low Bits: 0x0A0076C8
     Number of Receive Buffer Descriptors: 8
     Number of Transmit Buffer Descriptors: 32
-    Ethernet Interrupt Priority: Priority 12
+    Ethernet Interrupt Priority: Priority 3
     Link status monitoring method: PHY Polling
     
   Module "Block Media Framework on sf_block_media_lx_nor"
@@ -785,7 +785,7 @@ Synergy Configuration
     Symbol: main_thread
     Name: Main Thread
     Stack size (bytes): 4096
-    Priority: 1
+    Priority: 5
     Auto start: Enabled
     Time slicing interval (ticks): 1
     
@@ -876,7 +876,7 @@ Synergy Configuration
       Packet Size (bytes): 1568
       Number of Packets in Pool: 16
       Name of generated initialization function: packet_pool_init0
-      Auto Initialization: Disable
+      Auto Initialization: Enable
       
       Instance "NetX Duo Common on nxd"
         Name of generated initialization function: nx_common_init0
@@ -892,7 +892,7 @@ Synergy Configuration
       Name of Authentication Checking Function: authentication_check
       Name of Request Notify Callback Function: request_notify
       Name of generated initialization function: http_server_init0
-      Auto Initialization: Disable
+      Auto Initialization: Enable
       
       Instance "g_ip0 NetX Duo IP Instance"
         Name: g_ip0
@@ -902,7 +902,7 @@ Synergy Configuration
         IPv6 Global Address: 2001:0:0:0:0:0:0:1
         IPv6 Link Local Address (All zeros means use MAC address): 0:0:0:0:0:0:0:0
         IP Helper Thread Stack Size (bytes): 2048
-        IP Helper Thread Priority: 3
+        IP Helper Thread Priority: 10
         ARP: Enable
         ARP cache storage units: Bytes
             ARP cache size (in storage units): 520
@@ -913,7 +913,7 @@ Synergy Configuration
         IGMP: Enable
         IP fragmentation: Disable
         Name of generated initialization function: ip_init0
-        Auto Initialization: Disable
+        Auto Initialization: Enable
         Link status change callback: NULL
         
         Instance "NetX Duo Common on nxd"
@@ -929,7 +929,7 @@ Synergy Configuration
           Packet Size (bytes): 1568
           Number of Packets in Pool: 16
           Name of generated initialization function: packet_pool_init0
-          Auto Initialization: Disable
+          Auto Initialization: Enable
           
           Instance "NetX Duo Common on nxd"
             Name of generated initialization function: nx_common_init0
@@ -947,7 +947,7 @@ Synergy Configuration
           
       Instance "g_fx_media0 FileX on Block Media"
         Name: g_fx_media0
-        Format media during initialization: Enabled
+        Format media during initialization: Disabled
         File System is on block media: True
         Formatting Options: 
             Volume Name: Volume 1
@@ -1010,7 +1010,7 @@ Synergy Configuration
         Packet Size (bytes): 1568
         Number of Packets in Pool: 16
         Name of generated initialization function: packet_pool_init0
-        Auto Initialization: Disable
+        Auto Initialization: Enable
         
         Instance "NetX Duo Common on nxd"
           Name of generated initialization function: nx_common_init0
@@ -1024,7 +1024,7 @@ Synergy Configuration
         Instance "NetX MD5"
     Instance "g_fx_media0 FileX on Block Media"
       Name: g_fx_media0
-      Format media during initialization: Enabled
+      Format media during initialization: Disabled
       File System is on block media: True
       Formatting Options: 
           Volume Name: Volume 1

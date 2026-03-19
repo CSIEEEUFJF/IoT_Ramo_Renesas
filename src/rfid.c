@@ -16,6 +16,7 @@
 #define RFID_SPI_DELAY_US        1U
 #define RFID_MAX_FRAME_BYTES     18U
 #define RFID_ENROLL_CONFIRM_READS 2U
+#define RFID_ENROLL_CLEAR_POLLS   3U
 
 #define RC522_CMD_IDLE           0x00U
 #define RC522_CMD_CALC_CRC       0x03U
@@ -514,6 +515,7 @@ void thread_rfid_entry(ULONG arg)
     char user_name[NAME_MAX_LEN];
     bool previous_enroll_mode = false;
     bool enroll_session_armed = false;
+    uint8_t enroll_clear_polls = 0U;
     bool card_present = false;
     uint8_t enroll_candidate_reads = 0U;
     ULONG last_seen_tick = 0U;
@@ -533,7 +535,8 @@ void thread_rfid_entry(ULONG arg)
         if (enroll_mode != previous_enroll_mode)
         {
             previous_enroll_mode = enroll_mode;
-            enroll_session_armed = enroll_mode;
+            enroll_session_armed = false;
+            enroll_clear_polls = 0U;
             enroll_candidate_reads = 0U;
             enroll_candidate_uid[0] = '\0';
             card_present = false;
@@ -618,6 +621,11 @@ void thread_rfid_entry(ULONG arg)
                         }
                     }
                 }
+                else
+                {
+                    last_seen_uid[0] = '\0';
+                    card_present = false;
+                }
             }
             else if ((!card_present) || (0 != strncmp(uid_text, last_seen_uid, sizeof(last_seen_uid))))
             {
@@ -646,6 +654,21 @@ void thread_rfid_entry(ULONG arg)
         else
         {
             g_rfid_debug_last_status = RC522_STATUS_NO_CARD;
+
+            if (enroll_mode && !enroll_session_armed)
+            {
+                if (enroll_clear_polls < RFID_ENROLL_CLEAR_POLLS)
+                {
+                    enroll_clear_polls++;
+                }
+
+                if (enroll_clear_polls >= RFID_ENROLL_CLEAR_POLLS)
+                {
+                    enroll_session_armed = true;
+                }
+
+                g_rfid_debug_enroll_session_armed = enroll_session_armed ? 1U : 0U;
+            }
         }
 
         tx_thread_sleep(RFID_POLL_TICKS);

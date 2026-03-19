@@ -415,7 +415,7 @@ void main_thread_create(void) {
 
 	UINT err;
 	err = tx_thread_create(&main_thread, (CHAR*) "Main Thread",
-			main_thread_func, (ULONG) NULL, &main_thread_stack, 4096, 1, 1, 1,
+			main_thread_func, (ULONG) NULL, &main_thread_stack, 4096, 5, 5, 1,
 			TX_AUTO_START);
 	if (TX_SUCCESS != err) {
 		tx_startup_err_callback(&main_thread, 0);
@@ -431,9 +431,9 @@ static void main_thread_func(ULONG thread_input) {
 
 	/* Initialize each module instance. */
 	/** Call initialization function if user has selected to do so. */
-#if (0)
-                http_server_init0();
-            #endif
+#if (1)
+	http_server_init0();
+#endif
 
 	/* Enter user code for this thread. */
 	main_thread_entry();
