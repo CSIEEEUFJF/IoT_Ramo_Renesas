@@ -18,6 +18,8 @@
 #define UI_ADMIN_PIN           "1234"
 #define UI_LOGO_IDLE_WIDTH     200
 #define UI_LOGO_IDLE_HEIGHT    200
+#define UI_LOGO_WAIT_WIDTH     216
+#define UI_LOGO_WAIT_HEIGHT    51
 #define UI_GEAR_BUTTON_SIZE    28
 #define UI_GEAR_TOOTH_SIZE     4
 #define UI_GEAR_CENTER_SIZE    8
@@ -51,6 +53,10 @@
 #define UI_TOUCH_IRQ           IOPORT_PORT_00_PIN_04
 #define UI_TOUCH_RESET         IOPORT_PORT_06_PIN_09
 #define UI_TOUCH_I2C_DELAY_US  5U
+#define UI_LOGO_CROP_X         0
+#define UI_LOGO_CROP_Y         0
+#define UI_LOGO_CROP_WIDTH     RAMO_LOGO_WIDTH
+#define UI_LOGO_CROP_HEIGHT    RAMO_LOGO_HEIGHT
 
 #define SX8654_I2C_ADDR        0x48U
 #define SX8654_REG_TOUCH0      0x00U
@@ -122,6 +128,10 @@ static const uint16_t UI_COLOR_PIN_BG     = (uint16_t)0x64D0U;
 static const uint16_t UI_COLOR_PIN_CARD   = (uint16_t)0xFFFFU;
 static const uint16_t UI_COLOR_PIN_BORDER = (uint16_t)0xD69AU;
 static const uint16_t UI_COLOR_PIN_TEXT   = (uint16_t)0x738EU;
+static const uint16_t UI_COLOR_WAIT_BG    = (uint16_t)0x0000U;
+static const uint16_t UI_COLOR_WAIT_BAR   = (uint16_t)0x0865U;
+static const uint16_t UI_COLOR_WAIT_LINE  = (uint16_t)0x39CFU;
+static const uint16_t UI_COLOR_WAIT_TEXT2 = (uint16_t)0xA514U;
 
 static bool g_ui_display_ready = false;
 static bool g_ui_backlight_on = false;
@@ -164,6 +174,21 @@ static bool ui_pin_enter_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_enroll_back_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_enroll_save_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_touch_accept_action(void);
+static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_gear);
+static void ui_draw_pixel_text_centered(int32_t y, const char *text, uint16_t color, uint32_t scale);
+static void ui_draw_text_crisp(int32_t x, int32_t y, const char *text, uint16_t color, uint32_t scale);
+static void ui_draw_text_crisp_centered(int32_t y, const char *text, uint16_t color, uint32_t scale);
+static void ui_draw_rgb565_image_scaled_cropped(int32_t x,
+                                                int32_t y,
+                                                int32_t dst_width,
+                                                int32_t dst_height,
+                                                const uint16_t *pixels,
+                                                int32_t src_width,
+                                                int32_t src_height,
+                                                int32_t crop_x,
+                                                int32_t crop_y,
+                                                int32_t crop_width,
+                                                int32_t crop_height);
 
 static void ui_flush_pending_events(void)
 {
@@ -289,6 +314,69 @@ static void ui_draw_rgb565_image_scaled(int32_t x,
         {
             int32_t dst_x = x + col;
             int32_t src_x = (col * src_width) / dst_width;
+
+            if ((dst_x < 0) || (dst_x >= UI_SCREEN_WIDTH))
+            {
+                continue;
+            }
+
+            framebuffer[(dst_y * UI_FRAMEBUFFER_STRIDE) + dst_x] = pixels[(src_y * src_width) + src_x];
+        }
+    }
+}
+
+static void ui_draw_rgb565_image_scaled_cropped(int32_t x,
+                                                int32_t y,
+                                                int32_t dst_width,
+                                                int32_t dst_height,
+                                                const uint16_t *pixels,
+                                                int32_t src_width,
+                                                int32_t src_height,
+                                                int32_t crop_x,
+                                                int32_t crop_y,
+                                                int32_t crop_width,
+                                                int32_t crop_height)
+{
+    uint16_t *framebuffer = ui_framebuffer();
+
+    if ((NULL == pixels) || (dst_width <= 0) || (dst_height <= 0) ||
+        (src_width <= 0) || (src_height <= 0) ||
+        (crop_width <= 0) || (crop_height <= 0))
+    {
+        return;
+    }
+
+    if (crop_x < 0)
+    {
+        crop_x = 0;
+    }
+    if (crop_y < 0)
+    {
+        crop_y = 0;
+    }
+    if ((crop_x + crop_width) > src_width)
+    {
+        crop_width = src_width - crop_x;
+    }
+    if ((crop_y + crop_height) > src_height)
+    {
+        crop_height = src_height - crop_y;
+    }
+
+    for (int32_t row = 0; row < dst_height; row++)
+    {
+        int32_t dst_y = y + row;
+        int32_t src_y = crop_y + ((row * crop_height) / dst_height);
+
+        if ((dst_y < 0) || (dst_y >= UI_SCREEN_HEIGHT))
+        {
+            continue;
+        }
+
+        for (int32_t col = 0; col < dst_width; col++)
+        {
+            int32_t dst_x = x + col;
+            int32_t src_x = crop_x + ((col * crop_width) / dst_width);
 
             if ((dst_x < 0) || (dst_x >= UI_SCREEN_WIDTH))
             {
@@ -901,6 +989,183 @@ static void ui_draw_text_centered_in_rect(int32_t x, int32_t width, int32_t y, c
     ui_draw_text(text_x, y, text, color, scale);
 }
 
+static const uint8_t * ui_pixel_glyph(char c)
+{
+    static const uint8_t space[7] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    static const uint8_t a[7] = { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
+    static const uint8_t c_glyph[7] = { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E };
+    static const uint8_t d[7] = { 0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E };
+    static const uint8_t e_glyph[7] = { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F };
+    static const uint8_t g[7] = { 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F };
+    static const uint8_t i[7] = { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F };
+    static const uint8_t l[7] = { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F };
+    static const uint8_t m[7] = { 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 };
+    static const uint8_t n[7] = { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 };
+    static const uint8_t o[7] = { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E };
+    static const uint8_t p[7] = { 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 };
+    static const uint8_t r[7] = { 0x1E, 0x11, 0x11, 0x1E, 0x12, 0x11, 0x11 };
+    static const uint8_t s[7] = { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E };
+    static const uint8_t t[7] = { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 };
+    static const uint8_t u[7] = { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E };
+    static const uint8_t x_glyph[7] = { 0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11 };
+
+    switch (c)
+    {
+        case 'A': return a;
+        case 'C': return c_glyph;
+        case 'D': return d;
+        case 'E': return e_glyph;
+        case 'G': return g;
+        case 'I': return i;
+        case 'L': return l;
+        case 'M': return m;
+        case 'N': return n;
+        case 'O': return o;
+        case 'P': return p;
+        case 'R': return r;
+        case 'S': return s;
+        case 'T': return t;
+        case 'U': return u;
+        case 'X': return x_glyph;
+        case ' ': return space;
+        default: return space;
+    }
+}
+
+static void ui_draw_pixel_text(int32_t x, int32_t y, const char *text, uint16_t color, uint32_t scale)
+{
+    uint16_t *framebuffer = ui_framebuffer();
+    int32_t cursor_x = x;
+
+    if (NULL == text)
+    {
+        return;
+    }
+
+    while ('\0' != *text)
+    {
+        const uint8_t *glyph = ui_pixel_glyph(*text);
+
+        for (int32_t row = 0; row < 7; row++)
+        {
+            for (int32_t col = 0; col < 5; col++)
+            {
+                if (0U == (glyph[row] & (uint8_t) (1U << (4 - col))))
+                {
+                    continue;
+                }
+
+                for (uint32_t sy = 0U; sy < scale; sy++)
+                {
+                    int32_t dst_y = y + (row * (int32_t) scale) + (int32_t) sy;
+
+                    if ((dst_y < 0) || (dst_y >= UI_SCREEN_HEIGHT))
+                    {
+                        continue;
+                    }
+
+                    for (uint32_t sx = 0U; sx < scale; sx++)
+                    {
+                        int32_t dst_x = cursor_x + (col * (int32_t) scale) + (int32_t) sx;
+
+                        if ((dst_x < 0) || (dst_x >= UI_SCREEN_WIDTH))
+                        {
+                            continue;
+                        }
+
+                        framebuffer[(dst_y * UI_FRAMEBUFFER_STRIDE) + dst_x] = color;
+                    }
+                }
+            }
+        }
+
+        cursor_x += (int32_t) ((5U * scale) + scale);
+        text++;
+    }
+}
+
+static void ui_draw_pixel_text_centered(int32_t y, const char *text, uint16_t color, uint32_t scale)
+{
+    size_t len;
+    int32_t width;
+    int32_t x;
+
+    if (NULL == text)
+    {
+        return;
+    }
+
+    len = strlen(text);
+    width = (int32_t) (len * ((5U * scale) + scale));
+    if (width > 0)
+    {
+        width -= (int32_t) scale;
+    }
+
+    x = (UI_SCREEN_WIDTH - width) / 2;
+    ui_draw_pixel_text(x, y, text, color, scale);
+}
+
+static void ui_draw_text_crisp(int32_t x, int32_t y, const char *text, uint16_t color, uint32_t scale)
+{
+    int32_t cursor_x = x;
+    const char *cursor = text;
+    uint16_t *framebuffer = ui_framebuffer();
+
+    if (NULL == text)
+    {
+        return;
+    }
+
+    while ('\0' != *cursor)
+    {
+        uint32_t codepoint = ui_decode_codepoint(&cursor);
+        uint32_t glyph_index = ui_font_index_from_codepoint(codepoint);
+
+        for (uint32_t row = 0U; row < UI_FONT_CELL_HEIGHT; row++)
+        {
+            for (uint32_t col = 0U; col < UI_FONT_CELL_WIDTH; col++)
+            {
+                if (g_ui_font_alpha[glyph_index][row][col] < 96U)
+                {
+                    continue;
+                }
+
+                for (uint32_t sy = 0U; sy < scale; sy++)
+                {
+                    int32_t dst_y = y + ((int32_t) row * (int32_t) scale) + (int32_t) sy;
+
+                    if ((dst_y < 0) || (dst_y >= UI_SCREEN_HEIGHT))
+                    {
+                        continue;
+                    }
+
+                    for (uint32_t sx = 0U; sx < scale; sx++)
+                    {
+                        int32_t dst_x = cursor_x + ((int32_t) col * (int32_t) scale) + (int32_t) sx;
+
+                        if ((dst_x < 0) || (dst_x >= UI_SCREEN_WIDTH))
+                        {
+                            continue;
+                        }
+
+                        framebuffer[(dst_y * UI_FRAMEBUFFER_STRIDE) + dst_x] = color;
+                    }
+                }
+            }
+        }
+
+        cursor_x += ((int32_t) g_ui_font_advance[glyph_index] * (int32_t) scale) + ((int32_t) UI_FONT_SPACING * (int32_t) scale);
+    }
+}
+
+static void ui_draw_text_crisp_centered(int32_t y, const char *text, uint16_t color, uint32_t scale)
+{
+    int32_t width = ui_text_width(text, scale);
+    int32_t x = (UI_SCREEN_WIDTH - width) / 2;
+    ui_draw_text_crisp(x, y, text, color, scale);
+}
+
 static void ui_draw_button(int32_t x, int32_t y, int32_t width, int32_t height, const char *label, uint16_t fill, uint16_t text_color)
 {
     ui_fill_rect(x, y, width, height, fill);
@@ -1312,15 +1577,12 @@ static void ui_draw_hero_panel(int32_t x,
 
     if (idle_mode)
     {
-        ui_fill_rect(0, 0, UI_SCREEN_WIDTH, UI_SCREEN_HEIGHT, UI_COLOR_TEXT);
-        ui_draw_rgb565_image_scaled((UI_SCREEN_WIDTH - UI_LOGO_IDLE_WIDTH) / 2,
-                                    28,
-                                    UI_LOGO_IDLE_WIDTH,
-                                    UI_LOGO_IDLE_HEIGHT,
-                                    g_ramo_logo_rgb565,
-                                    (int32_t) RAMO_LOGO_WIDTH,
-                                    (int32_t) RAMO_LOGO_HEIGHT);
-        ui_draw_gear_button(UI_SCREEN_WIDTH - UI_GEAR_BUTTON_SIZE - 12, 12);
+        SSP_PARAMETER_NOT_USED(x);
+        SSP_PARAMETER_NOT_USED(y);
+        SSP_PARAMETER_NOT_USED(width);
+        SSP_PARAMETER_NOT_USED(height);
+        SSP_PARAMETER_NOT_USED(accent);
+        ui_draw_wait_screen("AGUARDANDO USUARIO", "APROXIME O CARTAO", true);
         return;
     }
 
@@ -1330,17 +1592,46 @@ static void ui_draw_hero_panel(int32_t x,
     ui_draw_text_centered_in_rect(x + 36, width - 72, y + 86, initials, UI_COLOR_TEXT, 2U);
 }
 
+static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_gear)
+{
+    const int32_t frame_x = 2;
+    const int32_t frame_y = 10;
+    const int32_t frame_w = 236;
+    const int32_t frame_h = 178;
+    const int32_t inner_x = frame_x + 4;
+    const int32_t inner_y = frame_y + 4;
+    const int32_t inner_w = frame_w - 8;
+    const int32_t inner_h = frame_h - 8;
+    const int32_t logo_x = inner_x + ((inner_w - UI_LOGO_WAIT_WIDTH) / 2);
+    const int32_t logo_y = inner_y + ((inner_h - UI_LOGO_WAIT_HEIGHT) / 2) - 4;
+
+    ui_fill_rect(0, 0, UI_SCREEN_WIDTH, UI_SCREEN_HEIGHT, UI_COLOR_WAIT_BG);
+    ui_fill_rect(frame_x, frame_y, frame_w, frame_h, UI_COLOR_WAIT_LINE);
+    ui_fill_rect(inner_x, inner_y, inner_w, inner_h, UI_COLOR_TEXT);
+    ui_draw_rgb565_image_scaled_cropped(logo_x,
+                                        logo_y,
+                                        UI_LOGO_WAIT_WIDTH,
+                                        UI_LOGO_WAIT_HEIGHT,
+                                        g_ramo_logo_rgb565,
+                                        (int32_t) RAMO_LOGO_WIDTH,
+                                        (int32_t) RAMO_LOGO_HEIGHT,
+                                        UI_LOGO_CROP_X,
+                                        UI_LOGO_CROP_Y,
+                                        UI_LOGO_CROP_WIDTH,
+                                        UI_LOGO_CROP_HEIGHT);
+    ui_fill_rect(0, frame_y + frame_h, UI_SCREEN_WIDTH, UI_SCREEN_HEIGHT - (frame_y + frame_h), UI_COLOR_WAIT_BAR);
+    ui_draw_pixel_text_centered(242, line1, UI_COLOR_TEXT, 2U);
+    ui_draw_pixel_text_centered(278, line2, UI_COLOR_WAIT_TEXT2, 1U);
+
+    if (show_gear)
+    {
+        ui_draw_gear_button(UI_SCREEN_WIDTH - UI_GEAR_BUTTON_SIZE - 12, 12);
+    }
+}
+
 static void ui_show_splash(void)
 {
-    ui_clear_screen(UI_COLOR_TEXT);
-    ui_draw_rgb565_image_scaled((UI_SCREEN_WIDTH - UI_LOGO_IDLE_WIDTH) / 2,
-                                28,
-                                UI_LOGO_IDLE_WIDTH,
-                                UI_LOGO_IDLE_HEIGHT,
-                                g_ramo_logo_rgb565,
-                                (int32_t) RAMO_LOGO_WIDTH,
-                                (int32_t) RAMO_LOGO_HEIGHT);
-    ui_draw_text_centered(234, "Iniciando", UI_COLOR_BG, 1U);
+    ui_draw_wait_screen("AGUARDANDO USUARIO", "APROXIME O CARTAO", false);
     tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
 }
 
@@ -1733,8 +2024,6 @@ static void ui_render(const ui_status_t *status, const ui_snapshot_t *snapshot)
 
     if (idle_mode)
     {
-        ui_fill_rect(0, 228, UI_SCREEN_WIDTH, 92, UI_COLOR_TEXT);
-        ui_draw_text_centered(252, status->line2, UI_COLOR_BG, 1U);
         return;
     }
 
@@ -1758,10 +2047,7 @@ static void ui_render_screen(const ui_status_t *status, const ui_snapshot_t *sna
 
     if (UI_VIEW_IDLE == status->view)
     {
-        ui_draw_hero_panel(8, 14, 224, 214, "", UI_COLOR_BRAND, true);
-        ui_fill_rect(0, 228, UI_SCREEN_WIDTH, 92, UI_COLOR_TEXT);
-        ui_draw_text_centered(252, status->line2, UI_COLOR_BG, 1U);
-        ui_draw_text_centered(280, "Toque na engrenagem", UI_COLOR_BRAND, 1U);
+        ui_draw_wait_screen("AGUARDANDO USUARIO", "APROXIME O CARTAO", false);
         return;
     }
 
