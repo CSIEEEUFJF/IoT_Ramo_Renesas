@@ -895,7 +895,7 @@
       <property id="module.framework.fx.fat_count" value="1"/>
       <property id="module.framework.fx.dir_count" value="256"/>
       <property id="module.framework.fx.hidden_sectors" value="0"/>
-      <property id="module.framework.fx.total_sectors" value="3751936"/>
+      <property id="module.framework.fx.total_sectors" value="14000"/>
       <property id="module.framework.fx.sector_size" value="512"/>
       <property id="module.framework.fx.cluster_size" value="1"/>
       <property id="module.framework.fx.volume_serial_number" value="12345"/>
@@ -970,7 +970,7 @@
       <property id="module.framework.sf_el_lx_nor.name" value="g_sf_el_lx_nor0"/>
       <property id="module.framework.sf_el_lx_nor.p_callback" value="NULL"/>
       <property id="module.framework.sf_el_lx_nor.size_unit" value="module.framework.sf_el_lx_nor.size_format.kilobyte"/>
-      <property id="module.framework.sf_el_lx_nor.partition_size" value="0"/>
+      <property id="module.framework.sf_el_lx_nor.partition_size" value="8192"/>
       <property id="module.framework.sf_el_lx_nor.partition_start_addr" value="0x00000000"/>
     </module>
     <module id="module.framework.sf_memory_qspi_nor.441717451">

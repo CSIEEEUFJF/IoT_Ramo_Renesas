@@ -133,6 +133,18 @@ bool app_is_enrollment_mode(void)
 
 void hal_entry(void)
 {
+#define WIPE_QSPI_NOW 0
+    #if WIPE_QSPI_NOW
+        g_qspi0.p_api->open(g_qspi0.p_ctrl, g_qspi0.p_cfg);
+        g_qspi0.p_api->erase(g_qspi0.p_ctrl, (uint8_t *) 0x60000000, 8 * 1024 * 1024);
+
+        bool in_progress = true;
+        while (in_progress)
+        {
+            g_qspi0.p_api->statusGet(g_qspi0.p_ctrl, &in_progress);
+        }
+        g_qspi0.p_api->close(g_qspi0.p_ctrl);
+    #endif
     gpio_init();
 
     tx_mutex_create(&g_state_mutex, "state_mutex", TX_NO_INHERIT);

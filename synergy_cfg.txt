@@ -954,7 +954,7 @@ Synergy Configuration
             Number of FATs: 1
             Directory Entries: 256
             Hidden Sectors: 0
-            Total Sectors: 3751936
+            Total Sectors: 14000
             Bytes per Sector: 512
             Sectors per Cluster: 1
             Volume Serial Number: 12345
@@ -983,7 +983,7 @@ Synergy Configuration
                 Name: g_sf_el_lx_nor0
                 Event Callback: NULL
                 Memory Partition Size Unit in(KB/MB): Kilobyte(KB)
-                Memory Partition Size: 0
+                Memory Partition Size: 8192
                 Memory Partition Start Address(in hex format): 0x00000000
                 
                 Instance "g_sf_memory_qspi_nor0 Memory Framework on sf_memory_qspi_nor"
@@ -1031,7 +1031,7 @@ Synergy Configuration
           Number of FATs: 1
           Directory Entries: 256
           Hidden Sectors: 0
-          Total Sectors: 3751936
+          Total Sectors: 14000
           Bytes per Sector: 512
           Sectors per Cluster: 1
           Volume Serial Number: 12345
@@ -1060,7 +1060,7 @@ Synergy Configuration
               Name: g_sf_el_lx_nor0
               Event Callback: NULL
               Memory Partition Size Unit in(KB/MB): Kilobyte(KB)
-              Memory Partition Size: 0
+              Memory Partition Size: 8192
               Memory Partition Start Address(in hex format): 0x00000000
               
               Instance "g_sf_memory_qspi_nor0 Memory Framework on sf_memory_qspi_nor"

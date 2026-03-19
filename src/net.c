@@ -218,31 +218,34 @@ static bool query_get_value(const char *query, const char *key, char *out, size_
     return false;
 }
 
-static void split_resource_and_query(const char *resource,
-                                     char *path_out,
-                                     size_t path_size,
-                                     char *query_out,
-                                     size_t query_size)
+static void extract_query_from_packet(NX_PACKET *packet_ptr, char *query_out, size_t query_size)
 {
-    const char *query = strchr(resource, '?');
-    size_t path_len = (NULL == query) ? strlen(resource) : (size_t) (query - resource);
-
-    if (path_len >= path_size)
+    query_out[0] = '\0';
+    if ((NULL == packet_ptr) || (NULL == packet_ptr->nx_packet_prepend_ptr))
     {
-        path_len = path_size - 1U;
+        return;
     }
 
-    memcpy(path_out, resource, path_len);
-    path_out[path_len] = '\0';
+    /* Acede ao buffer bruto do pacote HTTP para não depender da framework do NetX */
+    char *req = (char *)packet_ptr->nx_packet_prepend_ptr;
+    char *req_end = (char *)packet_ptr->nx_packet_append_ptr;
 
-    if ((NULL != query) && (query_size > 0U))
+    char *http_ver = strstr(req, " HTTP/");
+    if ((NULL == http_ver) || (http_ver > req_end))
     {
-        strncpy(query_out, query + 1, query_size - 1U);
-        query_out[query_size - 1U] = '\0';
+        return;
     }
-    else if (query_size > 0U)
+
+    char *q_mark = strchr(req, '?');
+    if ((NULL != q_mark) && (q_mark < http_ver))
     {
-        query_out[0] = '\0';
+        size_t len = (size_t)(http_ver - (q_mark + 1));
+        if (len >= query_size)
+        {
+            len = query_size - 1U;
+        }
+        memcpy(query_out, q_mark + 1, len);
+        query_out[len] = '\0';
     }
 }
 
@@ -576,7 +579,12 @@ UINT request_notify(NX_HTTP_SERVER *server_ptr, UINT request_type, CHAR *resourc
     memcpy((void *) g_net_debug_last_resource, resource, resource_len);
     g_net_debug_last_resource[resource_len] = '\0';
 
-    split_resource_and_query(resource, path, sizeof(path), query, sizeof(query));
+    /* O NetX Duo corta a string do resource. Pega no caminho limpo */
+    strncpy(path, resource, sizeof(path) - 1U);
+    path[sizeof(path) - 1U] = '\0';
+
+    /* Extrai a string de pesquisa (query) diretamente dos dados brutos do pacote */
+    extract_query_from_packet(packet_ptr, query, sizeof(query));
 
     if (NX_HTTP_SERVER_GET_REQUEST == request_type)
     {

@@ -395,7 +395,7 @@ static sf_el_lx_nor_instance_ctrl_t g_sf_el_lx_nor0_ctrl;
 
 const sf_el_lx_nor_memory_settings_t g_sf_el_lx_nor0_memory_settings =
 		{ .absolute_start_addr = 0x00000000
-				+ FLASH_DEVICE_PHYSICAL_ADDRESS_OFFSET, .size = 0 * 1024 };
+				+ FLASH_DEVICE_PHYSICAL_ADDRESS_OFFSET, .size = 8192 * 1024 };
 
 /* sf_el_lx_nor driver config block */
 static sf_el_lx_nor_instance_cfg_t g_sf_el_lx_nor0_cfg = { .p_lower_lvl =
@@ -644,7 +644,7 @@ ssp_err_t fx_media_init0_format(void) {
 	uint32_t fx_ret_val = FX_SUCCESS;
 
 	uint32_t sector_size = 512;
-	uint32_t sector_count = 3751936;
+	uint32_t sector_count = 14000;
 
 #if SF_EL_FX_FORMAT_FULL_MEDIA_g_fx_media0
 	ssp_err_t error = SF_EL_FX_Get_MEDIA_Info(g_sf_el_fx0_cfg.p_ctrl,

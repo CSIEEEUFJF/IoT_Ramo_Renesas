@@ -1,6 +1,6 @@
 /***********************************************************************************************************************
  * Copyright [2015-2025] Renesas Electronics Corporation and/or its licensors. All Rights Reserved.
- * 
+ *
  * This file is part of Renesas SynergyTM Software Package (SSP)
  *
  * The contents of this file (the "contents") are proprietary and confidential to Renesas Electronics Corporation
