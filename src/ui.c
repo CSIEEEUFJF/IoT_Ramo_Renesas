@@ -3,15 +3,18 @@
 #include "storage.h"
 #include "hardware/lcd.h"
 #include "assets/arial_font_asset.h"
+#include "assets/profile_photo_assets.h"
 #include "assets/ramo_logo_asset.h"
 #include <stdio.h>
 
 #define UI_SCREEN_WIDTH        240
 #define UI_SCREEN_HEIGHT       320
+#define UI_UPLOADED_PHOTO_SLOTS 1
+#define UI_UPLOADED_PHOTO_MAX_DIM 160
 #define UI_FRAMEBUFFER_STRIDE  256
 #define UI_FONT_SPACING        0
 #define UI_QUEUE_POLL_TICKS    1U
-#define UI_STATUS_HOLD_TICKS   (TX_TIMER_TICKS_PER_SECOND * 15U)
+#define UI_STATUS_HOLD_TICKS   (TX_TIMER_TICKS_PER_SECOND * 10U)
 #define UI_BACKLIGHT_TIMEOUT_TICKS (TX_TIMER_TICKS_PER_SECOND * 60U)
 #define UI_TOUCH_DEBOUNCE_TICKS (TX_TIMER_TICKS_PER_SECOND / 20U)
 #define UI_PIN_LENGTH          4U
@@ -57,6 +60,7 @@
 #define UI_LOGO_CROP_Y         0
 #define UI_LOGO_CROP_WIDTH     RAMO_LOGO_WIDTH
 #define UI_LOGO_CROP_HEIGHT    RAMO_LOGO_HEIGHT
+#define UI_PROFILE_META_MAX_LEN (STORAGE_ROLE_MAX_LEN + STORAGE_CHAPTER_MAX_LEN + 8U)
 
 #define SX8654_I2C_ADDR        0x48U
 #define SX8654_REG_TOUCH0      0x00U
@@ -89,6 +93,9 @@ typedef struct st_ui_snapshot
     bool net_ready;
     char last_uid[UID_MAX_LEN];
     char last_user[NAME_MAX_LEN];
+    char photo_id[STORAGE_PHOTO_ID_MAX_LEN];
+    char role[STORAGE_ROLE_MAX_LEN];
+    char chapter[STORAGE_CHAPTER_MAX_LEN];
 } ui_snapshot_t;
 
 typedef struct st_ui_status
@@ -104,6 +111,15 @@ typedef struct st_ui_status
     uint8_t pin_index;
     uint8_t pin_count;
 } ui_status_t;
+
+typedef struct st_ui_uploaded_photo_slot
+{
+    bool valid;
+    char photo_id[STORAGE_PHOTO_ID_MAX_LEN];
+    uint16_t width;
+    uint16_t height;
+    uint16_t pixels[UI_UPLOADED_PHOTO_MAX_DIM * UI_UPLOADED_PHOTO_MAX_DIM];
+} ui_uploaded_photo_slot_t;
 
 typedef struct st_ui_touch_event
 {
@@ -139,6 +155,11 @@ static bool g_ui_touch_ready = false;
 static bool g_ui_touch_pressed = false;
 static int16_t g_ui_touch_last_x = 0;
 static int16_t g_ui_touch_last_y = 0;
+static char g_ui_cached_profile_uid[UID_MAX_LEN] = { 0 };
+static char g_ui_cached_profile_photo_id[STORAGE_PHOTO_ID_MAX_LEN] = { 0 };
+static char g_ui_cached_profile_role[STORAGE_ROLE_MAX_LEN] = { 0 };
+static char g_ui_cached_profile_chapter[STORAGE_CHAPTER_MAX_LEN] = { 0 };
+static ui_uploaded_photo_slot_t g_ui_uploaded_photos[UI_UPLOADED_PHOTO_SLOTS];
 static ULONG g_ui_touch_last_action_tick = 0U;
 volatile uint32_t g_ui_touch_debug_ready = 0U;
 volatile uint32_t g_ui_touch_debug_fail_count = 0U;
@@ -178,6 +199,14 @@ static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_
 static void ui_draw_pixel_text_centered(int32_t y, const char *text, uint16_t color, uint32_t scale);
 static void ui_draw_text_crisp(int32_t x, int32_t y, const char *text, uint16_t color, uint32_t scale);
 static void ui_draw_text_crisp_centered(int32_t y, const char *text, uint16_t color, uint32_t scale);
+static const profile_photo_asset_t *ui_find_profile_photo_asset(const char *photo_id);
+static void ui_lookup_profile_details_for_uid(const char *uid,
+                                              char *out_photo_id,
+                                              size_t out_photo_size,
+                                              char *out_role,
+                                              size_t out_role_size,
+                                              char *out_chapter,
+                                              size_t out_chapter_size);
 static void ui_draw_rgb565_image_scaled_cropped(int32_t x,
                                                 int32_t y,
                                                 int32_t dst_width,
@@ -218,6 +247,234 @@ static void ui_copy_text(char *dest, size_t dest_size, const char *src)
 
     memcpy(dest, src, copy_len);
     dest[copy_len] = '\0';
+}
+
+static const profile_photo_asset_t *ui_find_profile_photo_asset(const char *photo_id)
+{
+    static profile_photo_asset_t runtime_asset;
+
+    if ((NULL == photo_id) || ('\0' == photo_id[0]))
+    {
+        return NULL;
+    }
+
+    for (size_t i = 0U; i < UI_UPLOADED_PHOTO_SLOTS; i++)
+    {
+        if (g_ui_uploaded_photos[i].valid &&
+            (0 == strcmp(photo_id, g_ui_uploaded_photos[i].photo_id)))
+        {
+            runtime_asset.photo_id = g_ui_uploaded_photos[i].photo_id;
+            runtime_asset.width = g_ui_uploaded_photos[i].width;
+            runtime_asset.height = g_ui_uploaded_photos[i].height;
+            runtime_asset.pixels = g_ui_uploaded_photos[i].pixels;
+            return &runtime_asset;
+        }
+    }
+
+    for (size_t i = 0U; i < PROFILE_PHOTO_ASSET_COUNT; i++)
+    {
+        if (0 == strcmp(photo_id, g_profile_photo_assets[i].photo_id))
+        {
+            return &g_profile_photo_assets[i];
+        }
+    }
+
+    return NULL;
+}
+
+bool ui_has_uploaded_photo(const char *photo_id)
+{
+    if ((NULL == photo_id) || ('\0' == photo_id[0]))
+    {
+        return false;
+    }
+
+    for (size_t i = 0U; i < UI_UPLOADED_PHOTO_SLOTS; i++)
+    {
+        if (g_ui_uploaded_photos[i].valid &&
+            (0 == strcmp(photo_id, g_ui_uploaded_photos[i].photo_id)))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static int ui_find_uploaded_photo_slot(const char *photo_id)
+{
+    if ((NULL == photo_id) || ('\0' == photo_id[0]))
+    {
+        return -1;
+    }
+
+    for (int i = 0; i < UI_UPLOADED_PHOTO_SLOTS; i++)
+    {
+        if (g_ui_uploaded_photos[i].valid &&
+            (0 == strcmp(photo_id, g_ui_uploaded_photos[i].photo_id)))
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+void ui_invalidate_profile_cache(void)
+{
+    g_ui_cached_profile_uid[0] = '\0';
+    g_ui_cached_profile_photo_id[0] = '\0';
+    g_ui_cached_profile_role[0] = '\0';
+    g_ui_cached_profile_chapter[0] = '\0';
+}
+
+bool ui_prepare_uploaded_photo_rgb565(const char *photo_id, uint16_t width, uint16_t height)
+{
+    int slot = 0;
+
+    if ((NULL == photo_id) || ('\0' == photo_id[0]))
+    {
+        return false;
+    }
+
+    if ((0U == width) || (0U == height) ||
+        (width > UI_UPLOADED_PHOTO_MAX_DIM) ||
+        (height > UI_UPLOADED_PHOTO_MAX_DIM))
+    {
+        return false;
+    }
+
+    slot = ui_find_uploaded_photo_slot(photo_id);
+    if (slot < 0)
+    {
+        slot = 0;
+    }
+
+    memset(&g_ui_uploaded_photos[slot], 0, sizeof(g_ui_uploaded_photos[slot]));
+    g_ui_uploaded_photos[slot].valid = true;
+    ui_copy_text(g_ui_uploaded_photos[slot].photo_id,
+                 sizeof(g_ui_uploaded_photos[slot].photo_id),
+                 photo_id);
+    g_ui_uploaded_photos[slot].width = width;
+    g_ui_uploaded_photos[slot].height = height;
+    return true;
+}
+
+bool ui_write_uploaded_photo_tile_rgb565(const char *photo_id,
+                                         const uint16_t *pixels,
+                                         uint16_t tile_x,
+                                         uint16_t tile_y,
+                                         uint16_t tile_width,
+                                         uint16_t tile_height)
+{
+    int slot;
+    ui_uploaded_photo_slot_t *target;
+
+    if ((NULL == photo_id) || ('\0' == photo_id[0]) || (NULL == pixels))
+    {
+        return false;
+    }
+
+    slot = ui_find_uploaded_photo_slot(photo_id);
+    if (slot < 0)
+    {
+        return false;
+    }
+
+    target = &g_ui_uploaded_photos[slot];
+    if ((tile_width == 0U) || (tile_height == 0U) ||
+        ((uint32_t) tile_x + (uint32_t) tile_width > target->width) ||
+        ((uint32_t) tile_y + (uint32_t) tile_height > target->height))
+    {
+        return false;
+    }
+
+    for (uint16_t y = 0U; y < tile_height; y++)
+    {
+        uint16_t *dst = &target->pixels[(size_t) (tile_y + y) * target->width + tile_x];
+        const uint16_t *src = &pixels[(size_t) y * tile_width];
+        memcpy(dst, src, (size_t) tile_width * sizeof(uint16_t));
+    }
+
+    return true;
+}
+
+bool ui_store_uploaded_photo_rgb565(const char *photo_id, const uint16_t *pixels, uint16_t width, uint16_t height)
+{
+    if ((NULL == photo_id) || ('\0' == photo_id[0]) || (NULL == pixels))
+    {
+        return false;
+    }
+
+    if ((0U == width) || (0U == height) ||
+        (width > UI_UPLOADED_PHOTO_MAX_DIM) ||
+        (height > UI_UPLOADED_PHOTO_MAX_DIM))
+    {
+        return false;
+    }
+
+    if (!ui_prepare_uploaded_photo_rgb565(photo_id, width, height))
+    {
+        return false;
+    }
+
+    return ui_write_uploaded_photo_tile_rgb565(photo_id, pixels, 0U, 0U, width, height);
+}
+
+static void ui_lookup_profile_details_for_uid(const char *uid,
+                                              char *out_photo_id,
+                                              size_t out_photo_size,
+                                              char *out_role,
+                                              size_t out_role_size,
+                                              char *out_chapter,
+                                              size_t out_chapter_size)
+{
+    storage_user_profile_t profile;
+
+    if ((NULL == out_photo_id) || (0U == out_photo_size) ||
+        (NULL == out_role) || (0U == out_role_size) ||
+        (NULL == out_chapter) || (0U == out_chapter_size))
+    {
+        return;
+    }
+
+    out_photo_id[0] = '\0';
+    out_role[0] = '\0';
+    out_chapter[0] = '\0';
+
+    if ((NULL == uid) || ('\0' == uid[0]))
+    {
+        g_ui_cached_profile_uid[0] = '\0';
+        g_ui_cached_profile_photo_id[0] = '\0';
+        g_ui_cached_profile_role[0] = '\0';
+        g_ui_cached_profile_chapter[0] = '\0';
+        return;
+    }
+
+    if (0 == strncmp(uid, g_ui_cached_profile_uid, UID_MAX_LEN))
+    {
+        ui_copy_text(out_photo_id, out_photo_size, g_ui_cached_profile_photo_id);
+        ui_copy_text(out_role, out_role_size, g_ui_cached_profile_role);
+        ui_copy_text(out_chapter, out_chapter_size, g_ui_cached_profile_chapter);
+        return;
+    }
+
+    if (storage_profile_find_by_uid(uid, &profile))
+    {
+        ui_copy_text(g_ui_cached_profile_uid, sizeof(g_ui_cached_profile_uid), uid);
+        ui_copy_text(g_ui_cached_profile_photo_id, sizeof(g_ui_cached_profile_photo_id), profile.photo_id);
+        ui_copy_text(g_ui_cached_profile_role, sizeof(g_ui_cached_profile_role), profile.role);
+        ui_copy_text(g_ui_cached_profile_chapter, sizeof(g_ui_cached_profile_chapter), profile.chapter);
+        ui_copy_text(out_photo_id, out_photo_size, profile.photo_id);
+        ui_copy_text(out_role, out_role_size, profile.role);
+        ui_copy_text(out_chapter, out_chapter_size, profile.chapter);
+        return;
+    }
+
+    ui_copy_text(g_ui_cached_profile_uid, sizeof(g_ui_cached_profile_uid), uid);
+    g_ui_cached_profile_photo_id[0] = '\0';
+    g_ui_cached_profile_role[0] = '\0';
+    g_ui_cached_profile_chapter[0] = '\0';
 }
 
 static uint16_t * ui_framebuffer(void)
@@ -1166,6 +1423,42 @@ static void ui_draw_text_crisp_centered(int32_t y, const char *text, uint16_t co
     ui_draw_text_crisp(x, y, text, color, scale);
 }
 
+static void ui_fit_text_to_width(const char *src, char *dest, size_t dest_size, int32_t max_width, uint32_t scale)
+{
+    size_t len;
+
+    if ((NULL == dest) || (0U == dest_size))
+    {
+        return;
+    }
+
+    dest[0] = '\0';
+    if (NULL == src)
+    {
+        return;
+    }
+
+    ui_copy_text(dest, dest_size, src);
+    if (ui_text_width(dest, scale) <= max_width)
+    {
+        return;
+    }
+
+    len = strlen(dest);
+    while ((len > 3U) && (ui_text_width(dest, scale) > max_width))
+    {
+        len--;
+        dest[len] = '\0';
+    }
+
+    if (len > 3U)
+    {
+        dest[len - 3U] = '.';
+        dest[len - 2U] = '.';
+        dest[len - 1U] = '.';
+    }
+}
+
 static void ui_draw_button(int32_t x, int32_t y, int32_t width, int32_t height, const char *label, uint16_t fill, uint16_t text_color)
 {
     ui_fill_rect(x, y, width, height, fill);
@@ -1563,15 +1856,44 @@ static void ui_extract_initials(const char *name, char *initials, size_t initial
     }
 }
 
+static void ui_format_profile_meta(const ui_snapshot_t *snapshot, char *out, size_t out_size)
+{
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    out[0] = '\0';
+    if (NULL == snapshot)
+    {
+        return;
+    }
+
+    if (('\0' != snapshot->role[0]) && ('\0' != snapshot->chapter[0]))
+    {
+        snprintf(out, out_size, "(%s-%s)", snapshot->role, snapshot->chapter);
+    }
+    else if ('\0' != snapshot->role[0])
+    {
+        snprintf(out, out_size, "(%s)", snapshot->role);
+    }
+    else if ('\0' != snapshot->chapter[0])
+    {
+        snprintf(out, out_size, "(%s)", snapshot->chapter);
+    }
+}
+
 static void ui_draw_hero_panel(int32_t x,
                                int32_t y,
                                int32_t width,
                                int32_t height,
                                const char *name,
+                               const char *photo_id,
                                uint16_t accent,
                                bool idle_mode)
 {
     char initials[8];
+    const profile_photo_asset_t *photo_asset = ui_find_profile_photo_asset(photo_id);
 
     ui_extract_initials(name, initials, sizeof(initials));
 
@@ -1587,9 +1909,51 @@ static void ui_draw_hero_panel(int32_t x,
     }
 
     ui_fill_rect(0, 0, UI_SCREEN_WIDTH, UI_SCREEN_HEIGHT, UI_COLOR_BG);
-    ui_fill_rect(x + 12, y + 8, width - 24, height - 34, UI_COLOR_PORTRAIT);
-    ui_fill_rect(x + 36, y + 32, width - 72, height - 86, accent);
-    ui_draw_text_centered_in_rect(x + 36, width - 72, y + 86, initials, UI_COLOR_TEXT, 2U);
+    ui_fill_rect(x + 4, y + 4, width - 8, height - 8, UI_COLOR_PORTRAIT);
+    ui_fill_rect(x + 8, y + 8, width - 16, height - 16, accent);
+    ui_fill_rect(x + 12, y + 12, width - 24, height - 24, UI_COLOR_TEXT);
+
+    if (NULL != photo_asset)
+    {
+        int32_t dst_x = x + 14;
+        int32_t dst_y = y + 14;
+        int32_t dst_width = width - 28;
+        int32_t dst_height = height - 28;
+        int32_t src_width = (int32_t) photo_asset->width;
+        int32_t src_height = (int32_t) photo_asset->height;
+        int32_t crop_x = 0;
+        int32_t crop_y = 0;
+        int32_t crop_width = src_width;
+        int32_t crop_height = src_height;
+
+        if ((src_width * dst_height) > (src_height * dst_width))
+        {
+            crop_width = (src_height * dst_width) / dst_height;
+            crop_x = (src_width - crop_width) / 2;
+        }
+        else if ((src_width * dst_height) < (src_height * dst_width))
+        {
+            crop_height = (src_width * dst_height) / dst_width;
+            crop_y = (src_height - crop_height) / 2;
+        }
+
+        ui_draw_rgb565_image_scaled_cropped(dst_x,
+                                            dst_y,
+                                            dst_width,
+                                            dst_height,
+                                            photo_asset->pixels,
+                                            src_width,
+                                            src_height,
+                                            crop_x,
+                                            crop_y,
+                                            crop_width,
+                                            crop_height);
+    }
+    else
+    {
+        ui_fill_rect(x + 16, y + 16, width - 32, height - 32, accent);
+        ui_draw_text_centered_in_rect(x + 16, width - 32, y + ((height - 28) / 2), initials, UI_COLOR_TEXT, 2U);
+    }
 }
 
 static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_gear)
@@ -1651,6 +2015,14 @@ static void ui_capture_snapshot(ui_snapshot_t *snapshot)
     strncpy(snapshot->last_user, (const char *) g_app_state.last_user, NAME_MAX_LEN - 1U);
     snapshot->last_user[NAME_MAX_LEN - 1U] = '\0';
     app_state_unlock();
+
+    ui_lookup_profile_details_for_uid(snapshot->last_uid,
+                                      snapshot->photo_id,
+                                      sizeof(snapshot->photo_id),
+                                      snapshot->role,
+                                      sizeof(snapshot->role),
+                                      snapshot->chapter,
+                                      sizeof(snapshot->chapter));
 }
 
 static bool ui_snapshot_changed(const ui_snapshot_t *lhs, const ui_snapshot_t *rhs)
@@ -1667,7 +2039,22 @@ static bool ui_snapshot_changed(const ui_snapshot_t *lhs, const ui_snapshot_t *r
         return true;
     }
 
-    return (0 != strncmp(lhs->last_user, rhs->last_user, NAME_MAX_LEN));
+    if (0 != strncmp(lhs->last_user, rhs->last_user, NAME_MAX_LEN))
+    {
+        return true;
+    }
+
+    if (0 != strncmp(lhs->photo_id, rhs->photo_id, STORAGE_PHOTO_ID_MAX_LEN))
+    {
+        return true;
+    }
+
+    if (0 != strncmp(lhs->role, rhs->role, STORAGE_ROLE_MAX_LEN))
+    {
+        return true;
+    }
+
+    return (0 != strncmp(lhs->chapter, rhs->chapter, STORAGE_CHAPTER_MAX_LEN));
 }
 
 static void ui_set_status(ui_status_t *status,
@@ -1763,7 +2150,7 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
             ui_set_status(status,
                           "",
                           "Acesso autorizado",
-                          "Toque para voltar",
+                          "",
                           UI_COLOR_OK,
                           UI_STATUS_HOLD_TICKS,
                           false);
@@ -1776,7 +2163,7 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
             ui_set_status(status,
                           "",
                           "Acesso negado",
-                          "Toque para voltar",
+                          "",
                           UI_COLOR_ERROR,
                           UI_STATUS_HOLD_TICKS,
                           false);
@@ -1795,7 +2182,7 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
             ui_set_status(status,
                           "",
                           "Usu" "\303\241" "rio adicionado",
-                          "Toque para voltar",
+                          "",
                           UI_COLOR_OK,
                           UI_STATUS_HOLD_TICKS,
                           false);
@@ -1807,7 +2194,7 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
             ui_set_status(status,
                           "",
                           "Usu" "\303\241" "rio removido",
-                          "Toque para voltar",
+                          "",
                           UI_COLOR_WARN,
                           UI_STATUS_HOLD_TICKS,
                           false);
@@ -1819,7 +2206,7 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
             ui_set_status(status,
                           "",
                           "Cart" "\303\243" "o cadastrado",
-                          "Toque para voltar",
+                          "",
                           UI_COLOR_OK,
                           UI_STATUS_HOLD_TICKS,
                           false);
@@ -1832,7 +2219,7 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
             ui_set_status(status,
                           "",
                           "Cart" "\303\243" "o j" "\303\241" " cadastrado",
-                          "Toque para voltar",
+                          "",
                           UI_COLOR_WARN,
                           UI_STATUS_HOLD_TICKS,
                           false);
@@ -1845,7 +2232,7 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
             ui_set_status(status,
                           "",
                           "Falha no cadastro",
-                          "Toque para voltar",
+                          "",
                           UI_COLOR_ERROR,
                           UI_STATUS_HOLD_TICKS,
                           false);
@@ -1858,7 +2245,7 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
             ui_set_status(status,
                           "",
                           "Processando",
-                          "Toque para voltar",
+                          "",
                           UI_COLOR_IDLE,
                           UI_STATUS_HOLD_TICKS,
                           false);
@@ -1883,15 +2270,6 @@ static void ui_handle_touch(ui_status_t *status, const ui_touch_event_t *touch_e
         || (NULL == force_redraw)
         || !touch_event->valid)
     {
-        return;
-    }
-
-    if ((UI_VIEW_RESULT == status->view)
-        && touch_event->just_pressed
-        && ui_touch_accept_action())
-    {
-        ui_enter_idle(status);
-        *force_redraw = true;
         return;
     }
 
@@ -2009,6 +2387,10 @@ static void ui_init_display(void)
 static void ui_render(const ui_status_t *status, const ui_snapshot_t *snapshot)
 {
     const char *user_text;
+    char meta_text[UI_PROFILE_META_MAX_LEN];
+    char user_line[NAME_MAX_LEN];
+    char meta_line[UI_PROFILE_META_MAX_LEN];
+    char status_line[NAME_MAX_LEN];
     bool idle_mode;
     uint16_t hero_color;
     if ((NULL == status) || (NULL == snapshot))
@@ -2019,8 +2401,12 @@ static void ui_render(const ui_status_t *status, const ui_snapshot_t *snapshot)
     idle_mode = status->sticky;
     user_text = idle_mode ? "Aguardando cartão" : snapshot->last_user;
     hero_color = idle_mode ? UI_COLOR_BRAND : status->accent;
+    ui_format_profile_meta(snapshot, meta_text, sizeof(meta_text));
+    ui_fit_text_to_width(user_text, user_line, sizeof(user_line), 220, 1U);
+    ui_fit_text_to_width(meta_text, meta_line, sizeof(meta_line), 220, 1U);
+    ui_fit_text_to_width(status->line2, status_line, sizeof(status_line), 220, 1U);
 
-    ui_draw_hero_panel(8, 14, 224, 214, user_text, hero_color, idle_mode);
+    ui_draw_hero_panel(8, 14, 224, 222, user_text, snapshot->photo_id, hero_color, idle_mode);
 
     if (idle_mode)
     {
@@ -2028,12 +2414,16 @@ static void ui_render(const ui_status_t *status, const ui_snapshot_t *snapshot)
     }
 
     ui_fill_rect(0, 236, UI_SCREEN_WIDTH, 84, UI_COLOR_PANEL_ALT);
-    ui_draw_text_centered(248, user_text, UI_COLOR_TEXT, 1U);
-    ui_draw_text_centered(274, status->line2, status->accent, 1U);
-    if ('\0' != status->context[0])
+    ui_draw_text_crisp_centered(246, user_line, UI_COLOR_TEXT, 1U);
+    if ('\0' != meta_line[0])
     {
-        ui_draw_text_centered(298, status->context, UI_COLOR_TEXT, 1U);
+        ui_draw_text_crisp_centered(270, meta_line, UI_COLOR_TEXT, 1U);
     }
+    else if ('\0' != status->context[0])
+    {
+        ui_draw_text_crisp_centered(270, status->context, UI_COLOR_TEXT, 1U);
+    }
+    ui_draw_text_crisp_centered(294, status_line, status->accent, 1U);
 }
 
 static void ui_render_screen(const ui_status_t *status, const ui_snapshot_t *snapshot)

@@ -47,6 +47,9 @@ static uint8_t stack_status [STACK_SIZE_STATUS] BSP_ALIGN_VARIABLE(8);
 static uint8_t stack_gpio   [STACK_SIZE_GPIO]   BSP_ALIGN_VARIABLE(8);
 
 static TX_MUTEX  g_state_mutex;
+static app_access_log_entry_t g_access_log[ACCESS_LOG_SIZE];
+static int g_access_log_next = 0;
+static int g_access_log_count = 0;
 volatile app_state_t g_app_state = {
     .door_open     = false,
     .light_on      = false,
@@ -74,6 +77,30 @@ static void app_store_last_uid(const char *uid)
     strncpy((char *) g_app_state.last_uid, uid, UID_MAX_LEN - 1U);
     g_app_state.last_uid[UID_MAX_LEN - 1U] = '\0';
     app_state_unlock();
+}
+
+static void app_access_log_add_locked(app_event_type_t type, const char *data)
+{
+    app_access_log_entry_t *entry = &g_access_log[g_access_log_next];
+
+    memset(entry, 0, sizeof(*entry));
+    entry->tick = tx_time_get();
+    entry->type = type;
+
+    if (NULL != data)
+    {
+        strncpy(entry->data, data, sizeof(entry->data) - 1U);
+        entry->data[sizeof(entry->data) - 1U] = '\0';
+    }
+
+    strncpy(entry->user, (const char *) g_app_state.last_user, sizeof(entry->user) - 1U);
+    entry->user[sizeof(entry->user) - 1U] = '\0';
+
+    g_access_log_next = (g_access_log_next + 1) % ACCESS_LOG_SIZE;
+    if (g_access_log_count < ACCESS_LOG_SIZE)
+    {
+        g_access_log_count++;
+    }
 }
 
 void app_set_last_identity(const char *uid, const char *user)
@@ -241,9 +268,58 @@ void app_post_event(app_event_type_t type, const char * data)
         ev.data[sizeof(ev.data) - 1U] = '\0';
     }
 
+    switch (type)
+    {
+        case EVENT_RFID_AUTH_OK:
+        case EVENT_RFID_AUTH_FAIL:
+        case EVENT_DOOR_OPEN:
+        case EVENT_DOOR_CLOSE:
+        case EVENT_CARD_REGISTERED:
+        case EVENT_CARD_ALREADY_REGISTERED:
+        case EVENT_CARD_REGISTRATION_FAILED:
+            app_state_lock();
+            app_access_log_add_locked(type, data);
+            app_state_unlock();
+            break;
+
+        default:
+            break;
+    }
+
     g_app_debug_event_queue_status = tx_queue_send(&g_event_queue, &ev, TX_NO_WAIT);
     if (TX_SUCCESS != g_app_debug_event_queue_status)
     {
         g_app_debug_event_queue_fail_count++;
     }
+}
+
+int app_access_log_snapshot(app_access_log_entry_t *out_entries, int max_entries)
+{
+    int count;
+
+    if ((NULL == out_entries) || (max_entries <= 0))
+    {
+        return 0;
+    }
+
+    app_state_lock();
+    count = g_access_log_count;
+    if (count > max_entries)
+    {
+        count = max_entries;
+    }
+
+    for (int i = 0; i < count; i++)
+    {
+        int source_index = (g_access_log_next - g_access_log_count + i);
+        while (source_index < 0)
+        {
+            source_index += ACCESS_LOG_SIZE;
+        }
+        source_index %= ACCESS_LOG_SIZE;
+        out_entries[i] = g_access_log[source_index];
+    }
+    app_state_unlock();
+
+    return count;
 }

@@ -19,6 +19,7 @@ extern const char * API_KEY;
 #define UID_MAX_LEN     21
 #define NAME_MAX_LEN    32
 #define EVENT_QUEUE_SIZE 16
+#define ACCESS_LOG_SIZE  32
 
 typedef enum
 {
@@ -51,6 +52,13 @@ typedef struct {
     char             data[UID_MAX_LEN];
 } app_event_t;
 
+typedef struct {
+    ULONG tick;
+    app_event_type_t type;
+    char data[UID_MAX_LEN];
+    char user[NAME_MAX_LEN];
+} app_access_log_entry_t;
+
 /* Estado global da aplicação */
 typedef struct {
     bool    door_open;
@@ -77,6 +85,7 @@ app_ui_mode_t app_get_ui_mode(void);
 void app_set_enrollment_mode(bool enabled);
 bool app_is_enrollment_mode(void);
 void app_post_event   (app_event_type_t type, const char * data);
+int app_access_log_snapshot(app_access_log_entry_t *out_entries, int max_entries);
 
 /* Protótipos das Threads */
 void thread_rfid_entry   (ULONG arg);
