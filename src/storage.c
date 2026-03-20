@@ -501,6 +501,66 @@ static bool storage_extract_json_string(const char *object_start,
     return true;
 }
 
+static bool storage_extract_json_bool(const char *object_start,
+                                      const char *object_end,
+                                      const char *key,
+                                      bool default_value)
+{
+    char pattern[32];
+    const char *found;
+    const char *cursor;
+
+    if ((NULL == object_start) || (NULL == object_end) || (NULL == key))
+    {
+        return default_value;
+    }
+
+    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    found = storage_find_within_object(object_start, object_end, pattern);
+    if (NULL == found)
+    {
+        return default_value;
+    }
+
+    cursor = found + strlen(pattern);
+    while ((cursor <= object_end) && isspace((int) (unsigned char) *cursor))
+    {
+        cursor++;
+    }
+
+    if (cursor > object_end)
+    {
+        return default_value;
+    }
+
+    if (0 == strncmp(cursor, "true", 4))
+    {
+        return true;
+    }
+    if (0 == strncmp(cursor, "false", 5))
+    {
+        return false;
+    }
+    if (0 == strncmp(cursor, "\"1\"", 3))
+    {
+        return true;
+    }
+    if (0 == strncmp(cursor, "\"0\"", 3))
+    {
+        return false;
+    }
+    if ('1' == *cursor)
+    {
+        return true;
+    }
+    if ('0' == *cursor)
+    {
+        return false;
+    }
+
+    return default_value;
+}
+
 static void storage_extract_json_cards(const char *object_start, const char *object_end, user_t *profile)
 {
     const char *found;
@@ -616,6 +676,7 @@ static bool storage_parse_users(const char *json_buffer)
         (void) storage_extract_json_string(object_start, object_end, "role", profile.role, sizeof(profile.role));
         (void) storage_extract_json_string(object_start, object_end, "chapter", profile.chapter, sizeof(profile.chapter));
         (void) storage_extract_json_string(object_start, object_end, "photo_id", profile.photo_id, sizeof(profile.photo_id));
+        profile.is_admin = storage_extract_json_bool(object_start, object_end, "is_admin", false);
         (void) storage_extract_json_string(object_start, object_end, "cards_csv", cards_csv, sizeof(cards_csv));
         if ('\0' != cards_csv[0])
         {
@@ -669,12 +730,13 @@ static bool storage_prepare_users_json_locked(char *json_buffer, size_t json_buf
         storage_profile_cards_to_csv(&g_recent_user, cards_csv, sizeof(cards_csv));
         written = snprintf(&json_buffer[offset],
                            json_buffer_size - offset,
-                           "{\"name\":\"%s\",\"uid\":\"%s\",\"role\":\"%s\",\"chapter\":\"%s\",\"photo_id\":\"%s\",\"cards_csv\":\"%s\",\"cards\":[",
+                           "{\"name\":\"%s\",\"uid\":\"%s\",\"role\":\"%s\",\"chapter\":\"%s\",\"photo_id\":\"%s\",\"is_admin\":%s,\"cards_csv\":\"%s\",\"cards\":[",
                            g_recent_user.name,
                            storage_profile_has_cards(&g_recent_user) ? g_recent_user.cards[0] : "",
                            g_recent_user.role,
                            g_recent_user.chapter,
                            g_recent_user.photo_id,
+                           g_recent_user.is_admin ? "true" : "false",
                            cards_csv);
         if ((written < 0) || ((size_t) written >= (json_buffer_size - offset)))
         {
@@ -715,13 +777,14 @@ static bool storage_prepare_users_json_locked(char *json_buffer, size_t json_buf
 
         written = snprintf(&json_buffer[offset],
                            json_buffer_size - offset,
-                           "%s{\"name\":\"%s\",\"uid\":\"%s\",\"role\":\"%s\",\"chapter\":\"%s\",\"photo_id\":\"%s\",\"cards_csv\":\"%s\",\"cards\":[",
+                           "%s{\"name\":\"%s\",\"uid\":\"%s\",\"role\":\"%s\",\"chapter\":\"%s\",\"photo_id\":\"%s\",\"is_admin\":%s,\"cards_csv\":\"%s\",\"cards\":[",
                            (offset > 1U) ? "," : "",
                            g_users[i].name,
                            storage_profile_has_cards(&g_users[i]) ? g_users[i].cards[0] : "",
                            g_users[i].role,
                            g_users[i].chapter,
                            g_users[i].photo_id,
+                           g_users[i].is_admin ? "true" : "false",
                            cards_csv);
         if ((written < 0) || ((size_t) written >= (json_buffer_size - offset)))
         {
@@ -1877,6 +1940,7 @@ bool storage_profile_upsert(const storage_user_profile_t *profile, int edit_inde
     storage_copy_text(normalized.role, sizeof(normalized.role), profile->role, strlen(profile->role));
     storage_copy_text(normalized.chapter, sizeof(normalized.chapter), profile->chapter, strlen(profile->chapter));
     storage_copy_text(normalized.photo_id, sizeof(normalized.photo_id), profile->photo_id, strlen(profile->photo_id));
+    normalized.is_admin = profile->is_admin;
 
     storage_init();
     storage_lock();

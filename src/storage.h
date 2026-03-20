@@ -16,6 +16,7 @@ typedef struct
     char role[STORAGE_ROLE_MAX_LEN];
     char chapter[STORAGE_CHAPTER_MAX_LEN];
     char photo_id[STORAGE_PHOTO_ID_MAX_LEN];
+    bool is_admin;
     unsigned int card_count;
     char cards[STORAGE_MAX_CARDS_PER_USER][UID_MAX_LEN];
 } storage_user_profile_t;
