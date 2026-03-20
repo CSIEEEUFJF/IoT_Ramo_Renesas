@@ -197,6 +197,7 @@ static bool ui_enroll_save_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_touch_accept_action(void);
 static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_gear);
 static void ui_draw_pixel_text_centered(int32_t y, const char *text, uint16_t color, uint32_t scale);
+static void ui_draw_pixel_text_centered_in_rect(int32_t x, int32_t width, int32_t y, const char *text, uint16_t color, uint32_t scale);
 static void ui_draw_text_crisp(int32_t x, int32_t y, const char *text, uint16_t color, uint32_t scale);
 static void ui_draw_text_crisp_centered(int32_t y, const char *text, uint16_t color, uint32_t scale);
 static const profile_photo_asset_t *ui_find_profile_photo_asset(const char *photo_id);
@@ -219,6 +220,15 @@ static void ui_draw_rgb565_image_scaled_cropped(int32_t x,
                                                 int32_t crop_y,
                                                 int32_t crop_width,
                                                 int32_t crop_height);
+static void ui_normalize_pixel_text(const char *src, char *dest, size_t dest_size);
+static void ui_fit_pixel_text_to_width(const char *src, char *dest, size_t dest_size, int32_t max_width, uint32_t scale);
+static void ui_wrap_pixel_text_two_lines(const char *src,
+                                         char *line1,
+                                         size_t line1_size,
+                                         char *line2,
+                                         size_t line2_size,
+                                         int32_t max_width,
+                                         uint32_t scale);
 
 static void ui_flush_pending_events(void)
 {
@@ -1334,43 +1344,113 @@ static const uint8_t * ui_pixel_glyph(char c)
 {
     static const uint8_t space[7] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
     static const uint8_t a[7] = { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
+    static const uint8_t b[7] = { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E };
     static const uint8_t c_glyph[7] = { 0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E };
     static const uint8_t d[7] = { 0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E };
     static const uint8_t e_glyph[7] = { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F };
+    static const uint8_t f[7] = { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 };
     static const uint8_t g[7] = { 0x0E, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0F };
+    static const uint8_t h[7] = { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 };
     static const uint8_t i[7] = { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F };
+    static const uint8_t j[7] = { 0x01, 0x01, 0x01, 0x01, 0x11, 0x11, 0x0E };
+    static const uint8_t k[7] = { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 };
     static const uint8_t l[7] = { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F };
     static const uint8_t m[7] = { 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 };
     static const uint8_t n[7] = { 0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11 };
     static const uint8_t o[7] = { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E };
     static const uint8_t p[7] = { 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 };
+    static const uint8_t q[7] = { 0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D };
     static const uint8_t r[7] = { 0x1E, 0x11, 0x11, 0x1E, 0x12, 0x11, 0x11 };
     static const uint8_t s[7] = { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E };
     static const uint8_t t[7] = { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 };
     static const uint8_t u[7] = { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E };
+    static const uint8_t v[7] = { 0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04 };
+    static const uint8_t w[7] = { 0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A };
     static const uint8_t x_glyph[7] = { 0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11 };
+    static const uint8_t y[7] = { 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 };
+    static const uint8_t z[7] = { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F };
+    static const uint8_t zero[7] = { 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E };
+    static const uint8_t one[7] = { 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E };
+    static const uint8_t two[7] = { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F };
+    static const uint8_t three[7] = { 0x1E, 0x01, 0x01, 0x06, 0x01, 0x01, 0x1E };
+    static const uint8_t four[7] = { 0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02 };
+    static const uint8_t five[7] = { 0x1F, 0x10, 0x10, 0x1E, 0x01, 0x01, 0x1E };
+    static const uint8_t six[7] = { 0x0E, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x0E };
+    static const uint8_t seven[7] = { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08 };
+    static const uint8_t eight[7] = { 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E };
+    static const uint8_t nine[7] = { 0x0E, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x0E };
+    static const uint8_t hyphen[7] = { 0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00 };
+    static const uint8_t lparen[7] = { 0x02, 0x04, 0x08, 0x08, 0x08, 0x04, 0x02 };
+    static const uint8_t rparen[7] = { 0x08, 0x04, 0x02, 0x02, 0x02, 0x04, 0x08 };
+    static const uint8_t dot[7] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C };
+    static const uint8_t slash[7] = { 0x01, 0x02, 0x04, 0x08, 0x10, 0x00, 0x00 };
 
     switch (c)
     {
         case 'A': return a;
+        case 'B': return b;
         case 'C': return c_glyph;
         case 'D': return d;
         case 'E': return e_glyph;
+        case 'F': return f;
         case 'G': return g;
+        case 'H': return h;
         case 'I': return i;
+        case 'J': return j;
+        case 'K': return k;
         case 'L': return l;
         case 'M': return m;
         case 'N': return n;
         case 'O': return o;
         case 'P': return p;
+        case 'Q': return q;
         case 'R': return r;
         case 'S': return s;
         case 'T': return t;
         case 'U': return u;
+        case 'V': return v;
+        case 'W': return w;
         case 'X': return x_glyph;
+        case 'Y': return y;
+        case 'Z': return z;
+        case '0': return zero;
+        case '1': return one;
+        case '2': return two;
+        case '3': return three;
+        case '4': return four;
+        case '5': return five;
+        case '6': return six;
+        case '7': return seven;
+        case '8': return eight;
+        case '9': return nine;
+        case '-': return hyphen;
+        case '(': return lparen;
+        case ')': return rparen;
+        case '.': return dot;
+        case '/': return slash;
         case ' ': return space;
         default: return space;
     }
+}
+
+static int32_t ui_pixel_text_width(const char *text, uint32_t scale)
+{
+    size_t len;
+    int32_t width;
+
+    if ((NULL == text) || ('\0' == text[0]))
+    {
+        return 0;
+    }
+
+    len = strlen(text);
+    width = (int32_t) (len * ((5U * scale) + scale));
+    if (width > 0)
+    {
+        width -= (int32_t) scale;
+    }
+
+    return width;
 }
 
 static void ui_draw_pixel_text(int32_t x, int32_t y, const char *text, uint16_t color, uint32_t scale)
@@ -1427,24 +1507,17 @@ static void ui_draw_pixel_text(int32_t x, int32_t y, const char *text, uint16_t 
 
 static void ui_draw_pixel_text_centered(int32_t y, const char *text, uint16_t color, uint32_t scale)
 {
-    size_t len;
-    int32_t width;
-    int32_t x;
+    int32_t width = ui_pixel_text_width(text, scale);
+    int32_t x = (UI_SCREEN_WIDTH - width) / 2;
 
-    if (NULL == text)
-    {
-        return;
-    }
-
-    len = strlen(text);
-    width = (int32_t) (len * ((5U * scale) + scale));
-    if (width > 0)
-    {
-        width -= (int32_t) scale;
-    }
-
-    x = (UI_SCREEN_WIDTH - width) / 2;
     ui_draw_pixel_text(x, y, text, color, scale);
+}
+
+static void ui_draw_pixel_text_centered_in_rect(int32_t x, int32_t width, int32_t y, const char *text, uint16_t color, uint32_t scale)
+{
+    int32_t text_width = ui_pixel_text_width(text, scale);
+    int32_t text_x = x + ((width - text_width) / 2);
+    ui_draw_pixel_text(text_x, y, text, color, scale);
 }
 
 static void ui_draw_text_crisp(int32_t x, int32_t y, const char *text, uint16_t color, uint32_t scale)
@@ -1505,6 +1578,272 @@ static void ui_draw_text_crisp_centered(int32_t y, const char *text, uint16_t co
     int32_t width = ui_text_width(text, scale);
     int32_t x = (UI_SCREEN_WIDTH - width) / 2;
     ui_draw_text_crisp(x, y, text, color, scale);
+}
+
+static char ui_map_codepoint_to_pixel_char(uint32_t codepoint)
+{
+    if ((codepoint >= (uint32_t) 'a') && (codepoint <= (uint32_t) 'z'))
+    {
+        codepoint -= (uint32_t) ('a' - 'A');
+    }
+
+    if (((codepoint >= (uint32_t) 'A') && (codepoint <= (uint32_t) 'Z')) ||
+        ((codepoint >= (uint32_t) '0') && (codepoint <= (uint32_t) '9')) ||
+        ((uint32_t) ' ' == codepoint) ||
+        ((uint32_t) '-' == codepoint) ||
+        ((uint32_t) '(' == codepoint) ||
+        ((uint32_t) ')' == codepoint) ||
+        ((uint32_t) '.' == codepoint) ||
+        ((uint32_t) '/' == codepoint))
+    {
+        return (char) codepoint;
+    }
+
+    switch (codepoint)
+    {
+        case 0x00C0U:
+        case 0x00C1U:
+        case 0x00C2U:
+        case 0x00C3U:
+        case 0x00C4U:
+        case 0x00C5U:
+        case 0x00E0U:
+        case 0x00E1U:
+        case 0x00E2U:
+        case 0x00E3U:
+        case 0x00E4U:
+        case 0x00E5U:
+            return 'A';
+
+        case 0x00C7U:
+        case 0x00E7U:
+            return 'C';
+
+        case 0x00C8U:
+        case 0x00C9U:
+        case 0x00CAU:
+        case 0x00CBU:
+        case 0x00E8U:
+        case 0x00E9U:
+        case 0x00EAU:
+        case 0x00EBU:
+            return 'E';
+
+        case 0x00CCU:
+        case 0x00CDU:
+        case 0x00CEU:
+        case 0x00CFU:
+        case 0x00ECU:
+        case 0x00EDU:
+        case 0x00EEU:
+        case 0x00EFU:
+            return 'I';
+
+        case 0x00D1U:
+        case 0x00F1U:
+            return 'N';
+
+        case 0x00D2U:
+        case 0x00D3U:
+        case 0x00D4U:
+        case 0x00D5U:
+        case 0x00D6U:
+        case 0x00F2U:
+        case 0x00F3U:
+        case 0x00F4U:
+        case 0x00F5U:
+        case 0x00F6U:
+            return 'O';
+
+        case 0x00D9U:
+        case 0x00DAU:
+        case 0x00DBU:
+        case 0x00DCU:
+        case 0x00F9U:
+        case 0x00FAU:
+        case 0x00FBU:
+        case 0x00FCU:
+            return 'U';
+
+        default:
+            return ' ';
+    }
+}
+
+static void ui_trim_trailing_spaces(char *text)
+{
+    size_t len;
+
+    if (NULL == text)
+    {
+        return;
+    }
+
+    len = strlen(text);
+    while ((len > 0U) && (' ' == text[len - 1U]))
+    {
+        len--;
+        text[len] = '\0';
+    }
+}
+
+static void ui_normalize_pixel_text(const char *src, char *dest, size_t dest_size)
+{
+    bool last_was_space = true;
+    size_t out = 0U;
+
+    if ((NULL == dest) || (0U == dest_size))
+    {
+        return;
+    }
+
+    dest[0] = '\0';
+    if (NULL == src)
+    {
+        return;
+    }
+
+    while (('\0' != *src) && ((out + 1U) < dest_size))
+    {
+        char mapped = ui_map_codepoint_to_pixel_char(ui_decode_codepoint(&src));
+
+        if (' ' == mapped)
+        {
+            if (last_was_space)
+            {
+                continue;
+            }
+
+            last_was_space = true;
+            dest[out++] = ' ';
+            continue;
+        }
+
+        last_was_space = false;
+        dest[out++] = mapped;
+    }
+
+    dest[out] = '\0';
+    ui_trim_trailing_spaces(dest);
+}
+
+static void ui_fit_pixel_text_to_width(const char *src, char *dest, size_t dest_size, int32_t max_width, uint32_t scale)
+{
+    size_t len;
+    uint32_t char_width;
+    size_t max_chars;
+
+    if ((NULL == dest) || (0U == dest_size))
+    {
+        return;
+    }
+
+    ui_normalize_pixel_text(src, dest, dest_size);
+    if (ui_pixel_text_width(dest, scale) <= max_width)
+    {
+        return;
+    }
+
+    char_width = 6U * scale;
+    max_chars = (0U == char_width) ? 0U : (size_t) ((max_width + (int32_t) scale) / (int32_t) char_width);
+    if (max_chars < 4U)
+    {
+        max_chars = 4U;
+    }
+    if (max_chars >= dest_size)
+    {
+        max_chars = dest_size - 1U;
+    }
+
+    len = strlen(dest);
+    if (len > max_chars)
+    {
+        len = max_chars;
+    }
+
+    dest[len] = '\0';
+    while ((len > 3U) && (ui_pixel_text_width(dest, scale) > max_width))
+    {
+        len--;
+        dest[len] = '\0';
+    }
+
+    if (len > 3U)
+    {
+        dest[len - 3U] = '.';
+        dest[len - 2U] = '.';
+        dest[len - 1U] = '.';
+    }
+}
+
+static void ui_wrap_pixel_text_two_lines(const char *src,
+                                         char *line1,
+                                         size_t line1_size,
+                                         char *line2,
+                                         size_t line2_size,
+                                         int32_t max_width,
+                                         uint32_t scale)
+{
+    char normalized[NAME_MAX_LEN];
+    size_t len;
+    uint32_t char_width;
+    size_t max_chars;
+    size_t break_at;
+    const char *remaining;
+
+    if ((NULL == line1) || (0U == line1_size) || (NULL == line2) || (0U == line2_size))
+    {
+        return;
+    }
+
+    line1[0] = '\0';
+    line2[0] = '\0';
+    ui_normalize_pixel_text(src, normalized, sizeof(normalized));
+    if ('\0' == normalized[0])
+    {
+        return;
+    }
+
+    if (ui_pixel_text_width(normalized, scale) <= max_width)
+    {
+        ui_copy_text(line1, line1_size, normalized);
+        return;
+    }
+
+    char_width = 6U * scale;
+    max_chars = (0U == char_width) ? 0U : (size_t) ((max_width + (int32_t) scale) / (int32_t) char_width);
+    if (max_chars < 4U)
+    {
+        max_chars = 4U;
+    }
+
+    len = strlen(normalized);
+    break_at = (len < max_chars) ? len : max_chars;
+    while ((break_at > 0U) && (' ' != normalized[break_at]))
+    {
+        break_at--;
+    }
+    if (0U == break_at)
+    {
+        break_at = (len < max_chars) ? len : max_chars;
+    }
+
+    memcpy(line1, normalized, break_at);
+    line1[break_at] = '\0';
+    ui_trim_trailing_spaces(line1);
+
+    remaining = normalized + break_at;
+    while (' ' == *remaining)
+    {
+        remaining++;
+    }
+
+    if ('\0' == *remaining)
+    {
+        return;
+    }
+
+    ui_fit_pixel_text_to_width(remaining, line2, line2_size, max_width, scale);
 }
 
 static void ui_fit_text_to_width(const char *src, char *dest, size_t dest_size, int32_t max_width, uint32_t scale)
@@ -1977,9 +2316,11 @@ static void ui_draw_hero_panel(int32_t x,
                                bool idle_mode)
 {
     char initials[8];
+    char initials_pixel[8];
     const profile_photo_asset_t *photo_asset = ui_find_profile_photo_asset(photo_id);
 
     ui_extract_initials(name, initials, sizeof(initials));
+    ui_normalize_pixel_text(initials, initials_pixel, sizeof(initials_pixel));
 
     if (idle_mode)
     {
@@ -2036,7 +2377,12 @@ static void ui_draw_hero_panel(int32_t x,
     else
     {
         ui_fill_rect(x + 16, y + 16, width - 32, height - 32, accent);
-        ui_draw_text_centered_in_rect(x + 16, width - 32, y + ((height - 28) / 2), initials, UI_COLOR_TEXT, 2U);
+        ui_draw_pixel_text_centered_in_rect(x + 16,
+                                            width - 32,
+                                            y + ((height - (7 * 6)) / 2),
+                                            initials_pixel,
+                                            UI_COLOR_TEXT,
+                                            6U);
     }
 }
 
@@ -2472,11 +2818,21 @@ static void ui_render(const ui_status_t *status, const ui_snapshot_t *snapshot)
 {
     const char *user_text;
     char meta_text[UI_PROFILE_META_MAX_LEN];
-    char user_line[NAME_MAX_LEN];
+    char user_line1[NAME_MAX_LEN];
+    char user_line2[NAME_MAX_LEN];
     char meta_line[UI_PROFILE_META_MAX_LEN];
     char status_line[NAME_MAX_LEN];
+    char context_line[NAME_MAX_LEN];
     bool idle_mode;
+    bool user_large;
+    bool status_large;
     uint16_t hero_color;
+    uint32_t user_scale;
+    uint32_t status_scale;
+    int32_t user_y;
+    int32_t meta_y;
+    int32_t status_y;
+
     if ((NULL == status) || (NULL == snapshot))
     {
         return;
@@ -2486,9 +2842,17 @@ static void ui_render(const ui_status_t *status, const ui_snapshot_t *snapshot)
     user_text = idle_mode ? "Aguardando cartão" : snapshot->last_user;
     hero_color = idle_mode ? UI_COLOR_BRAND : status->accent;
     ui_format_profile_meta(snapshot, meta_text, sizeof(meta_text));
-    ui_fit_text_to_width(user_text, user_line, sizeof(user_line), 220, 1U);
-    ui_fit_text_to_width(meta_text, meta_line, sizeof(meta_line), 220, 1U);
-    ui_fit_text_to_width(status->line2, status_line, sizeof(status_line), 220, 1U);
+    ui_wrap_pixel_text_two_lines(user_text, user_line1, sizeof(user_line1), user_line2, sizeof(user_line2), 228, 2U);
+    ui_fit_pixel_text_to_width(meta_text, meta_line, sizeof(meta_line), 228, 1U);
+    ui_fit_pixel_text_to_width(status->line2, status_line, sizeof(status_line), 228, 1U);
+    ui_fit_pixel_text_to_width(status->context, context_line, sizeof(context_line), 228, 1U);
+    user_large = true;
+    status_large = (ui_pixel_text_width(status_line, 2U) <= 228);
+    user_scale = user_large ? 2U : 1U;
+    status_scale = status_large ? 2U : 1U;
+    user_y = ('\0' != user_line2[0]) ? 238 : 242;
+    meta_y = ('\0' != user_line2[0]) ? 274 : 268;
+    status_y = ('\0' != user_line2[0]) ? 300 : 292;
 
     ui_draw_hero_panel(8, 14, 224, 222, user_text, snapshot->photo_id, hero_color, idle_mode);
 
@@ -2498,16 +2862,20 @@ static void ui_render(const ui_status_t *status, const ui_snapshot_t *snapshot)
     }
 
     ui_fill_rect(0, 236, UI_SCREEN_WIDTH, 84, UI_COLOR_PANEL_ALT);
-    ui_draw_text_crisp_centered(246, user_line, UI_COLOR_TEXT, 1U);
+    ui_draw_pixel_text_centered(user_y, user_line1, UI_COLOR_TEXT, user_scale);
+    if ('\0' != user_line2[0])
+    {
+        ui_draw_pixel_text_centered(258, user_line2, UI_COLOR_TEXT, 1U);
+    }
     if ('\0' != meta_line[0])
     {
-        ui_draw_text_crisp_centered(270, meta_line, UI_COLOR_TEXT, 1U);
+        ui_draw_pixel_text_centered(meta_y, meta_line, UI_COLOR_TEXT, 1U);
     }
-    else if ('\0' != status->context[0])
+    else if ('\0' != context_line[0])
     {
-        ui_draw_text_crisp_centered(270, status->context, UI_COLOR_TEXT, 1U);
+        ui_draw_pixel_text_centered(meta_y, context_line, UI_COLOR_TEXT, 1U);
     }
-    ui_draw_text_crisp_centered(294, status_line, status->accent, 1U);
+    ui_draw_pixel_text_centered(status_y, status_line, status->accent, status_scale);
 }
 
 static void ui_render_screen(const ui_status_t *status, const ui_snapshot_t *snapshot)
