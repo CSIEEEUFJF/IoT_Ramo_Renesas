@@ -8,6 +8,7 @@
 #define STORAGE_ROLE_MAX_LEN         48
 #define STORAGE_CHAPTER_MAX_LEN      48
 #define STORAGE_PHOTO_ID_MAX_LEN     64
+#define STORAGE_RUNTIME_PHOTO_MAX_DIM 160
 
 typedef struct
 {
@@ -34,5 +35,7 @@ bool storage_profile_remove(int index);
 bool storage_persist_now(void);
 bool storage_persist_wait(ULONG timeout_ticks);
 unsigned int storage_persist_status(void);
+bool storage_photo_persist_now(const char *photo_id);
+bool storage_photo_ensure_loaded(const char *photo_id);
 
 #endif /* STORAGE_H */

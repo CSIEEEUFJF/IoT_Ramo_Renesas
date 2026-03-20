@@ -1137,6 +1137,8 @@ static UINT handle_light_upload_commit(NX_HTTP_SERVER *server_ptr, NX_PACKET *pa
 {
     storage_user_profile_t profile;
     int profile_index = -1;
+    bool photo_persist_requested = false;
+    bool profile_persist_requested = false;
 
     if (!net_admin_is_authenticated())
     {
@@ -1177,7 +1179,11 @@ static UINT handle_light_upload_commit(NX_HTTP_SERVER *server_ptr, NX_PACKET *pa
     }
 
     ui_invalidate_profile_cache();
-    net_set_flash_message("<div class='card ok'>Foto HD enviada em 16 partes e vinculada ao perfil.</div>");
+    photo_persist_requested = storage_photo_persist_now(profile.photo_id);
+    profile_persist_requested = storage_persist_now();
+    net_set_flash_message((photo_persist_requested && profile_persist_requested)
+                              ? "<div class='card ok'>Foto HD enviada, vinculada ao perfil e persistencia automatica solicitada.</div>"
+                              : "<div class='card warn'>Foto HD enviada em runtime, mas a persistencia automatica nao confirmou a solicitacao completa.</div>");
 
     net_action_lock();
     net_reset_upload_session();

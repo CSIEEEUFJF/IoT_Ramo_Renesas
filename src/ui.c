@@ -10,7 +10,7 @@
 #define UI_SCREEN_WIDTH        240
 #define UI_SCREEN_HEIGHT       320
 #define UI_UPLOADED_PHOTO_SLOTS 1
-#define UI_UPLOADED_PHOTO_MAX_DIM 160
+#define UI_UPLOADED_PHOTO_MAX_DIM STORAGE_RUNTIME_PHOTO_MAX_DIM
 #define UI_FRAMEBUFFER_STRIDE  256
 #define UI_FONT_SPACING        0
 #define UI_QUEUE_POLL_TICKS    1U
@@ -200,6 +200,7 @@ static void ui_draw_pixel_text_centered(int32_t y, const char *text, uint16_t co
 static void ui_draw_text_crisp(int32_t x, int32_t y, const char *text, uint16_t color, uint32_t scale);
 static void ui_draw_text_crisp_centered(int32_t y, const char *text, uint16_t color, uint32_t scale);
 static const profile_photo_asset_t *ui_find_profile_photo_asset(const char *photo_id);
+static int ui_find_uploaded_photo_slot(const char *photo_id);
 static void ui_lookup_profile_details_for_uid(const char *uid,
                                               char *out_photo_id,
                                               size_t out_photo_size,
@@ -279,6 +280,22 @@ static const profile_photo_asset_t *ui_find_profile_photo_asset(const char *phot
         }
     }
 
+    if (storage_photo_ensure_loaded(photo_id))
+    {
+        for (size_t i = 0U; i < UI_UPLOADED_PHOTO_SLOTS; i++)
+        {
+            if (g_ui_uploaded_photos[i].valid &&
+                (0 == strcmp(photo_id, g_ui_uploaded_photos[i].photo_id)))
+            {
+                runtime_asset.photo_id = g_ui_uploaded_photos[i].photo_id;
+                runtime_asset.width = g_ui_uploaded_photos[i].width;
+                runtime_asset.height = g_ui_uploaded_photos[i].height;
+                runtime_asset.pixels = g_ui_uploaded_photos[i].pixels;
+                return &runtime_asset;
+            }
+        }
+    }
+
     return NULL;
 }
 
@@ -301,6 +318,34 @@ bool ui_has_uploaded_photo(const char *photo_id)
     return false;
 }
 
+bool ui_get_uploaded_photo_info(const char *photo_id, uint16_t *out_width, uint16_t *out_height)
+{
+    int slot;
+
+    if ((NULL == photo_id) || ('\0' == photo_id[0]))
+    {
+        return false;
+    }
+
+    slot = ui_find_uploaded_photo_slot(photo_id);
+    if (slot < 0)
+    {
+        return false;
+    }
+
+    if (NULL != out_width)
+    {
+        *out_width = g_ui_uploaded_photos[slot].width;
+    }
+
+    if (NULL != out_height)
+    {
+        *out_height = g_ui_uploaded_photos[slot].height;
+    }
+
+    return true;
+}
+
 static int ui_find_uploaded_photo_slot(const char *photo_id)
 {
     if ((NULL == photo_id) || ('\0' == photo_id[0]))
@@ -318,6 +363,45 @@ static int ui_find_uploaded_photo_slot(const char *photo_id)
     }
 
     return -1;
+}
+
+bool ui_copy_uploaded_photo_rows_rgb565(const char *photo_id,
+                                        uint16_t start_row,
+                                        uint16_t row_count,
+                                        uint16_t *out_pixels,
+                                        size_t max_pixels)
+{
+    int slot;
+    ui_uploaded_photo_slot_t *source;
+    size_t pixel_count;
+
+    if ((NULL == photo_id) || ('\0' == photo_id[0]) || (NULL == out_pixels))
+    {
+        return false;
+    }
+
+    slot = ui_find_uploaded_photo_slot(photo_id);
+    if (slot < 0)
+    {
+        return false;
+    }
+
+    source = &g_ui_uploaded_photos[slot];
+    if ((0U == row_count) || ((uint32_t) start_row + (uint32_t) row_count > source->height))
+    {
+        return false;
+    }
+
+    pixel_count = (size_t) source->width * row_count;
+    if (pixel_count > max_pixels)
+    {
+        return false;
+    }
+
+    memcpy(out_pixels,
+           &source->pixels[(size_t) start_row * source->width],
+           pixel_count * sizeof(uint16_t));
+    return true;
 }
 
 void ui_invalidate_profile_cache(void)
