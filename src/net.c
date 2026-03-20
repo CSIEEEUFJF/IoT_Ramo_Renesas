@@ -402,6 +402,57 @@ static void sanitize_text(char *text)
     text[write_index] = '\0';
 }
 
+static void net_html_escape(const char *src, char *out, size_t out_size)
+{
+    size_t offset = 0U;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    out[0] = '\0';
+    if (NULL == src)
+    {
+        return;
+    }
+
+    while (('\0' != *src) && (offset + 1U < out_size))
+    {
+        const char *replacement = NULL;
+
+        switch (*src)
+        {
+            case '&': replacement = "&amp;"; break;
+            case '<': replacement = "&lt;"; break;
+            case '>': replacement = "&gt;"; break;
+            case '"': replacement = "&quot;"; break;
+            case '\'': replacement = "&#39;"; break;
+            default: break;
+        }
+
+        if (NULL != replacement)
+        {
+            size_t replacement_len = strlen(replacement);
+            if ((offset + replacement_len) >= out_size)
+            {
+                break;
+            }
+
+            memcpy(&out[offset], replacement, replacement_len);
+            offset += replacement_len;
+        }
+        else
+        {
+            out[offset++] = *src;
+        }
+
+        src++;
+    }
+
+    out[offset] = '\0';
+}
+
 static bool query_get_value(const char *query, const char *key, char *out, size_t out_size)
 {
     size_t key_len = strlen(key);
@@ -491,6 +542,37 @@ static int query_get_int(const char *query, const char *key, int default_value)
     }
 
     value = strtol(value_text, &end_ptr, 10);
+    if ((NULL == end_ptr) || ('\0' != *end_ptr))
+    {
+        return default_value;
+    }
+
+    return (int) value;
+}
+
+static int net_path_get_index_after_prefix(const char *path, const char *prefix, int default_value)
+{
+    const char *suffix;
+    char *end_ptr = NULL;
+    long value;
+
+    if ((NULL == path) || (NULL == prefix))
+    {
+        return default_value;
+    }
+
+    if (0 != strncmp(path, prefix, strlen(prefix)))
+    {
+        return default_value;
+    }
+
+    suffix = path + strlen(prefix);
+    if ('\0' == *suffix)
+    {
+        return default_value;
+    }
+
+    value = strtol(suffix, &end_ptr, 10);
     if ((NULL == end_ptr) || ('\0' != *end_ptr))
     {
         return default_value;
@@ -2223,8 +2305,8 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
     }
     has_prev = (page > 0);
     has_next = (end_index < user_count);
-    snprintf(prev_href, sizeof(prev_href), "/admin_profiles?page=%d", has_prev ? (page - 1) : 0);
-    snprintf(next_href, sizeof(next_href), "/admin_profiles?page=%d", page + 1);
+    snprintf(prev_href, sizeof(prev_href), "/admin_profiles/%d", has_prev ? (page - 1) : 0);
+    snprintf(next_href, sizeof(next_href), "/admin_profiles/%d", page + 1);
     if (has_prev)
     {
         snprintf(prev_button, sizeof(prev_button), "<a class='small secondary' href='%s'>Anterior</a>", prev_href);
@@ -2261,7 +2343,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
             written = snprintf(&rows[rows_len],
                                sizeof(rows) - rows_len,
                                "<tr><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>"
-                               "<a class='small' href='/profile_form?edit=%d'>Editar</a> "
+                               "<a class='small' href='/profile_form/%d'>Editar</a> "
                                "<a class='small danger' href='/remove_user?index=%d'>Remover</a>"
                                "</td></tr>",
                                i,
@@ -2325,6 +2407,11 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
     static char html[8192];
     static char photo_options[PHOTO_OPTIONS_BUFFER_SIZE];
     static storage_user_profile_t profile_snapshot[STORAGE_MAX_USERS];
+    static char form_name_html[NAME_MAX_LEN * 6];
+    static char form_role_html[STORAGE_ROLE_MAX_LEN * 6];
+    static char form_chapter_html[STORAGE_CHAPTER_MAX_LEN * 6];
+    static char form_cards_html[FORM_CARDS_BUFFER_SIZE * 6];
+    static char form_photo_html[STORAGE_PHOTO_ID_MAX_LEN * 6];
     storage_user_profile_t form_profile;
     char form_cards[FORM_CARDS_BUFFER_SIZE];
     const char *current_photo_status = "-";
@@ -2349,7 +2436,12 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
     last_uid[0] = '\0';
     user_count = storage_profile_snapshot_nowait(profile_snapshot, STORAGE_MAX_USERS);
 
-    if ((edit_index >= 0) && (edit_index < user_count))
+    if ((edit_index >= 0) && storage_profile_get(edit_index, &form_profile))
+    {
+        editing = true;
+        profile_cards_to_csv(&form_profile, form_cards, sizeof(form_cards));
+    }
+    else if ((edit_index >= 0) && (edit_index < user_count))
     {
         form_profile = profile_snapshot[edit_index];
         editing = true;
@@ -2375,6 +2467,12 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
         current_photo_status = net_photo_asset_exists(form_profile.photo_id) ? "asset encontrado" : "asset nao encontrado";
     }
 
+    net_html_escape(form_profile.name, form_name_html, sizeof(form_name_html));
+    net_html_escape(form_profile.role, form_role_html, sizeof(form_role_html));
+    net_html_escape(form_profile.chapter, form_chapter_html, sizeof(form_chapter_html));
+    net_html_escape(form_cards, form_cards_html, sizeof(form_cards_html));
+    net_html_escape(form_profile.photo_id, form_photo_html, sizeof(form_photo_html));
+
     snprintf(html,
              sizeof(html),
              "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -2392,7 +2490,7 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
              "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/admin_profiles'>Perfis</a><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
              "%s"
              "%s"
-             "<form action='/add_user' method='get'>"
+             "<form action='/add_user' method='post'>"
              "<input type='hidden' name='edit' value='%d'>"
              "<label>Nome</label><input type='text' name='name' maxlength='31' value='%s' placeholder='Nome do usuario'>"
              "<label>Cargo</label><input type='text' name='role' maxlength='47' value='%s' placeholder='Ex.: Presidente'>"
@@ -2410,11 +2508,11 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
                  ? ""
                  : "<p class='warn'>Os perfis ainda nao foram carregados na RAM. Se necessario, volte para a home e tente novamente em alguns segundos.</p>",
              editing ? edit_index : -1,
-             form_profile.name,
-             form_profile.role,
-             form_profile.chapter,
-             form_cards,
-             form_profile.photo_id,
+             form_name_html,
+             form_role_html,
+             form_chapter_html,
+             form_cards_html,
+             form_photo_html,
              photo_options,
              (unsigned int) PROFILE_PHOTO_ID_COUNT,
              current_photo_status);
@@ -2446,7 +2544,10 @@ static UINT render_light_import_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
 static UINT render_light_upload_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
 {
     static char html[4096];
+    static char profile_options[PROFILE_OPTIONS_BUFFER_SIZE];
+    static storage_user_profile_t profile_snapshot[STORAGE_MAX_USERS];
     const char *message_to_render = message;
+    int user_count;
 
     if (!net_admin_is_authenticated())
     {
@@ -2459,21 +2560,24 @@ static UINT render_light_upload_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
         g_net_flash_message[0] = '\0';
     }
 
+    user_count = storage_profile_snapshot_nowait(profile_snapshot, STORAGE_MAX_USERS);
+    net_build_profile_options(profile_snapshot, user_count, profile_options, sizeof(profile_options));
+
     snprintf(html,
              sizeof(html),
              "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
              "<style>"
              "body{font-family:Arial,sans-serif;margin:16px;background:#f5f7fb;color:#18212d;}"
              ".card{max-width:560px;background:#fff;padding:16px;border-radius:14px;box-shadow:0 6px 20px rgba(0,0,0,.08);}"
-             "input,button{width:100%%;box-sizing:border-box;font-size:16px;padding:10px;margin:8px 0;}"
+             "input,select,button{width:100%%;box-sizing:border-box;font-size:16px;padding:10px;margin:8px 0;}"
              "a{display:inline-block;margin-right:8px;margin-bottom:8px;}"
              ".m{color:#5e6c84;font-size:14px;}"
              "</style></head><body><div class='card'>"
              "<h2>Upload de foto</h2>"
              "<p><a href='/'>Inicio</a><a href='/admin_profiles'>Perfis</a><a href='/admin_profiles'>Voltar</a></p>"
              "%s"
-             "<p class='m'>Foto HD em runtime via 16 blocos reais de 40x40. Use o indice exibido em Perfis.</p>"
-             "<label>Indice do perfil</label><input id='photo-profile' type='number' min='0' step='1' placeholder='Ex.: 0'>"
+             "<p class='m'>Foto HD em runtime via 16 blocos reais de 40x40. Escolha o perfil alvo abaixo.</p>"
+             "<label>Perfil</label><select id='photo-profile'>%s</select>"
              "<label>Arquivo de imagem</label><input id='photo-file' type='file' accept='image/*'>"
              "<p id='upload-status' class='m'>Selecione uma imagem para preparar o envio.</p>"
              "<button id='upload-submit' type='button' disabled>Enviar foto HD</button>"
@@ -2489,6 +2593,7 @@ static UINT render_light_upload_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
              "<script src='/upload_photo_script'></script>"
              "</div></body></html>",
              (NULL != message_to_render) ? message_to_render : "",
+             ('\0' != profile_options[0]) ? profile_options : "<option value=''>Nenhum perfil disponivel</option>",
              (unsigned int) UPLOAD_IMAGE_DIM,
              (unsigned int) UPLOAD_IMAGE_DIM,
              (unsigned int) UPLOAD_IMAGE_DIM,
@@ -2523,7 +2628,7 @@ static UINT render_light_upload_script(NX_HTTP_SERVER *server_ptr, NX_PACKET *pa
              "function next(){if(!state)return;if(state.tile>=state.tiles.length){state.phase='commit';stageTile.value='0';stageData.value='';post('/upload_photo_commit');return;}stageTile.value=String(state.tile);stageData.value=state.tiles[state.tile];state.phase='tile';status.textContent='Enviando bloco '+(state.tile+1)+'/'+state.tiles.length+'...';post('/upload_photo_chunk');}"
              "uploadTarget.addEventListener('load',function(){if(!state)return;let txt='';try{txt=(uploadTarget.contentDocument&&uploadTarget.contentDocument.body&&uploadTarget.contentDocument.body.textContent||'').trim();}catch(e){txt='';}if(txt!=='OK'){status.textContent='Falha no upload: '+(txt||'resposta invalida');submit.disabled=false;state=null;return;}if(state.phase==='begin'){next();return;}if(state.phase==='tile'){state.tile++;next();return;}status.textContent='Foto enviada. Redirecionando...';state=null;window.location='/admin_profiles';});"
              "input.addEventListener('change',function(){const file=input.files&&input.files[0];if(!file){submit.disabled=true;delete submit.dataset.tiles;status.textContent='Selecione uma imagem para preparar o envio.';return;}const img=new Image();img.onload=function(){const c=document.createElement('canvas');c.width=dim;c.height=dim;const ctx=c.getContext('2d');ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';const crop=Math.min(img.width,img.height);const sx=(img.width-crop)/2;const sy=(img.height-crop)/2;ctx.drawImage(img,sx,sy,crop,crop,0,0,dim,dim);const tiles=[];for(let ty=0;ty<dim;ty+=tileDim){for(let tx=0;tx<dim;tx+=tileDim){tiles.push(tile(ctx,tx,ty));}}submit.dataset.tiles=JSON.stringify(tiles);submit.disabled=false;status.textContent='Imagem pronta para envio em 16 blocos de 40x40.';URL.revokeObjectURL(img.src);};img.src=URL.createObjectURL(file);});"
-             "submit.addEventListener('click',function(){const idx=(profile.value||'').trim();if(!idx){status.textContent='Informe o indice do perfil.';return;}if(!submit.dataset.tiles){status.textContent='Selecione uma imagem primeiro.';return;}if(state){status.textContent='Ja existe um upload em andamento.';return;}submit.disabled=true;stageProfile.value=idx;stageWidth.value=String(dim);stageHeight.value=String(dim);stageTile.value='0';stageData.value='';state={tiles:JSON.parse(submit.dataset.tiles),tile:0,phase:'begin'};status.textContent='Iniciando upload em 16 blocos...';post('/upload_photo_begin');});"
+             "submit.addEventListener('click',function(){const idx=(profile.value||'').trim();if(!idx){status.textContent='Selecione um perfil antes de enviar.';return;}if(!submit.dataset.tiles){status.textContent='Selecione uma imagem primeiro.';return;}if(state){status.textContent='Ja existe um upload em andamento.';return;}submit.disabled=true;stageProfile.value=idx;stageWidth.value=String(dim);stageHeight.value=String(dim);stageTile.value='0';stageData.value='';state={tiles:JSON.parse(submit.dataset.tiles),tile:0,phase:'begin'};status.textContent='Iniciando upload em 16 blocos...';post('/upload_photo_begin');});"
              "})();",
              (unsigned int) UPLOAD_IMAGE_DIM,
              (unsigned int) UPLOAD_TILE_DIM);
@@ -2645,7 +2750,7 @@ static UINT handle_light_add_user(NX_HTTP_SERVER *server_ptr, const char *query)
     {
         if (edit_index >= 0)
         {
-            snprintf(location, sizeof(location), "/profile_form?edit=%d", edit_index);
+            snprintf(location, sizeof(location), "/profile_form/%d", edit_index);
         }
         else
         {
@@ -2681,7 +2786,7 @@ static UINT handle_light_add_user(NX_HTTP_SERVER *server_ptr, const char *query)
 
     if (edit_index >= 0)
     {
-        snprintf(location, sizeof(location), "/profile_form?edit=%d", edit_index);
+        snprintf(location, sizeof(location), "/profile_form/%d", edit_index);
     }
     else
     {
@@ -2847,9 +2952,23 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         {
             return render_light_profiles_page(server_ptr, packet_ptr, NULL, query_get_int(query, "page", 0));
         }
+        if (0 == strncmp(path, "/admin_profiles/", strlen("/admin_profiles/")))
+        {
+            return render_light_profiles_page(server_ptr,
+                                              packet_ptr,
+                                              NULL,
+                                              net_path_get_index_after_prefix(path, "/admin_profiles/", 0));
+        }
         if (0 == strcmp(path, "/profile_form"))
         {
             return render_light_profile_form_page(server_ptr, packet_ptr, NULL, query_get_int(query, "edit", -1));
+        }
+        if (0 == strncmp(path, "/profile_form/", strlen("/profile_form/")))
+        {
+            return render_light_profile_form_page(server_ptr,
+                                                  packet_ptr,
+                                                  NULL,
+                                                  net_path_get_index_after_prefix(path, "/profile_form/", -1));
         }
         if (0 == strcmp(path, "/upload_photo"))
         {
