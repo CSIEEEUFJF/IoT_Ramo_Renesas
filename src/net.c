@@ -102,6 +102,7 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define FORM_PHOTO_BUFFER_SIZE    64
 #define ROWS_BUFFER_SIZE         8192
 #define PROFILES_PAGE_SIZE          8
+#define ACCESS_LOG_PAGE_SIZE       10
 #define PHOTO_OPTIONS_BUFFER_SIZE 2048
 #define PROFILE_OPTIONS_BUFFER_SIZE 2048
 #define UPLOAD_IMAGE_DIM        160U
@@ -2835,22 +2836,76 @@ static UINT render_light_upload_script(NX_HTTP_SERVER *server_ptr, NX_PACKET *pa
     return send_javascript_response(server_ptr, packet_ptr, script);
 }
 
-static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
+static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr,
+                                         NX_PACKET *packet_ptr,
+                                         const char *message,
+                                         int page)
 {
-    static char body[HTML_BUFFER_SIZE];
-    static char rows[8192];
+    static char html[8192];
+    static char rows[4096];
     static app_access_log_entry_t entries[ACCESS_LOG_SIZE];
+    const char *message_to_render = message;
     char timestamp[32];
     size_t rows_len = 0U;
     int count;
+    int start_offset;
+    int page_items;
+    bool has_prev;
+    bool has_next;
+    char prev_button[96];
+    char next_button[96];
+    char prev_href[32];
+    char next_href[32];
 
     if (!net_admin_is_authenticated())
     {
         return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para ver o log de acesso.</div>");
     }
 
+    if ((NULL == message_to_render) && ('\0' != g_net_flash_message[0]))
+    {
+        message_to_render = g_net_flash_message;
+        g_net_flash_message[0] = '\0';
+    }
+
+    if (page < 0)
+    {
+        page = 0;
+    }
+
     count = app_access_log_snapshot(entries, ACCESS_LOG_SIZE);
     rows[0] = '\0';
+    start_offset = page * ACCESS_LOG_PAGE_SIZE;
+    if ((count > 0) && (start_offset >= count))
+    {
+        page = 0;
+        start_offset = 0;
+    }
+    page_items = (count > start_offset) ? (count - start_offset) : 0;
+    if (page_items > ACCESS_LOG_PAGE_SIZE)
+    {
+        page_items = ACCESS_LOG_PAGE_SIZE;
+    }
+    has_prev = (page > 0);
+    has_next = ((start_offset + page_items) < count);
+    snprintf(prev_href, sizeof(prev_href), "/access_log/%d", has_prev ? (page - 1) : 0);
+    snprintf(next_href, sizeof(next_href), "/access_log/%d", page + 1);
+    if (has_prev)
+    {
+        snprintf(prev_button, sizeof(prev_button), "<a class='small secondary' href='%s'>Mais novos</a>", prev_href);
+    }
+    else
+    {
+        prev_button[0] = '\0';
+    }
+    if (has_next)
+    {
+        snprintf(next_button, sizeof(next_button), "<a class='small' href='%s'>Mais antigos</a>", next_href);
+    }
+    else
+    {
+        next_button[0] = '\0';
+    }
 
     if (count <= 0)
     {
@@ -2859,16 +2914,17 @@ static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *
     }
     else
     {
-        for (int i = count - 1; i >= 0; i--)
+        for (int item = 0; item < page_items; item++)
         {
-            net_format_access_log_timestamp(&entries[i], timestamp, sizeof(timestamp));
+            int entry_index = count - 1 - (start_offset + item);
+            net_format_access_log_timestamp(&entries[entry_index], timestamp, sizeof(timestamp));
             int written = snprintf(&rows[rows_len],
                                    sizeof(rows) - rows_len,
                                    "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
                                    timestamp,
-                                   net_event_type_text(entries[i].type),
-                                   ('\0' != entries[i].data[0]) ? entries[i].data : "-",
-                                   ('\0' != entries[i].user[0]) ? entries[i].user : "-");
+                                   net_event_type_text(entries[entry_index].type),
+                                   ('\0' != entries[entry_index].data[0]) ? entries[entry_index].data : "-",
+                                   ('\0' != entries[entry_index].user[0]) ? entries[entry_index].user : "-");
             if ((written <= 0) || ((size_t) written >= (sizeof(rows) - rows_len)))
             {
                 break;
@@ -2877,13 +2933,35 @@ static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *
         }
     }
 
-    snprintf(body,
-             sizeof(body),
+    snprintf(html,
+             sizeof(html),
+             "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+             "<style>"
+             "body{font-family:Arial,sans-serif;background:#f5f7fb;color:#18212d;margin:0;padding:18px;}"
+             ".wrap{max-width:980px;margin:0 auto;}"
+             ".card{background:#fff;border-radius:16px;padding:18px;margin-bottom:16px;box-shadow:0 8px 26px rgba(0,0,0,.08);}"
+             ".actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;}"
+             ".small{display:inline-block;text-decoration:none;border:none;border-radius:10px;padding:12px 16px;background:#0b6ef3;color:#fff;}"
+             ".secondary{background:#6b7a90;}.muted{color:#607086;font-size:14px;}.warn{color:#b26a00;}.ok{color:#137333;}"
+             ".table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}table{width:100%%;border-collapse:collapse;}th,td{padding:10px;border-bottom:1px solid #e7ebf2;text-align:left;vertical-align:top;}"
+             "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.actions{flex-direction:column;align-items:stretch;gap:8px;}.small{display:block;width:100%%;box-sizing:border-box;text-align:center;}.table-wrap{margin:0 -4px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}th,td{padding:8px;font-size:13px;white-space:nowrap;}}"
+             "</style></head><body><div class='wrap'><div class='card'>"
+             "<h1>Log de acesso</h1>"
+             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/admin_profiles'>Perfis</a><a class='small secondary' href='/'>Voltar</a></div>"
+             "%s"
              "<p class='muted'>Log de acesso com timestamp por NTP e persistencia na QSPI.</p>"
-             "<div class='table-wrap'><table><tr><th>Timestamp</th><th>Evento</th><th>Dado</th><th>Usuario</th></tr>%s</table></div>",
-             rows);
+             "<p class='muted'>Mostrando %d evento(s) nesta pagina, de um total de %d.</p>"
+             "<div class='table-wrap'><table><tr><th>Timestamp</th><th>Evento</th><th>Dado</th><th>Usuario</th></tr>%s</table></div>"
+             "<div class='actions'>%s%s</div>"
+             "</div></div></body></html>",
+             (NULL != message_to_render) ? message_to_render : "",
+             page_items,
+             count,
+             rows,
+             prev_button,
+             next_button);
 
-    return render_light_shell(server_ptr, packet_ptr, "Log de acesso", body, message);
+    return send_html_response(server_ptr, packet_ptr, html);
 }
 
 static UINT render_light_door_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
@@ -3195,7 +3273,14 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         }
         if (0 == strcmp(path, "/access_log"))
         {
-            return render_light_access_log_page(server_ptr, packet_ptr, NULL);
+            return render_light_access_log_page(server_ptr, packet_ptr, NULL, query_get_int(query, "page", 0));
+        }
+        if (0 == strncmp(path, "/access_log/", strlen("/access_log/")))
+        {
+            return render_light_access_log_page(server_ptr,
+                                                packet_ptr,
+                                                NULL,
+                                                net_path_get_index_after_prefix(path, "/access_log/", 0));
         }
         if (0 == strcmp(path, "/door"))
         {
