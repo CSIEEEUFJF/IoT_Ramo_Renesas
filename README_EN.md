@@ -34,7 +34,8 @@ Working today:
 Important points about the current state:
 
 - network runs in `HTTP only` mode
-- local and web admin authentication uses PIN `1234`
+- local and web admin authentication accepts PINs from administrator profiles
+- PIN `1234` remains enabled as the default fallback
 - door flow records opening only, not closing
 - screen dims visual brightness to about `30%` after `60s` of inactivity
 - onboard LEDs exposed by BSP boot in OFF state
@@ -241,7 +242,9 @@ Note:
 
 1. On idle screen, user touches the gear icon.
 2. UI opens numeric keyboard.
-3. Current local PIN is `1234`.
+3. UI accepts:
+   - the PIN of a registered administrator profile
+   - the default fallback PIN `1234`
 4. If PIN is correct, UI enters network/IP screen.
 5. This screen shows:
    - DHCP state
@@ -255,7 +258,9 @@ Note:
 ## 6.3 Web admin flow
 
 1. User opens the board HTTP interface.
-2. Logs in with PIN `1234`.
+2. Logs in with:
+   - the PIN of a registered administrator profile
+   - or the fallback PIN `1234`
 3. Admin session remains valid for `10 minutes`.
 4. From the session, user can:
    - list profiles
@@ -328,7 +333,11 @@ Current parameters:
 - PIN: `1234`
 - session validity: `10 minutes`
 
-Implemented in [`src/net.c`](./src/net.c) with `WEB_ADMIN_PIN` and `WEB_ADMIN_SESSION_TICKS`.
+Implemented in [`src/net.c`](./src/net.c) with:
+
+- validation against persisted administrator profiles
+- `WEB_ADMIN_PIN` fallback
+- session timeout in `WEB_ADMIN_SESSION_TICKS`
 
 ## 8. User data model
 
@@ -341,6 +350,8 @@ typedef struct
     char role[STORAGE_ROLE_MAX_LEN];
     char chapter[STORAGE_CHAPTER_MAX_LEN];
     char photo_id[STORAGE_PHOTO_ID_MAX_LEN];
+    bool is_admin;
+    char admin_pin[STORAGE_ADMIN_PIN_MAX_LEN];
     unsigned int card_count;
     char cards[STORAGE_MAX_CARDS_PER_USER][UID_MAX_LEN];
 } storage_user_profile_t;
@@ -392,6 +403,8 @@ Current approximate format:
     "role": "ROLE",
     "chapter": "CHAPTER",
     "photo_id": "photo_or_asset",
+    "is_admin": true,
+    "admin_pin": "1234",
     "cards_csv": "UID1,UID2",
     "cards": ["UID1", "UID2"]
   }
@@ -401,6 +414,8 @@ Current approximate format:
 Notes:
 
 - `uid` exists for compatibility with legacy flows
+- `is_admin` marks whether the profile can authenticate as administrator
+- `admin_pin` stores the administrator numeric 4-digit PIN
 - `cards_csv` was kept to reinforce parser compatibility
 - `cards` is the richer format
 

@@ -34,7 +34,8 @@ Funciona hoje:
 Pontos importantes do estado atual:
 
 - a rede opera em modo `HTTP only`
-- a autenticacao admin local e web usa PIN `1234`
+- a autenticacao admin local e web aceita PINs de perfis administradores
+- o PIN `1234` continua ativo como fallback padrao
 - o fluxo de porta registra somente abertura, nao fechamento
 - a tela reduz o brilho visual para cerca de `30%` apos `60s` de inatividade
 - os LEDs onboard expostos pelo BSP sobem apagados
@@ -241,7 +242,9 @@ Observacao:
 
 1. Na tela de espera, o usuario toca na engrenagem.
 2. A UI abre o teclado numerico.
-3. O PIN local atual eh `1234`.
+3. A UI aceita:
+   - o PIN de um perfil administrador cadastrado
+   - o PIN fallback padrao `1234`
 4. Se o PIN estiver correto, a UI entra na tela de rede/IP.
 5. Essa tela mostra:
    - estado de DHCP
@@ -255,7 +258,9 @@ Observacao:
 ## 6.3 Fluxo admin web
 
 1. O usuario acessa a interface HTTP da placa.
-2. Faz login com PIN `1234`.
+2. Faz login com:
+   - o PIN de um perfil administrador cadastrado
+   - ou o PIN fallback `1234`
 3. A sessao admin fica valida por `10 minutos`.
 4. A partir da sessao, pode:
    - listar perfis
@@ -328,7 +333,11 @@ Parametros atuais:
 - PIN: `1234`
 - validade da sessao: `10 minutos`
 
-Implementado em [`src/net.c`](./src/net.c) com `WEB_ADMIN_PIN` e `WEB_ADMIN_SESSION_TICKS`.
+Implementado em [`src/net.c`](./src/net.c) com:
+
+- validacao por perfis administradores persistidos
+- fallback `WEB_ADMIN_PIN`
+- timeout de sessao em `WEB_ADMIN_SESSION_TICKS`
 
 ## 8. Modelo de dados de usuario
 
@@ -341,6 +350,8 @@ typedef struct
     char role[STORAGE_ROLE_MAX_LEN];
     char chapter[STORAGE_CHAPTER_MAX_LEN];
     char photo_id[STORAGE_PHOTO_ID_MAX_LEN];
+    bool is_admin;
+    char admin_pin[STORAGE_ADMIN_PIN_MAX_LEN];
     unsigned int card_count;
     char cards[STORAGE_MAX_CARDS_PER_USER][UID_MAX_LEN];
 } storage_user_profile_t;
@@ -392,6 +403,8 @@ Formato atual aproximado:
     "role": "CARGO",
     "chapter": "CAPITULO",
     "photo_id": "foto_ou_asset",
+    "is_admin": true,
+    "admin_pin": "1234",
     "cards_csv": "UID1,UID2",
     "cards": ["UID1", "UID2"]
   }
@@ -401,6 +414,8 @@ Formato atual aproximado:
 Observacoes:
 
 - `uid` existe por compatibilidade com fluxos antigos
+- `is_admin` marca se o perfil pode autenticar como administrador
+- `admin_pin` guarda o PIN numerico de 4 digitos do administrador
 - `cards_csv` foi mantido para reforcar compatibilidade do parser
 - `cards` eh o formato mais rico
 

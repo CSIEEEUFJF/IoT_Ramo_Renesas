@@ -2119,7 +2119,8 @@ static void ui_pin_set_digit(ui_status_t *status, char digit)
     }
 
     if ((status->pin_count == UI_PIN_LENGTH)
-        && (0 == strncmp(status->pin_buffer, UI_ADMIN_PIN, UI_PIN_LENGTH)))
+        && (storage_admin_pin_valid(status->pin_buffer)
+            || (0 == strncmp(status->pin_buffer, UI_ADMIN_PIN, UI_PIN_LENGTH))))
     {
         ui_enter_enroll_wait(status);
     }
@@ -2152,7 +2153,8 @@ static void ui_pin_submit(ui_status_t *status)
     }
 
     if ((status->pin_count == UI_PIN_LENGTH)
-        && (0 == strncmp(status->pin_buffer, UI_ADMIN_PIN, UI_PIN_LENGTH)))
+        && (storage_admin_pin_valid(status->pin_buffer)
+            || (0 == strncmp(status->pin_buffer, UI_ADMIN_PIN, UI_PIN_LENGTH))))
     {
         ui_enter_enroll_wait(status);
         return;

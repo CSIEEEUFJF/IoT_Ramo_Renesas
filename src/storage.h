@@ -8,6 +8,8 @@
 #define STORAGE_ROLE_MAX_LEN         48
 #define STORAGE_CHAPTER_MAX_LEN      48
 #define STORAGE_PHOTO_ID_MAX_LEN     64
+#define STORAGE_ADMIN_PIN_LEN         4
+#define STORAGE_ADMIN_PIN_MAX_LEN    (STORAGE_ADMIN_PIN_LEN + 1)
 #define STORAGE_RUNTIME_PHOTO_MAX_DIM 160
 
 typedef struct
@@ -17,6 +19,7 @@ typedef struct
     char chapter[STORAGE_CHAPTER_MAX_LEN];
     char photo_id[STORAGE_PHOTO_ID_MAX_LEN];
     bool is_admin;
+    char admin_pin[STORAGE_ADMIN_PIN_MAX_LEN];
     unsigned int card_count;
     char cards[STORAGE_MAX_CARDS_PER_USER][UID_MAX_LEN];
 } storage_user_profile_t;
@@ -33,6 +36,7 @@ bool storage_profile_get(int index, storage_user_profile_t *out_profile);
 bool storage_profile_find_by_uid(const char *uid_str, storage_user_profile_t *out_profile);
 bool storage_profile_upsert(const storage_user_profile_t *profile, int edit_index);
 bool storage_profile_remove(int index);
+bool storage_admin_pin_valid(const char *pin);
 bool storage_persist_now(void);
 bool storage_persist_wait(ULONG timeout_ticks);
 unsigned int storage_persist_status(void);

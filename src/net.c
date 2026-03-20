@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 extern NX_IP g_ip0;
 extern NX_HTTP_SERVER g_http_server0;
@@ -104,7 +105,7 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define PROFILES_PAGE_SIZE          8
 #define ACCESS_LOG_PAGE_SIZE       10
 #define PHOTO_OPTIONS_BUFFER_SIZE 2048
-#define PROFILE_OPTIONS_BUFFER_SIZE 2048
+#define PROFILE_OPTIONS_BUFFER_SIZE 4096
 #define UPLOAD_IMAGE_DIM        160U
 #define UPLOAD_TILE_DIM         40U
 #define UPLOAD_TILE_COUNT_X     (UPLOAD_IMAGE_DIM / UPLOAD_TILE_DIM)
@@ -310,8 +311,9 @@ static void net_build_profile_options(const storage_user_profile_t *profiles, in
 
         written = snprintf(&out[offset],
                            out_size - offset,
-                           "<option value='%d'>%s</option>",
+                           "<option value='%d'>%s%s</option>",
                            i,
+                           profiles[i].is_admin ? "[ADM] " : "",
                            profiles[i].name);
 
         if ((written < 0) || ((size_t) written >= (out_size - offset)))
@@ -1005,6 +1007,8 @@ static bool profile_from_query(const char *query, storage_user_profile_t *profil
     (void) query_get_value(query, "role", profile->role, sizeof(profile->role));
     (void) query_get_value(query, "chapter", profile->chapter, sizeof(profile->chapter));
     (void) query_get_value(query, "photo_id", profile->photo_id, sizeof(profile->photo_id));
+    profile->is_admin = (query_get_int(query, "is_admin", 0) != 0);
+    (void) query_get_value(query, "admin_pin", profile->admin_pin, sizeof(profile->admin_pin));
 
     if (!query_get_value(query, "cards", cards_text, sizeof(cards_text)))
     {
@@ -1102,6 +1106,66 @@ static bool import_extract_json_string(const char *object_start,
     }
 
     return true;
+}
+
+static bool import_extract_json_bool(const char *object_start,
+                                     const char *object_end,
+                                     const char *key,
+                                     bool default_value)
+{
+    const char *found;
+    const char *colon;
+    const char *cursor;
+
+    if ((NULL == object_start) || (NULL == object_end) || (NULL == key))
+    {
+        return default_value;
+    }
+
+    found = json_find_key(object_start, object_end, key);
+    if (NULL == found)
+    {
+        return default_value;
+    }
+
+    colon = json_skip_whitespace(found, object_end);
+    if ((NULL == colon) || (colon >= object_end) || (':' != *colon))
+    {
+        return default_value;
+    }
+
+    cursor = json_skip_whitespace(colon + 1, object_end);
+    if ((NULL == cursor) || (cursor >= object_end))
+    {
+        return default_value;
+    }
+
+    if (0 == strncmp(cursor, "true", 4))
+    {
+        return true;
+    }
+    if (0 == strncmp(cursor, "false", 5))
+    {
+        return false;
+    }
+    if (0 == strncmp(cursor, "\"1\"", 3))
+    {
+        return true;
+    }
+    if (0 == strncmp(cursor, "\"0\"", 3))
+    {
+        return false;
+    }
+    if ('1' == *cursor)
+    {
+        return true;
+    }
+    if ('0' == *cursor)
+    {
+        return false;
+    }
+
+    return default_value;
 }
 
 static void import_extract_json_cards(const char *object_start,
@@ -1267,6 +1331,8 @@ static int import_profiles_from_json(const char *json_text)
         (void) import_extract_json_string(object_start, object_end, "role", profile.role, sizeof(profile.role));
         (void) import_extract_json_string(object_start, object_end, "chapter", profile.chapter, sizeof(profile.chapter));
         (void) import_extract_json_string(object_start, object_end, "photo_id", profile.photo_id, sizeof(profile.photo_id));
+        profile.is_admin = import_extract_json_bool(object_start, object_end, "is_admin", false);
+        (void) import_extract_json_string(object_start, object_end, "admin_pin", profile.admin_pin, sizeof(profile.admin_pin));
         import_extract_json_cards(object_start, object_end, &profile);
 
         edit_index = import_find_existing_profile_index(&profile);
@@ -2449,9 +2515,9 @@ static UINT render_light_login_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packe
     {
         snprintf(body,
                  sizeof(body),
-                 "<p class='muted'>Digite a senha de administrador para utilizar o sistema.</p>"
+                 "<p class='muted'>Digite o PIN de um perfil administrador para utilizar o sistema.</p>"
                  "<form action='/login' method='post'>"
-                 "<label>PIN admin</label><input type='password' name='pin' maxlength='8' placeholder='Digite o PIN'>"
+                 "<label>PIN admin</label><input type='password' name='pin' inputmode='numeric' maxlength='4' placeholder='Digite 4 digitos'>"
                  "<button class='btn' type='submit'>Entrar</button></form>");
     }
 
@@ -2536,7 +2602,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
     if (user_count <= 0)
     {
         strncpy(rows,
-                "<tr><td colspan='5'>Nenhum perfil carregado no momento.</td></tr>",
+                "<tr><td colspan='7'>Nenhum perfil carregado no momento.</td></tr>",
                 sizeof(rows) - 1U);
         rows[sizeof(rows) - 1U] = '\0';
     }
@@ -2550,7 +2616,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
             profile_cards_to_csv(&profile_snapshot[i], cards_csv, sizeof(cards_csv));
             written = snprintf(&rows[rows_len],
                                sizeof(rows) - rows_len,
-                               "<tr><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>"
+                               "<tr><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>"
                                "<a class='small' href='/profile_form/%d'>Editar</a> "
                                "<a class='small danger' href='/remove_user?index=%d'>Remover</a>"
                                "</td></tr>",
@@ -2558,6 +2624,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
                                profile_snapshot[i].name,
                                ('\0' != profile_snapshot[i].role[0]) ? profile_snapshot[i].role : "-",
                                ('\0' != profile_snapshot[i].chapter[0]) ? profile_snapshot[i].chapter : "-",
+                               profile_snapshot[i].is_admin ? "Sim" : "Nao",
                                ('\0' != cards_csv[0]) ? cards_csv : "-",
                                i,
                                i);
@@ -2587,7 +2654,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
              "%s"
              "%s"
              "<p class='muted'>Mostrando %d a %d de %d perfis carregados.</p>"
-             "<div class='table-wrap'><table><tr><th>Indice</th><th>Nome</th><th>Cargo</th><th>Capitulo</th><th>Cartoes</th><th>Acao</th></tr>%s</table></div>"
+             "<div class='table-wrap'><table><tr><th>Indice</th><th>Nome</th><th>Cargo</th><th>Capitulo</th><th>Admin</th><th>Cartoes</th><th>Acao</th></tr>%s</table></div>"
              "<div class='actions'>"
              "%s"
              "%s"
@@ -2620,8 +2687,10 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
     static char form_chapter_html[STORAGE_CHAPTER_MAX_LEN * 6];
     static char form_cards_html[FORM_CARDS_BUFFER_SIZE * 6];
     static char form_photo_html[STORAGE_PHOTO_ID_MAX_LEN * 6];
+    static char form_admin_pin_html[(STORAGE_ADMIN_PIN_MAX_LEN + 8) * 6];
     storage_user_profile_t form_profile;
     char form_cards[FORM_CARDS_BUFFER_SIZE];
+    const char *admin_checked = "";
     const char *current_photo_status = "-";
     const char *message_to_render = message;
     char last_uid[UID_MAX_LEN];
@@ -2670,6 +2739,7 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
     }
 
     net_build_photo_options(photo_options, sizeof(photo_options));
+    admin_checked = form_profile.is_admin ? " checked" : "";
     if ('\0' != form_profile.photo_id[0])
     {
         current_photo_status = net_photo_asset_exists(form_profile.photo_id) ? "asset encontrado" : "asset não encontrado";
@@ -2680,6 +2750,7 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
     net_html_escape(form_profile.chapter, form_chapter_html, sizeof(form_chapter_html));
     net_html_escape(form_cards, form_cards_html, sizeof(form_cards_html));
     net_html_escape(form_profile.photo_id, form_photo_html, sizeof(form_photo_html));
+    form_admin_pin_html[0] = '\0';
 
     snprintf(html,
              sizeof(html),
@@ -2689,6 +2760,8 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
              ".wrap{max-width:760px;margin:0 auto;}"
              ".card{background:#fff;border-radius:16px;padding:18px;margin-bottom:16px;box-shadow:0 8px 26px rgba(0,0,0,.08);}"
              "input,select{width:100%%;padding:12px;border:1px solid #ccd4e0;border-radius:10px;margin:8px 0 12px 0;box-sizing:border-box;font-family:Consolas,monospace;font-size:16px;}"
+             ".checkline{display:flex;align-items:center;gap:10px;margin:8px 0 12px 0;font-size:15px;}"
+             ".checkline input{width:auto;margin:0;}"
              ".btn,.small{display:inline-block;text-decoration:none;border:none;border-radius:10px;padding:12px 16px;background:#0b6ef3;color:#fff;cursor:pointer;}"
              ".small{padding:8px 12px;font-size:13px;margin-right:8px;}.secondary{background:#6b7a90;}"
              ".muted{color:#607086;font-size:14px;}.warn{color:#b26a00;}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;}"
@@ -2703,6 +2776,8 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
              "<label>Nome</label><input type='text' name='name' maxlength='31' value='%s' placeholder='Nome do usuario'>"
              "<label>Cargo</label><input type='text' name='role' maxlength='47' value='%s' placeholder='Ex.: Presidente'>"
              "<label>Capitulo IEEE</label><input type='text' name='chapter' maxlength='47' value='%s' placeholder='Ex.: Computer Society'>"
+             "<label class='checkline'><input type='checkbox' name='is_admin' value='1'%s> Perfil administrador</label>"
+             "<label>PIN administrador</label><input type='password' name='admin_pin' inputmode='numeric' maxlength='4' value='%s' placeholder='4 digitos. Em edicao, deixe vazio para manter o atual'>"
              "<label>Cartoes (separados por virgula)</label><input type='text' name='cards' maxlength='255' value='%s' placeholder='E35C051C,1234ABCD'>"
              "<label>Foto (identificador)</label><input type='text' name='photo_id' list='photo-id-list' maxlength='63' value='%s' placeholder='Escolha um photo_id importado'>"
              "<div class='actions'><button class='btn' type='submit'>Salvar perfil</button></div></form>"
@@ -2717,6 +2792,8 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
              form_name_html,
              form_role_html,
              form_chapter_html,
+             admin_checked,
+             form_admin_pin_html,
              form_cards_html,
              form_photo_html);
 
@@ -2991,6 +3068,27 @@ static UINT render_light_door_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet
     return render_light_shell(server_ptr, packet_ptr, "Controle da porta", body, message);
 }
 
+static bool net_pin_is_valid_4_digits(const char *pin)
+{
+    size_t len = 0U;
+
+    if ((NULL == pin) || ('\0' == pin[0]))
+    {
+        return false;
+    }
+
+    while ('\0' != pin[len])
+    {
+        if (!isdigit((int) (unsigned char) pin[len]))
+        {
+            return false;
+        }
+        len++;
+    }
+
+    return (len == STORAGE_ADMIN_PIN_LEN);
+}
+
 static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data)
 {
     char pin[16];
@@ -3000,7 +3098,7 @@ static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data
         return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Digite o PIN antes de entrar.</div>");
     }
 
-    if (0 == strcmp(pin, WEB_ADMIN_PIN))
+    if (storage_admin_pin_valid(pin) || (0 == strcmp(pin, WEB_ADMIN_PIN)))
     {
         net_admin_begin_session();
         return light_redirect_with_flash(server_ptr, "/", "<div class='card ok'>Sessao admin iniciada.</div>");
@@ -3012,11 +3110,13 @@ static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data
 static UINT handle_light_add_user(NX_HTTP_SERVER *server_ptr, const char *query)
 {
     storage_user_profile_t profile;
+    storage_user_profile_t existing_profile;
     char primary_uid[UID_MAX_LEN];
     char location[64];
     int edit_index = -1;
     bool persist_requested = false;
     bool persist_ok = false;
+    bool has_existing_profile = false;
 
     if (!net_admin_is_authenticated())
     {
@@ -3036,6 +3136,51 @@ static UINT handle_light_add_user(NX_HTTP_SERVER *server_ptr, const char *query)
         }
 
         return light_redirect_with_flash(server_ptr, location, "<div class='card warn'>Preencha ao menos o nome do perfil.</div>");
+    }
+
+    has_existing_profile = (edit_index >= 0) && storage_profile_get(edit_index, &existing_profile);
+
+    if (profile.is_admin)
+    {
+        if ('\0' == profile.admin_pin[0])
+        {
+            if (has_existing_profile && existing_profile.is_admin && ('\0' != existing_profile.admin_pin[0]))
+            {
+                strncpy(profile.admin_pin, existing_profile.admin_pin, sizeof(profile.admin_pin) - 1U);
+                profile.admin_pin[sizeof(profile.admin_pin) - 1U] = '\0';
+            }
+            else
+            {
+                if (edit_index >= 0)
+                {
+                    snprintf(location, sizeof(location), "/profile_form/%d", edit_index);
+                }
+                else
+                {
+                    strncpy(location, "/profile_form", sizeof(location) - 1U);
+                    location[sizeof(location) - 1U] = '\0';
+                }
+                return light_redirect_with_flash(server_ptr, location, "<div class='card warn'>Perfis administradores precisam de um PIN de 4 digitos.</div>");
+            }
+        }
+
+        if (!net_pin_is_valid_4_digits(profile.admin_pin))
+        {
+            if (edit_index >= 0)
+            {
+                snprintf(location, sizeof(location), "/profile_form/%d", edit_index);
+            }
+            else
+            {
+                strncpy(location, "/profile_form", sizeof(location) - 1U);
+                location[sizeof(location) - 1U] = '\0';
+            }
+            return light_redirect_with_flash(server_ptr, location, "<div class='card warn'>O PIN do administrador deve ter exatamente 4 digitos numericos.</div>");
+        }
+    }
+    else
+    {
+        profile.admin_pin[0] = '\0';
     }
 
     if (storage_profile_upsert(&profile, edit_index))

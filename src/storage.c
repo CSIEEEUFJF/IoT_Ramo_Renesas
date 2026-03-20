@@ -364,6 +364,36 @@ static void storage_profile_cards_to_csv(const user_t *profile, char *out, size_
     }
 }
 
+static void storage_copy_admin_pin(char *out, size_t out_size, const char *src)
+{
+    char cleaned[STORAGE_ADMIN_PIN_MAX_LEN];
+    size_t write_len = 0U;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    cleaned[0] = '\0';
+    if (NULL == src)
+    {
+        out[0] = '\0';
+        return;
+    }
+
+    while (('\0' != *src) && (write_len + 1U < sizeof(cleaned)))
+    {
+        if (isdigit((int) (unsigned char) *src))
+        {
+            cleaned[write_len++] = *src;
+        }
+        src++;
+    }
+
+    cleaned[write_len] = '\0';
+    storage_copy_text(out, out_size, cleaned, write_len);
+}
+
 static void storage_extract_cards_csv(const char *cards_csv, user_t *profile)
 {
     const char *cursor = cards_csv;
@@ -677,6 +707,8 @@ static bool storage_parse_users(const char *json_buffer)
         (void) storage_extract_json_string(object_start, object_end, "chapter", profile.chapter, sizeof(profile.chapter));
         (void) storage_extract_json_string(object_start, object_end, "photo_id", profile.photo_id, sizeof(profile.photo_id));
         profile.is_admin = storage_extract_json_bool(object_start, object_end, "is_admin", false);
+        (void) storage_extract_json_string(object_start, object_end, "admin_pin", profile.admin_pin, sizeof(profile.admin_pin));
+        storage_copy_admin_pin(profile.admin_pin, sizeof(profile.admin_pin), profile.admin_pin);
         (void) storage_extract_json_string(object_start, object_end, "cards_csv", cards_csv, sizeof(cards_csv));
         if ('\0' != cards_csv[0])
         {
@@ -730,13 +762,14 @@ static bool storage_prepare_users_json_locked(char *json_buffer, size_t json_buf
         storage_profile_cards_to_csv(&g_recent_user, cards_csv, sizeof(cards_csv));
         written = snprintf(&json_buffer[offset],
                            json_buffer_size - offset,
-                           "{\"name\":\"%s\",\"uid\":\"%s\",\"role\":\"%s\",\"chapter\":\"%s\",\"photo_id\":\"%s\",\"is_admin\":%s,\"cards_csv\":\"%s\",\"cards\":[",
+                           "{\"name\":\"%s\",\"uid\":\"%s\",\"role\":\"%s\",\"chapter\":\"%s\",\"photo_id\":\"%s\",\"is_admin\":%s,\"admin_pin\":\"%s\",\"cards_csv\":\"%s\",\"cards\":[",
                            g_recent_user.name,
                            storage_profile_has_cards(&g_recent_user) ? g_recent_user.cards[0] : "",
                            g_recent_user.role,
                            g_recent_user.chapter,
                            g_recent_user.photo_id,
                            g_recent_user.is_admin ? "true" : "false",
+                           g_recent_user.admin_pin,
                            cards_csv);
         if ((written < 0) || ((size_t) written >= (json_buffer_size - offset)))
         {
@@ -777,7 +810,7 @@ static bool storage_prepare_users_json_locked(char *json_buffer, size_t json_buf
 
         written = snprintf(&json_buffer[offset],
                            json_buffer_size - offset,
-                           "%s{\"name\":\"%s\",\"uid\":\"%s\",\"role\":\"%s\",\"chapter\":\"%s\",\"photo_id\":\"%s\",\"is_admin\":%s,\"cards_csv\":\"%s\",\"cards\":[",
+                           "%s{\"name\":\"%s\",\"uid\":\"%s\",\"role\":\"%s\",\"chapter\":\"%s\",\"photo_id\":\"%s\",\"is_admin\":%s,\"admin_pin\":\"%s\",\"cards_csv\":\"%s\",\"cards\":[",
                            (offset > 1U) ? "," : "",
                            g_users[i].name,
                            storage_profile_has_cards(&g_users[i]) ? g_users[i].cards[0] : "",
@@ -785,6 +818,7 @@ static bool storage_prepare_users_json_locked(char *json_buffer, size_t json_buf
                            g_users[i].chapter,
                            g_users[i].photo_id,
                            g_users[i].is_admin ? "true" : "false",
+                           g_users[i].admin_pin,
                            cards_csv);
         if ((written < 0) || ((size_t) written >= (json_buffer_size - offset)))
         {
@@ -1941,6 +1975,11 @@ bool storage_profile_upsert(const storage_user_profile_t *profile, int edit_inde
     storage_copy_text(normalized.chapter, sizeof(normalized.chapter), profile->chapter, strlen(profile->chapter));
     storage_copy_text(normalized.photo_id, sizeof(normalized.photo_id), profile->photo_id, strlen(profile->photo_id));
     normalized.is_admin = profile->is_admin;
+    storage_copy_admin_pin(normalized.admin_pin, sizeof(normalized.admin_pin), profile->admin_pin);
+    if (!normalized.is_admin)
+    {
+        normalized.admin_pin[0] = '\0';
+    }
 
     storage_init();
     storage_lock();
@@ -2086,6 +2125,34 @@ bool storage_profile_remove(int index)
 
         storage_mark_runtime_state_loaded();
         ok = true;
+    }
+
+    storage_unlock();
+    return ok;
+}
+
+bool storage_admin_pin_valid(const char *pin)
+{
+    bool ok = false;
+
+    if ((NULL == pin) || ('\0' == pin[0]))
+    {
+        return false;
+    }
+
+    storage_init();
+    storage_lock();
+    storage_ensure_loaded_locked();
+
+    for (int i = 0; i < g_user_count; i++)
+    {
+        if (g_users[i].is_admin &&
+            ('\0' != g_users[i].admin_pin[0]) &&
+            (0 == strcmp(g_users[i].admin_pin, pin)))
+        {
+            ok = true;
+            break;
+        }
     }
 
     storage_unlock();
