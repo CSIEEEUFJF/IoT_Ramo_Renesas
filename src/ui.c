@@ -16,6 +16,7 @@
 #define UI_QUEUE_POLL_TICKS    1U
 #define UI_STATUS_HOLD_TICKS   (TX_TIMER_TICKS_PER_SECOND * 10U)
 #define UI_BACKLIGHT_TIMEOUT_TICKS (TX_TIMER_TICKS_PER_SECOND * 60U)
+#define UI_DIM_BRIGHTNESS_PERCENT 30U
 #define UI_TOUCH_DEBOUNCE_TICKS (TX_TIMER_TICKS_PER_SECOND / 20U)
 #define UI_PIN_LENGTH          4U
 #define UI_ADMIN_PIN           "1234"
@@ -151,6 +152,7 @@ static const uint16_t UI_COLOR_WAIT_TEXT2 = (uint16_t)0xA514U;
 
 static bool g_ui_display_ready = false;
 static bool g_ui_backlight_on = false;
+static bool g_ui_display_dimmed = false;
 static bool g_ui_touch_ready = false;
 static bool g_ui_touch_pressed = false;
 static int16_t g_ui_touch_last_x = 0;
@@ -196,6 +198,7 @@ static bool ui_enroll_back_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_enroll_save_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_touch_accept_action(void);
 static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_gear);
+static void ui_ip_to_string(ULONG ip_address, char *out, size_t out_size);
 static void ui_draw_pixel_text_centered(int32_t y, const char *text, uint16_t color, uint32_t scale);
 static void ui_draw_pixel_text_centered_in_rect(int32_t x, int32_t width, int32_t y, const char *text, uint16_t color, uint32_t scale);
 static void ui_draw_text_crisp(int32_t x, int32_t y, const char *text, uint16_t color, uint32_t scale);
@@ -229,6 +232,7 @@ static void ui_wrap_pixel_text_two_lines(const char *src,
                                          size_t line2_size,
                                          int32_t max_width,
                                          uint32_t scale);
+static void ui_apply_dim_to_framebuffer(uint8_t brightness_percent);
 
 static void ui_flush_pending_events(void)
 {
@@ -743,6 +747,34 @@ static void ui_set_backlight(bool enabled)
 {
     g_ioport.p_api->pinWrite(LCD_BACKLIGHT, enabled ? IOPORT_LEVEL_HIGH : IOPORT_LEVEL_LOW);
     g_ui_backlight_on = enabled;
+}
+
+static void ui_apply_dim_to_framebuffer(uint8_t brightness_percent)
+{
+    uint16_t *framebuffer = ui_framebuffer();
+    uint32_t factor = (uint32_t) brightness_percent;
+
+    if ((NULL == framebuffer) || (0U == factor))
+    {
+        return;
+    }
+
+    for (int32_t y = 0; y < UI_SCREEN_HEIGHT; y++)
+    {
+        for (int32_t x = 0; x < UI_SCREEN_WIDTH; x++)
+        {
+            uint16_t pixel = framebuffer[(y * UI_FRAMEBUFFER_STRIDE) + x];
+            uint32_t r = (pixel >> 11) & 0x1FU;
+            uint32_t g = (pixel >> 5) & 0x3FU;
+            uint32_t b = pixel & 0x1FU;
+
+            r = (r * factor + 50U) / 100U;
+            g = (g * factor + 50U) / 100U;
+            b = (b * factor + 50U) / 100U;
+
+            framebuffer[(y * UI_FRAMEBUFFER_STRIDE) + x] = (uint16_t) ((r << 11) | (g << 5) | b);
+        }
+    }
 }
 
 static void ui_touch_delay(void)
@@ -2037,9 +2069,9 @@ static void ui_enter_enroll_wait(ui_status_t *status)
     }
 
     ui_set_status(status,
-                  "Modo cadastro",
-                  "Aproxime o cart" "\303\243" "o",
-                  "Toque em voltar para sair",
+                  "Rede",
+                  "Endereco IP",
+                  "",
                   UI_COLOR_BRAND,
                   0U,
                   true);
@@ -2047,7 +2079,7 @@ static void ui_enter_enroll_wait(ui_status_t *status)
     g_ui_touch_last_action_tick = 0U;
     g_ui_touch_pressed = false;
     ui_flush_pending_events();
-    app_set_enrollment_mode(true);
+    app_set_enrollment_mode(false);
     app_set_ui_mode(APP_UI_MODE_ENROLL_WAIT);
 }
 
@@ -2202,6 +2234,22 @@ static void ui_draw_pin_screen(const ui_status_t *status)
 
 static void ui_draw_enroll_wait_screen(const ui_status_t *status)
 {
+    char ip_text[20];
+    char top_line[24];
+    ULONG ip_address = 0U;
+    ULONG network_mask = 0U;
+
+    nx_ip_address_get(&g_ip0, &ip_address, &network_mask);
+    if (0U == ip_address)
+    {
+        ui_copy_text(ip_text, sizeof(ip_text), "AGUARDANDO DHCP");
+    }
+    else
+    {
+        ui_ip_to_string(ip_address, ip_text, sizeof(ip_text));
+    }
+
+    ui_fit_pixel_text_to_width(ip_text, top_line, sizeof(top_line), 216, 1U);
     ui_fill_rect(0, 0, UI_SCREEN_WIDTH, UI_SCREEN_HEIGHT, UI_COLOR_TEXT);
     ui_draw_rgb565_image_scaled((UI_SCREEN_WIDTH - 136) / 2,
                                 22,
@@ -2210,11 +2258,11 @@ static void ui_draw_enroll_wait_screen(const ui_status_t *status)
                                 g_ramo_logo_rgb565,
                                 (int32_t) RAMO_LOGO_WIDTH,
                                 (int32_t) RAMO_LOGO_HEIGHT);
-    ui_fill_rect(14, 166, 212, 76, UI_COLOR_BRAND);
-    ui_fill_rect(18, 170, 204, 68, UI_COLOR_TEXT);
-    ui_draw_text_centered(184, status->line1, UI_COLOR_BG, 1U);
-    ui_draw_text_centered(208, status->line2, UI_COLOR_BRAND, 1U);
-    ui_draw_text_centered(232, "Encoste o cartao no leitor", UI_COLOR_BG, 1U);
+    ui_fill_rect(14, 166, 212, 88, UI_COLOR_BRAND);
+    ui_fill_rect(18, 170, 204, 80, UI_COLOR_TEXT);
+    ui_draw_pixel_text_centered(182, "REDE", UI_COLOR_BG, 2U);
+    ui_draw_pixel_text_centered(214, "IP ATUAL", UI_COLOR_BRAND, 1U);
+    ui_draw_pixel_text_centered(230, top_line, UI_COLOR_BG, 1U);
     ui_draw_button(UI_ENROLL_BACK_X,
                    UI_ENROLL_BACK_Y,
                    UI_ENROLL_BACK_WIDTH,
@@ -2222,13 +2270,7 @@ static void ui_draw_enroll_wait_screen(const ui_status_t *status)
                    "Voltar",
                    UI_COLOR_WARN,
                    UI_COLOR_BG);
-    ui_draw_button(UI_ENROLL_SAVE_X,
-                   UI_ENROLL_SAVE_Y,
-                   UI_ENROLL_SAVE_WIDTH,
-                   UI_ENROLL_SAVE_HEIGHT,
-                   "Salvar",
-                   UI_COLOR_OK,
-                   UI_COLOR_BG);
+    SSP_PARAMETER_NOT_USED(status);
 }
 
 static void ui_extract_initials(const char *name, char *initials, size_t initials_size)
@@ -2421,6 +2463,22 @@ static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_
     {
         ui_draw_gear_button(UI_SCREEN_WIDTH - UI_GEAR_BUTTON_SIZE - 12, 12);
     }
+}
+
+static void ui_ip_to_string(ULONG ip_address, char *out, size_t out_size)
+{
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    snprintf(out,
+             out_size,
+             "%lu.%lu.%lu.%lu",
+             (unsigned long) ((ip_address >> 24) & 0xFFUL),
+             (unsigned long) ((ip_address >> 16) & 0xFFUL),
+             (unsigned long) ((ip_address >> 8) & 0xFFUL),
+             (unsigned long) (ip_address & 0xFFUL));
 }
 
 static void ui_show_splash(void)
@@ -2715,35 +2773,6 @@ static void ui_handle_touch(ui_status_t *status, const ui_touch_event_t *touch_e
             *force_redraw = true;
             return;
         }
-
-        if (ui_enroll_save_hit_test(x, y) && ui_touch_accept_action())
-        {
-            if (storage_persist_now())
-            {
-                ui_set_status(status,
-                              "",
-                              "Cadastros salvos",
-                              "Toque para voltar",
-                              UI_COLOR_OK,
-                              UI_STATUS_HOLD_TICKS,
-                              false);
-            }
-            else
-            {
-                ui_set_status(status,
-                              "",
-                              "Falha ao salvar",
-                              "Tente novamente",
-                              UI_COLOR_ERROR,
-                              UI_STATUS_HOLD_TICKS,
-                              false);
-            }
-
-            status->view = UI_VIEW_RESULT;
-            app_set_ui_mode(APP_UI_MODE_IDLE);
-            app_set_enrollment_mode(false);
-            *force_redraw = true;
-        }
         return;
     }
 
@@ -2940,6 +2969,7 @@ void thread_ui_entry(ULONG arg)
             ui_update_status_from_event(&status, &event);
             force_redraw = true;
             last_activity_tick = tx_time_get();
+            g_ui_display_dimmed = false;
 
             if (!g_ui_backlight_on)
             {
@@ -2951,6 +2981,7 @@ void thread_ui_entry(ULONG arg)
         {
             ui_handle_touch(&status, &touch_event, &force_redraw);
             last_activity_tick = tx_time_get();
+            g_ui_display_dimmed = false;
 
             if (!g_ui_backlight_on)
             {
@@ -2963,6 +2994,7 @@ void thread_ui_entry(ULONG arg)
             ui_set_idle_status(&status);
             force_redraw = true;
             last_activity_tick = tx_time_get();
+            g_ui_display_dimmed = false;
             g_ui_debug_expire_count++;
         }
 
@@ -2971,6 +3003,10 @@ void thread_ui_entry(ULONG arg)
         if (force_redraw || ui_snapshot_changed(&previous_snapshot, &current_snapshot))
         {
             ui_render_screen(&status, &current_snapshot);
+            if (g_ui_display_dimmed)
+            {
+                ui_apply_dim_to_framebuffer(UI_DIM_BRIGHTNESS_PERCENT);
+            }
             previous_snapshot = current_snapshot;
             force_redraw = false;
 
@@ -2980,9 +3016,13 @@ void thread_ui_entry(ULONG arg)
             }
         }
 
-        if (status.sticky && g_ui_backlight_on && ((tx_time_get() - last_activity_tick) >= UI_BACKLIGHT_TIMEOUT_TICKS))
+        if (status.sticky &&
+            g_ui_backlight_on &&
+            !g_ui_display_dimmed &&
+            ((tx_time_get() - last_activity_tick) >= UI_BACKLIGHT_TIMEOUT_TICKS))
         {
-            ui_set_backlight(false);
+            g_ui_display_dimmed = true;
+            force_redraw = true;
         }
     }
 }

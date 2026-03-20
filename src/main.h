@@ -54,6 +54,7 @@ typedef struct {
 
 typedef struct {
     ULONG tick;
+    ULONG unix_utc;
     app_event_type_t type;
     char data[UID_MAX_LEN];
     char user[NAME_MAX_LEN];
@@ -86,6 +87,10 @@ void app_set_enrollment_mode(bool enabled);
 bool app_is_enrollment_mode(void);
 void app_post_event   (app_event_type_t type, const char * data);
 int app_access_log_snapshot(app_access_log_entry_t *out_entries, int max_entries);
+void app_access_log_restore(const app_access_log_entry_t *entries, int entry_count);
+void app_time_set_utc(ULONG unix_utc);
+bool app_time_get_utc(ULONG *out_unix_utc);
+void app_format_access_log_timestamp(const app_access_log_entry_t *entry, char *out, size_t out_size);
 
 /* Protótipos das Threads */
 void thread_rfid_entry   (ULONG arg);

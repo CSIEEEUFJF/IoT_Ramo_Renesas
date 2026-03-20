@@ -21,6 +21,7 @@ extern ssp_err_t fx_media_init0_format(void);
 /* ========================================================================= */
 
 #define JSON_BUFFER_SIZE 4096
+#define ACCESS_LOG_BUFFER_SIZE 4096
 #define STORAGE_MEDIA_SAFE_DELAY_TICKS (2U * TX_TIMER_TICKS_PER_SECOND)
 #define STORAGE_THREAD_STACK_SIZE 2048U
 #define STORAGE_PHOTO_COPY_ROWS 8U
@@ -41,8 +42,10 @@ static bool g_storage_mutex_ready = false;
 static bool g_storage_media_mutex_ready = false;
 static bool g_storage_media_ready = false;
 static bool g_storage_loaded = false;
+static bool g_storage_access_log_loaded = false;
 static bool g_storage_thread_ready = false;
 static bool g_storage_persist_requested = false;
+static bool g_storage_access_log_persist_requested = false;
 static bool g_storage_photo_persist_requested = false;
 static bool g_storage_load_requested = false;
 static bool g_recent_user_valid = false;
@@ -52,13 +55,18 @@ static TX_SEMAPHORE g_storage_persist_semaphore;
 static TX_THREAD g_storage_thread;
 static ULONG g_storage_thread_stack[STORAGE_THREAD_STACK_SIZE / sizeof(ULONG)];
 static FX_FILE g_users_file;
+static FX_FILE g_access_log_file;
 static FX_FILE g_photo_file;
 static char g_storage_persist_json[JSON_BUFFER_SIZE];
 static char g_storage_persist_work_json[JSON_BUFFER_SIZE];
+static char g_storage_access_log_text[ACCESS_LOG_BUFFER_SIZE];
+static char g_storage_access_log_work_text[ACCESS_LOG_BUFFER_SIZE];
 static char g_storage_pending_photo_id[STORAGE_PHOTO_ID_MAX_LEN];
 static char g_storage_photo_work_id[STORAGE_PHOTO_ID_MAX_LEN];
 static size_t g_storage_persist_json_size = 0U;
 static size_t g_storage_persist_work_json_size = 0U;
+static size_t g_storage_access_log_text_size = 0U;
+static size_t g_storage_access_log_work_text_size = 0U;
 static volatile ULONG g_storage_persist_status = STORAGE_PERSIST_STATUS_IDLE;
 volatile ULONG g_storage_debug_worker_runs = 0U;
 volatile ULONG g_storage_debug_last_stage = 0U;
@@ -79,9 +87,12 @@ typedef struct st_storage_photo_file_header
 
 static void storage_thread_entry(ULONG initial_input);
 static void storage_refresh_persist_snapshot_locked(void);
+static void storage_refresh_access_log_snapshot(void);
 static void storage_ensure_loaded_locked(void);
 static bool storage_save_json_buffer(const char *json_buffer, size_t json_size);
+static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_size);
 static bool storage_load_users_now(void);
+static bool storage_load_access_log_now(void);
 static void storage_media_lock(void);
 static void storage_media_unlock(void);
 static void storage_photo_filename(const char *photo_id, char *out, size_t out_size);
@@ -216,6 +227,78 @@ static void storage_copy_clean_uid(char *dest, size_t dest_size, const char *src
     }
 
     dest[write_index] = '\0';
+}
+
+static void storage_copy_log_field(char *dest, size_t dest_size, const char *src)
+{
+    size_t write_index = 0U;
+
+    if ((NULL == dest) || (0U == dest_size))
+    {
+        return;
+    }
+
+    dest[0] = '\0';
+    if (NULL == src)
+    {
+        return;
+    }
+
+    while (('\0' != *src) && (write_index + 1U < dest_size))
+    {
+        char ch = *src++;
+
+        if (('|' == ch) || ('\r' == ch) || ('\n' == ch))
+        {
+            ch = ' ';
+        }
+
+        dest[write_index++] = ch;
+    }
+
+    dest[write_index] = '\0';
+}
+
+static void storage_refresh_access_log_snapshot(void)
+{
+    static app_access_log_entry_t entries[ACCESS_LOG_SIZE];
+    size_t offset = 0U;
+    int count;
+
+    memset(g_storage_access_log_text, 0, sizeof(g_storage_access_log_text));
+    g_storage_access_log_text_size = 0U;
+
+    count = app_access_log_snapshot(entries, ACCESS_LOG_SIZE);
+    if (count <= 0)
+    {
+        return;
+    }
+
+    for (int i = 0; i < count; i++)
+    {
+        char data[UID_MAX_LEN];
+        char user[NAME_MAX_LEN];
+        int written;
+
+        storage_copy_log_field(data, sizeof(data), entries[i].data);
+        storage_copy_log_field(user, sizeof(user), entries[i].user);
+
+        written = snprintf(&g_storage_access_log_text[offset],
+                           sizeof(g_storage_access_log_text) - offset,
+                           "%lu|%u|%s|%s\n",
+                           (unsigned long) entries[i].unix_utc,
+                           (unsigned int) entries[i].type,
+                           data,
+                           user);
+        if ((written <= 0) || ((size_t) written >= (sizeof(g_storage_access_log_text) - offset)))
+        {
+            break;
+        }
+
+        offset += (size_t) written;
+    }
+
+    g_storage_access_log_text_size = offset;
 }
 
 static void storage_photo_filename(const char *photo_id, char *out, size_t out_size)
@@ -688,6 +771,165 @@ static void storage_refresh_persist_snapshot_locked(void)
     storage_prepare_users_json_locked(g_storage_persist_json, sizeof(g_storage_persist_json), &g_storage_persist_json_size);
 }
 
+static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_size)
+{
+    UINT status;
+
+    if ((NULL == log_buffer) || (0U == log_size))
+    {
+        return false;
+    }
+
+    storage_media_lock();
+    if (!storage_media_open())
+    {
+        storage_media_unlock();
+        return false;
+    }
+
+    status = fx_file_open(&g_fx_media0, &g_access_log_file, "access.log", FX_OPEN_FOR_WRITE);
+    if (FX_SUCCESS != status)
+    {
+        status = fx_file_create(&g_fx_media0, "access.log");
+        if ((FX_SUCCESS != status) && (FX_ALREADY_CREATED != status))
+        {
+            (void) fx_media_close(&g_fx_media0);
+            g_storage_media_ready = false;
+            storage_media_unlock();
+            return false;
+        }
+
+        status = fx_file_open(&g_fx_media0, &g_access_log_file, "access.log", FX_OPEN_FOR_WRITE);
+        if (FX_SUCCESS != status)
+        {
+            (void) fx_media_close(&g_fx_media0);
+            g_storage_media_ready = false;
+            storage_media_unlock();
+            return false;
+        }
+    }
+
+    status = fx_file_truncate(&g_access_log_file, 0U);
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_seek(&g_access_log_file, 0U);
+    }
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_write(&g_access_log_file, (VOID *) log_buffer, log_size);
+    }
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_close(&g_access_log_file);
+    }
+    else
+    {
+        fx_file_close(&g_access_log_file);
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+        storage_media_unlock();
+        return false;
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        status = fx_media_flush(&g_fx_media0);
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        status = fx_media_close(&g_fx_media0);
+        if (FX_SUCCESS == status)
+        {
+            g_storage_media_ready = false;
+        }
+    }
+    else
+    {
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+    }
+
+    storage_media_unlock();
+    return (FX_SUCCESS == status);
+}
+
+static bool storage_parse_access_log_text(const char *log_buffer)
+{
+    static app_access_log_entry_t entries[ACCESS_LOG_SIZE];
+    int entry_count = 0;
+    const char *cursor = log_buffer;
+
+    if (NULL == log_buffer)
+    {
+        return false;
+    }
+
+    memset(entries, 0, sizeof(entries));
+
+    while (('\0' != *cursor) && (entry_count < ACCESS_LOG_SIZE))
+    {
+        const char *line_end = strchr(cursor, '\n');
+        char line[128];
+        char *first_sep;
+        char *second_sep;
+        char *third_sep;
+        char *end_ptr = NULL;
+        unsigned long unix_utc;
+        long type_value;
+
+        if (NULL == line_end)
+        {
+            line_end = cursor + strlen(cursor);
+        }
+
+        storage_copy_text(line, sizeof(line), cursor, (size_t) (line_end - cursor));
+        first_sep = strchr(line, '|');
+        second_sep = (NULL != first_sep) ? strchr(first_sep + 1, '|') : NULL;
+        third_sep = (NULL != second_sep) ? strchr(second_sep + 1, '|') : NULL;
+
+        if ((NULL != first_sep) && (NULL != second_sep) && (NULL != third_sep))
+        {
+            *first_sep = '\0';
+            *second_sep = '\0';
+            *third_sep = '\0';
+
+            unix_utc = strtoul(line, &end_ptr, 10);
+            if ((NULL != end_ptr) && ('\0' == *end_ptr))
+            {
+                type_value = strtol(first_sep + 1, &end_ptr, 10);
+                if ((NULL != end_ptr) &&
+                    ('\0' == *end_ptr) &&
+                    (type_value >= (long) EVENT_RFID_AUTH_OK) &&
+                    (type_value <= (long) EVENT_CARD_REGISTRATION_FAILED))
+                {
+                    entries[entry_count].tick = 0U;
+                    entries[entry_count].unix_utc = (ULONG) unix_utc;
+                    entries[entry_count].type = (app_event_type_t) type_value;
+                    storage_copy_text(entries[entry_count].data,
+                                      sizeof(entries[entry_count].data),
+                                      second_sep + 1,
+                                      strlen(second_sep + 1));
+                    storage_copy_text(entries[entry_count].user,
+                                      sizeof(entries[entry_count].user),
+                                      third_sep + 1,
+                                      strlen(third_sep + 1));
+                    entry_count++;
+                }
+            }
+        }
+
+        cursor = ('\0' != *line_end) ? (line_end + 1) : line_end;
+    }
+
+    if (entry_count > 0)
+    {
+        app_access_log_restore(entries, entry_count);
+    }
+
+    return true;
+}
+
 /* =========================================================================
    GRAVACAO E LEITURA USANDO O FILEX
    ========================================================================= */
@@ -1150,6 +1392,72 @@ static bool storage_load_users_now(void)
     return loaded;
 }
 
+static bool storage_load_access_log_now(void)
+{
+    UINT status;
+    ULONG actual_bytes = 0U;
+    static char log_buffer[ACCESS_LOG_BUFFER_SIZE];
+
+    storage_lock();
+    if (g_storage_access_log_loaded)
+    {
+        storage_unlock();
+        return true;
+    }
+    storage_unlock();
+
+    if (!storage_media_access_allowed())
+    {
+        return false;
+    }
+
+    storage_media_lock();
+    if (!storage_media_open())
+    {
+        storage_media_unlock();
+        return false;
+    }
+
+    status = fx_file_open(&g_fx_media0, &g_access_log_file, "access.log", FX_OPEN_FOR_READ);
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_read(&g_access_log_file, log_buffer, ACCESS_LOG_BUFFER_SIZE - 1U, &actual_bytes);
+        if (FX_SUCCESS == status)
+        {
+            log_buffer[actual_bytes] = '\0';
+        }
+        else
+        {
+            log_buffer[0] = '\0';
+            actual_bytes = 0U;
+        }
+
+        fx_file_close(&g_access_log_file);
+    }
+    else
+    {
+        log_buffer[0] = '\0';
+        actual_bytes = 0U;
+    }
+
+    if (FX_SUCCESS == fx_media_close(&g_fx_media0))
+    {
+        g_storage_media_ready = false;
+    }
+    storage_media_unlock();
+
+    if ((FX_SUCCESS == status) && (actual_bytes > 0U))
+    {
+        (void) storage_parse_access_log_text(log_buffer);
+    }
+
+    storage_lock();
+    g_storage_access_log_loaded = true;
+    storage_unlock();
+
+    return true;
+}
+
 static void storage_ensure_loaded_locked(void)
 {
     unsigned int attempts = 0U;
@@ -1237,6 +1545,7 @@ void storage_init(void)
     g_user_count = 0;
     g_recent_user_valid = false;
     g_storage_loaded = false;
+    g_storage_access_log_loaded = false;
     g_storage_load_requested = true;
     g_storage_initialized = true;
 
@@ -1256,6 +1565,7 @@ static void storage_thread_entry(ULONG initial_input)
         {
             bool ok = false;
             size_t persist_size = 0U;
+            size_t access_log_size = 0U;
             ULONG user_count_snapshot = 0U;
 
             g_storage_debug_worker_runs++;
@@ -1266,7 +1576,16 @@ static void storage_thread_entry(ULONG initial_input)
             }
 
             storage_lock();
-            if (g_storage_persist_requested)
+            if (g_storage_load_requested)
+            {
+                g_storage_debug_last_stage = 2U;
+                g_storage_load_requested = false;
+                storage_unlock();
+                (void) storage_load_users_now();
+                (void) storage_load_access_log_now();
+                continue;
+            }
+            else if (g_storage_persist_requested)
             {
                 g_storage_debug_last_stage = 1U;
                 g_storage_persist_requested = false;
@@ -1300,6 +1619,31 @@ static void storage_thread_entry(ULONG initial_input)
                 g_storage_debug_last_user_count = user_count_snapshot;
                 continue;
             }
+            else if (g_storage_access_log_persist_requested)
+            {
+                g_storage_debug_last_stage = 16U;
+                g_storage_access_log_persist_requested = false;
+                storage_unlock();
+
+                storage_refresh_access_log_snapshot();
+                access_log_size = g_storage_access_log_text_size;
+                if (access_log_size > sizeof(g_storage_access_log_work_text))
+                {
+                    access_log_size = sizeof(g_storage_access_log_work_text);
+                }
+                if (access_log_size > 0U)
+                {
+                    memcpy(g_storage_access_log_work_text, g_storage_access_log_text, access_log_size);
+                    g_storage_access_log_work_text_size = access_log_size;
+                    (void) storage_save_access_log_buffer(g_storage_access_log_work_text, g_storage_access_log_work_text_size);
+                }
+                else
+                {
+                    g_storage_access_log_work_text[0] = '\0';
+                    g_storage_access_log_work_text_size = 0U;
+                }
+                continue;
+            }
             else if (g_storage_photo_persist_requested)
             {
                 g_storage_debug_last_stage = 3U;
@@ -1310,14 +1654,6 @@ static void storage_thread_entry(ULONG initial_input)
                                   strlen(g_storage_pending_photo_id));
                 storage_unlock();
                 (void) storage_save_photo_file(g_storage_photo_work_id);
-                continue;
-            }
-            else if (g_storage_load_requested)
-            {
-                g_storage_debug_last_stage = 2U;
-                g_storage_load_requested = false;
-                storage_unlock();
-                (void) storage_load_users_now();
                 continue;
             }
             storage_unlock();
@@ -1810,6 +2146,21 @@ bool storage_persist_wait(ULONG timeout_ticks)
 unsigned int storage_persist_status(void)
 {
     return (unsigned int) g_storage_persist_status;
+}
+
+bool storage_access_log_persist_now(void)
+{
+    storage_init();
+    if (!g_storage_thread_ready)
+    {
+        return false;
+    }
+
+    storage_lock();
+    g_storage_access_log_persist_requested = true;
+    storage_unlock();
+
+    return (TX_SUCCESS == tx_semaphore_put(&g_storage_persist_semaphore));
 }
 
 bool storage_photo_persist_now(const char *photo_id)

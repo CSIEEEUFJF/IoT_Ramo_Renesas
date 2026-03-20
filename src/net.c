@@ -3,6 +3,7 @@
 #include "storage.h"
 #include "ui.h"
 #include "assets/profile_photo_ids.h"
+#include "nxd_dhcp_client.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -112,9 +113,14 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define UPLOAD_TILE_B64_BUFFER_SIZE ((UPLOAD_TILE_PIXEL_BYTES * 4U / 3U) + 128U)
 #define HTTP_SEND_CHUNK_SIZE      512U
 #define NET_HTTP_PACKET_WAIT_TICKS (TX_TIMER_TICKS_PER_SECOND / 4U)
-#define DEVICE_IP_ADDR           IP_ADDRESS(192, 168, 15, 180)
-#define DEVICE_NETMASK           IP_ADDRESS(255, 255, 255, 0)
-#define DEVICE_GATEWAY_ADDR      IP_ADDRESS(192, 168, 15, 1)
+#define NET_DHCP_WAIT_SLICE_TICKS (TX_TIMER_TICKS_PER_SECOND / 2U)
+#define NET_DHCP_MAX_WAIT_TICKS   (TX_TIMER_TICKS_PER_SECOND * 30U)
+#define NET_NTP_PORT               123U
+#define NET_NTP_PACKET_SIZE         48U
+#define NET_NTP_UNIX_EPOCH_DELTA 2208988800UL
+#define NET_NTP_QUERY_TIMEOUT_TICKS (3U * TX_TIMER_TICKS_PER_SECOND)
+#define NET_NTP_RETRY_INTERVAL_TICKS (60U * TX_TIMER_TICKS_PER_SECOND)
+#define NET_NTP_RESYNC_INTERVAL_TICKS (6U * 60U * 60U * TX_TIMER_TICKS_PER_SECOND)
 #define WEB_ADMIN_PIN           "1234"
 #define WEB_ADMIN_SESSION_TICKS (10U * 60U * TX_TIMER_TICKS_PER_SECOND)
 
@@ -124,6 +130,10 @@ static bool g_net_action_mutex_ready = false;
 static TX_MUTEX g_net_action_mutex;
 static bool g_net_http_mutex_ready = false;
 static TX_MUTEX g_net_http_mutex;
+static bool g_net_dhcp_created = false;
+static NX_DHCP g_net_dhcp_client;
+static ULONG g_net_ntp_last_attempt_tick = 0U;
+static ULONG g_net_ntp_last_success_tick = 0U;
 static bool g_net_import_pending = false;
 static char g_net_pending_import_json[IMPORT_BUFFER_SIZE];
 static char g_net_pending_import_work_json[IMPORT_BUFFER_SIZE];
@@ -141,6 +151,7 @@ static UINT send_plain_response_fresh(NX_HTTP_SERVER *server, const char *text);
 static UINT send_plain_status_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *status_code, const char *text);
 static UINT send_callback_response(NX_HTTP_SERVER *server, const char *status_code, const char *information);
 static UINT send_redirect(NX_HTTP_SERVER *server, const char *location);
+static UINT light_redirect_with_flash(NX_HTTP_SERVER *server_ptr, const char *location, const char *message);
 
 static void net_set_flash_message(const char *message)
 {
@@ -314,6 +325,7 @@ static void net_build_profile_options(const storage_user_profile_t *profiles, in
 static void network_stack_init_once(void)
 {
     static bool initialized = false;
+    UINT status = NX_SUCCESS;
 
     if (initialized)
     {
@@ -325,6 +337,13 @@ static void network_stack_init_once(void)
     net_http_init_once();
     packet_pool_init0();
     ip_init0();
+    status = nx_dhcp_create(&g_net_dhcp_client, &g_ip0, "g_net_dhcp_client");
+    if (NX_SUCCESS == status)
+    {
+        g_net_dhcp_created = true;
+        (void) nx_dhcp_user_option_request(&g_net_dhcp_client, NX_DHCP_OPTION_NTP_SVR);
+    }
+    g_net_debug_ip_status = status;
     http_server_init0();
     g_net_debug_state = 2U;
     initialized = true;
@@ -337,6 +356,217 @@ static void ip_to_string(ULONG ip_address, char *out, size_t out_size)
              (unsigned long) ((ip_address >> 16) & 0xFFUL),
              (unsigned long) ((ip_address >> 8) & 0xFFUL),
              (unsigned long) (ip_address & 0xFFUL));
+}
+
+static bool net_wait_for_dhcp_address(ULONG *out_ip_address, ULONG *out_network_mask)
+{
+    ULONG waited = 0U;
+    ULONG ip_address = 0U;
+    ULONG network_mask = 0U;
+
+    while (waited < NET_DHCP_MAX_WAIT_TICKS)
+    {
+        (void) nx_ip_address_get(&g_ip0, &ip_address, &network_mask);
+        g_net_debug_ip_address = ip_address;
+        g_net_debug_network_mask = network_mask;
+
+        if (0U != ip_address)
+        {
+            if (NULL != out_ip_address)
+            {
+                *out_ip_address = ip_address;
+            }
+
+            if (NULL != out_network_mask)
+            {
+                *out_network_mask = network_mask;
+            }
+
+            return true;
+        }
+
+        tx_thread_sleep(NET_DHCP_WAIT_SLICE_TICKS);
+        waited += NET_DHCP_WAIT_SLICE_TICKS;
+    }
+
+    return false;
+}
+
+static bool net_get_dhcp_ntp_server(ULONG *out_ip_address)
+{
+    UCHAR option_data[16];
+    UINT option_size = sizeof(option_data);
+    UINT status;
+
+    if ((NULL == out_ip_address) || !g_net_dhcp_created)
+    {
+        return false;
+    }
+
+    status = nx_dhcp_user_option_retrieve(&g_net_dhcp_client,
+                                          NX_DHCP_OPTION_NTP_SVR,
+                                          option_data,
+                                          &option_size);
+    if ((NX_SUCCESS != status) || (option_size < 4U))
+    {
+        return false;
+    }
+
+    *out_ip_address = ((ULONG) option_data[0] << 24) |
+                      ((ULONG) option_data[1] << 16) |
+                      ((ULONG) option_data[2] << 8) |
+                      (ULONG) option_data[3];
+    return (0U != *out_ip_address);
+}
+
+static bool net_query_ntp_server(ULONG server_ip_address, ULONG *out_unix_utc)
+{
+    NX_UDP_SOCKET socket;
+    NX_PACKET *send_packet = NX_NULL;
+    NX_PACKET *receive_packet = NX_NULL;
+    UCHAR request[NET_NTP_PACKET_SIZE] = {0};
+    UCHAR response[NET_NTP_PACKET_SIZE] = {0};
+    ULONG bytes_copied = 0U;
+    UINT local_port = 0U;
+    UINT status;
+    bool ok = false;
+
+    if ((0U == server_ip_address) || (NULL == out_unix_utc))
+    {
+        return false;
+    }
+
+    status = nx_udp_socket_create(&g_ip0,
+                                  &socket,
+                                  "ntp_socket",
+                                  NX_IP_NORMAL,
+                                  NX_FRAGMENT_OKAY,
+                                  NX_IP_TIME_TO_LIVE,
+                                  4U);
+    if (NX_SUCCESS != status)
+    {
+        return false;
+    }
+
+    status = nx_udp_free_port_find(&g_ip0, 49152U, &local_port);
+    if (NX_SUCCESS != status)
+    {
+        (void) nx_udp_socket_delete(&socket);
+        return false;
+    }
+
+    status = nx_udp_socket_bind(&socket, local_port, NET_HTTP_PACKET_WAIT_TICKS);
+    if (NX_SUCCESS != status)
+    {
+        (void) nx_udp_socket_delete(&socket);
+        return false;
+    }
+
+    request[0] = 0x1BU;
+
+    status = nx_packet_allocate(&g_packet_pool0, &send_packet, NX_UDP_PACKET, NET_HTTP_PACKET_WAIT_TICKS);
+    if (NX_SUCCESS == status)
+    {
+        status = nx_packet_data_append(send_packet,
+                                       request,
+                                       sizeof(request),
+                                       &g_packet_pool0,
+                                       NET_HTTP_PACKET_WAIT_TICKS);
+    }
+
+    if (NX_SUCCESS == status)
+    {
+        status = nx_udp_socket_send(&socket, send_packet, server_ip_address, NET_NTP_PORT);
+        if (NX_SUCCESS == status)
+        {
+            send_packet = NX_NULL;
+        }
+    }
+
+    if (NX_SUCCESS == status)
+    {
+        status = nx_udp_socket_receive(&socket, &receive_packet, NET_NTP_QUERY_TIMEOUT_TICKS);
+    }
+
+    if ((NX_SUCCESS == status) && (NX_NULL != receive_packet))
+    {
+        status = nx_packet_data_extract_offset(receive_packet,
+                                               0U,
+                                               response,
+                                               sizeof(response),
+                                               &bytes_copied);
+        if ((NX_SUCCESS == status) && (bytes_copied >= NET_NTP_PACKET_SIZE))
+        {
+            ULONG ntp_seconds = ((ULONG) response[40] << 24) |
+                                ((ULONG) response[41] << 16) |
+                                ((ULONG) response[42] << 8) |
+                                (ULONG) response[43];
+
+            if (ntp_seconds > NET_NTP_UNIX_EPOCH_DELTA)
+            {
+                *out_unix_utc = ntp_seconds - NET_NTP_UNIX_EPOCH_DELTA;
+                ok = true;
+            }
+        }
+    }
+
+    if (NX_NULL != receive_packet)
+    {
+        nx_packet_release(receive_packet);
+    }
+    if (NX_NULL != send_packet)
+    {
+        nx_packet_release(send_packet);
+    }
+
+    (void) nx_udp_socket_unbind(&socket);
+    (void) nx_udp_socket_delete(&socket);
+    return ok;
+}
+
+static bool net_sync_time_with_ntp(void)
+{
+    ULONG ntp_server_ip = 0U;
+    const ULONG fallback_servers[] = {
+        IP_ADDRESS(129, 6, 15, 28),
+        IP_ADDRESS(129, 6, 15, 29),
+    };
+    ULONG unix_utc = 0U;
+
+    g_net_ntp_last_attempt_tick = tx_time_get();
+
+    if (net_get_dhcp_ntp_server(&ntp_server_ip) && net_query_ntp_server(ntp_server_ip, &unix_utc))
+    {
+        app_time_set_utc(unix_utc);
+        g_net_ntp_last_success_tick = tx_time_get();
+        return true;
+    }
+
+    for (size_t i = 0U; i < (sizeof(fallback_servers) / sizeof(fallback_servers[0])); i++)
+    {
+        if (net_query_ntp_server(fallback_servers[i], &unix_utc))
+        {
+            app_time_set_utc(unix_utc);
+            g_net_ntp_last_success_tick = tx_time_get();
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void net_service_ntp(void)
+{
+    ULONG now = tx_time_get();
+    ULONG wait_ticks = (0U == g_net_ntp_last_success_tick) ? NET_NTP_RETRY_INTERVAL_TICKS
+                                                           : NET_NTP_RESYNC_INTERVAL_TICKS;
+
+    if ((0U != g_net_ntp_last_attempt_tick) && ((now - g_net_ntp_last_attempt_tick) < wait_ticks))
+    {
+        return;
+    }
+
+    (void) net_sync_time_with_ntp();
 }
 
 static void url_decode(char *text)
@@ -665,29 +895,20 @@ static const char *net_event_type_text(app_event_type_t type)
     }
 }
 
-static void net_format_tick_timestamp(ULONG tick, char *out, size_t out_size)
+static void net_format_access_log_timestamp(const app_access_log_entry_t *entry, char *out, size_t out_size)
 {
-    ULONG total_seconds;
-    ULONG hours;
-    ULONG minutes;
-    ULONG seconds;
-
     if ((NULL == out) || (0U == out_size))
     {
         return;
     }
 
-    total_seconds = tick / TX_TIMER_TICKS_PER_SECOND;
-    hours = (total_seconds / 3600U) % 24U;
-    minutes = (total_seconds % 3600U) / 60U;
-    seconds = total_seconds % 60U;
+    if (NULL == entry)
+    {
+        out[0] = '\0';
+        return;
+    }
 
-    snprintf(out,
-             out_size,
-             "2026-03-19:%02luh%02lumin%02lus",
-             (unsigned long) hours,
-             (unsigned long) minutes,
-             (unsigned long) seconds);
+    app_format_access_log_timestamp(entry, out, out_size);
 }
 
 static const char *json_skip_whitespace(const char *cursor, const char *limit)
@@ -1666,7 +1887,6 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
 
     char ip_text[20];
     char netmask_text[20];
-    char gateway_text[20];
     char last_uid[UID_MAX_LEN];
     char last_user[NAME_MAX_LEN];
 
@@ -1687,7 +1907,6 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
     nx_ip_address_get(&g_ip0, &ip_address, &network_mask);
     ip_to_string(ip_address, ip_text, sizeof(ip_text));
     ip_to_string(network_mask, netmask_text, sizeof(netmask_text));
-    ip_to_string(DEVICE_GATEWAY_ADDR, gateway_text, sizeof(gateway_text));
     (void) nx_ip_status_check(&g_ip0, NX_IP_LINK_ENABLED, &link_status, NX_NO_WAIT);
 
     app_state_lock();
@@ -1797,10 +2016,10 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
              ".warn{color:#b26a00;}.grid{display:grid;grid-template-columns:1.1fr 1.3fr;gap:16px;}"
              "@media(max-width:900px){.grid{grid-template-columns:1fr;}}"
              "</style></head><body><div class='wrap'>"
-             "<div class='card'><h1>S7G2 - Controle de acesso</h1>"
-             "<p class='muted'>IP atual: <strong>%s</strong> | Mascara: <strong>%s</strong> | Gateway: <strong>%s</strong></p>"
+             "<div class='card'><h1>Ramo Estudantil IEEE UFJF - Controle de acesso</h1>"
+             "<p class='muted'>IP atual: <strong>%s</strong> | Mascara: <strong>%s</strong> | Rede: <strong>DHCP</strong></p>"
              "<p class='%s'>Link Ethernet: <strong>%s</strong></p>"
-             "<p class='muted'>Esta versao usa IP estatico. Se a sua rede nao estiver na faixa 192.168.15.x, a placa nao vai responder sem ajuste em <code>net.c</code>.</p>"
+             "<p class='muted'>Endereco obtido automaticamente por DHCP.</p>"
              "%s"
              "</div>"
              "<div class='grid'>"
@@ -1813,14 +2032,12 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
              "<label>Cartoes (separados por virgula)</label><input type='text' name='cards' maxlength='127' value='%s' placeholder='E35C051C,1234ABCD ou deixe vazio para vincular depois'>"
              "<label>Foto (identificador)</label><input type='text' name='photo_id' list='photo-id-list' maxlength='63' value='%s' placeholder='Escolha um photo_id importado'>"
              "<datalist id='photo-id-list'>%s</datalist>"
-             "<p class='muted'>Fotos no firmware: <strong>%u</strong>. Status do photo_id atual: <strong>%s</strong>.</p>"
              "<button class='btn' type='submit'>Salvar perfil</button></form>"
              "%s"
              "<p><a class='small' href='/save_users'>Persistir cadastros</a></p>"
              "<p class='muted'>Persistencia QSPI: <strong>%s</strong></p>"
              "<p class='muted'>Ultimo cartao lido: <strong>%s</strong></p>"
              "<p class='muted'>Ultimo usuario: <strong>%s</strong></p>"
-             "<p class='muted'>Campo foto preparado para upload/downscale e importacao offline futura.</p>"
              "<p><a class='small' href='/portaon'>Abrir porta</a></p></div>"
              "<div class='card'><h2>Perfis cadastrados</h2>"
              "<table><tr><th>Nome</th><th>Cargo</th><th>Capitulo</th><th>Foto</th><th>Cartoes</th><th>Acao</th></tr>%s</table>"
@@ -1829,19 +2046,17 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
              "<label>Perfil</label><select name='profile_index' style='width:100%%;padding:12px;border:1px solid #ccd4e0;border-radius:10px;margin:8px 0 12px 0;box-sizing:border-box;'>%s</select>"
              "<label>Photo ID</label><input type='text' name='photo_id' list='photo-id-list' maxlength='63' placeholder='Escolha um photo_id existente'>"
              "<button class='btn' type='submit'>Anexar foto</button></form>"
-             "<p class='muted'>Use esta funcao para vincular uma foto ja embutida no firmware a um perfil existente.</p>"
              "</div>"
              "<div class='card' style='margin-top:18px;'><h2>Importar perfis offline</h2>"
              "<form action='/import_profiles' method='post'>"
              "<label>JSON de perfis</label>"
-             "<textarea name='import_json' placeholder='Cole aqui o JSON gerado em script/firebase_bundle/profiles_import.json'></textarea>"
+             "<textarea name='import_json' placeholder='Cole aqui o JSON'></textarea>"
              "<button class='btn' type='submit'>Importar perfis</button></form>"
-             "<p class='muted'>Use o JSON simples de perfis, sem foto binaria. Os cartoes podem ficar vazios e ser vinculados depois pela interface web.</p>"
+             "<p class='muted'>Use o JSON simples de perfis.</p>"
              "</div>"
              "</div></div></div></body></html>",
              ip_text,
              netmask_text,
-             gateway_text,
              (0U != link_status) ? "ok" : "warn",
              (0U != link_status) ? "conectado" : "sem link",
              (NULL != message_to_render) ? message_to_render : "",
@@ -1853,8 +2068,6 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
              form_cards,
              form_profile.photo_id,
              photo_options,
-             (unsigned int) PROFILE_PHOTO_ID_COUNT,
-             current_photo_status,
              editing ? "<p><a class='small danger' href='/'>Cancelar edicao</a></p>" : "",
              persist_text,
              (last_uid[0] != '\0') ? last_uid : "-",
@@ -1904,46 +2117,42 @@ static UINT handle_attach_photo(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_pt
     storage_user_profile_t profile;
     int profile_index = query_get_int(query, "profile_index", -1);
     bool persist_requested = false;
+    SSP_PARAMETER_NOT_USED(packet_ptr);
 
     if ((profile_index < 0) || !storage_profile_get(profile_index, &profile))
     {
-        return render_home_page(server_ptr,
-                                packet_ptr,
-                                "<div class='card warn'>Selecione um perfil valido para anexar a foto.</div>",
-                                -1);
+        return light_redirect_with_flash(server_ptr,
+                                         "/admin_profiles",
+                                         "<div class='card warn'>Selecione um perfil valido para anexar a foto.</div>");
     }
 
     if (!query_get_value(query, "photo_id", profile.photo_id, sizeof(profile.photo_id)))
     {
-        return render_home_page(server_ptr,
-                                packet_ptr,
-                                "<div class='card warn'>Selecione um photo_id antes de anexar a foto.</div>",
-                                -1);
+        return light_redirect_with_flash(server_ptr,
+                                         "/admin_profiles",
+                                         "<div class='card warn'>Selecione um photo_id antes de anexar a foto.</div>");
     }
 
     if (!net_photo_asset_exists(profile.photo_id))
     {
-        return render_home_page(server_ptr,
-                                packet_ptr,
-                                "<div class='card warn'>Esse photo_id nao existe no firmware atual.</div>",
-                                -1);
+        return light_redirect_with_flash(server_ptr,
+                                         "/admin_profiles",
+                                         "<div class='card warn'>Esse photo_id nao existe no firmware atual.</div>");
     }
 
     if (storage_profile_upsert(&profile, profile_index))
     {
         persist_requested = storage_persist_now();
-        return render_home_page(server_ptr,
-                                packet_ptr,
-                                persist_requested
-                                    ? "<div class='card ok'>Foto anexada e persistencia automatica solicitada.</div>"
-                                    : "<div class='card ok'>Foto anexada em runtime. Se quiser, use \"Persistir cadastros\" como fallback.</div>",
-                                -1);
+        return light_redirect_with_flash(server_ptr,
+                                         "/admin_profiles",
+                                         persist_requested
+                                             ? "<div class='card ok'>Foto anexada e persistencia automatica solicitada.</div>"
+                                             : "<div class='card ok'>Foto anexada. Se quiser, use \"Persistir cadastros\" para confirmar.</div>");
     }
 
-    return render_home_page(server_ptr,
-                            packet_ptr,
-                            "<div class='card warn'>Nao foi possivel anexar a foto ao perfil.</div>",
-                            -1);
+    return light_redirect_with_flash(server_ptr,
+                                     "/admin_profiles",
+                                     "<div class='card warn'>Nao foi possivel anexar a foto ao perfil.</div>");
 }
 
 static UINT handle_import_profiles(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *form_data)
@@ -1954,18 +2163,18 @@ static UINT handle_import_profiles(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet
 
     if (!query_get_value_raw(form_data, "import_json", import_json, sizeof(import_json)))
     {
-        net_set_flash_message("<div class='card warn'>Cole o JSON de perfis antes de importar.</div>");
+        net_set_flash_message("<div class='card warn'>Cole o JSON antes de importar.</div>");
         return send_redirect(server_ptr, "/");
     }
 
     imported_count = import_profiles_from_json(import_json);
     if (imported_count > 0)
     {
-        net_set_flash_message("<div class='card ok'>Perfis importados em runtime. Clique em \"Persistir cadastros\" para salvar na QSPI.</div>");
+        net_set_flash_message("<div class='card ok'>Perfis importados. Clique em \"Persistir cadastros\" para salvar na memória interna.</div>");
         return send_redirect(server_ptr, "/");
     }
 
-    net_set_flash_message("<div class='card warn'>Nenhum perfil foi importado. Use o JSON simples gerado em script/firebase_bundle/profiles_import.json.</div>");
+    net_set_flash_message("<div class='card warn'>Nenhum perfil foi importado. Use o JSON.</div>");
     return send_redirect(server_ptr, "/");
 }
 
@@ -2070,16 +2279,16 @@ static UINT handle_remove_user(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr
 
     if (index < 0)
     {
-        return render_home_page(server_ptr, packet_ptr, "<div class='card warn'>Indice invalido para remocao.</div>", -1);
+        return render_home_page(server_ptr, packet_ptr, "<div class='card warn'>Índice invalido para remoção.</div>", -1);
     }
 
     if (storage_profile_remove(index))
     {
         app_post_event(EVENT_USER_REMOVED, NULL);
-        return render_home_page(server_ptr, packet_ptr, "<div class='card ok'>Perfil removido em runtime. Clique em \"Persistir cadastros\" para salvar na QSPI.</div>", -1);
+        return render_home_page(server_ptr, packet_ptr, "<div class='card ok'>Perfil removido. Clique em \"Persistir cadastros\" para salvar na memória interna.</div>", -1);
     }
 
-    return render_home_page(server_ptr, packet_ptr, "<div class='card warn'>Perfil nao encontrado.</div>", -1);
+    return render_home_page(server_ptr, packet_ptr, "<div class='card warn'>Perfil não encontrado.</div>", -1);
 }
 
 static UINT handle_save_users(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
@@ -2089,7 +2298,7 @@ static UINT handle_save_users(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
         return render_home_page(server_ptr, packet_ptr, "<div class='card ok'>Persistencia solicitada. Aguarde alguns segundos e recarregue a pagina.</div>", -1);
     }
 
-    return render_home_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel persistir os cadastros agora.</div>", -1);
+    return render_home_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel salvar os cadastros agora.</div>", -1);
 }
 
 static UINT light_redirect_with_flash(NX_HTTP_SERVER *server_ptr, const char *location, const char *message)
@@ -2159,7 +2368,6 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
                                       ((NULL != body_html) && ('\0' != body_html[0])));
     char ip_text[20];
     char netmask_text[20];
-    char gateway_text[20];
     ULONG ip_address = 0U;
     ULONG network_mask = 0U;
     ULONG link_status = 0U;
@@ -2168,7 +2376,6 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
     nx_ip_address_get(&g_ip0, &ip_address, &network_mask);
     ip_to_string(ip_address, ip_text, sizeof(ip_text));
     ip_to_string(network_mask, netmask_text, sizeof(netmask_text));
-    ip_to_string(DEVICE_GATEWAY_ADDR, gateway_text, sizeof(gateway_text));
     (void) nx_ip_status_check(&g_ip0, NX_IP_LINK_ENABLED, &link_status, NX_NO_WAIT);
 
     if ((NULL == message_to_render) && ('\0' != g_net_flash_message[0]))
@@ -2203,17 +2410,17 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
              ".muted{color:#607086;font-size:14px;}.ok{color:#137333;}.warn{color:#b26a00;}.nav{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;}.actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;}.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}"
              "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.nav,.actions{flex-direction:column;align-items:stretch;gap:8px;}.btn,.small{display:block;width:100%%;box-sizing:border-box;margin-right:0;margin-bottom:0;text-align:center;}.small{padding:12px 14px;font-size:14px;}h1{font-size:24px;}h2{font-size:20px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}td,th{padding:8px;font-size:13px;}}"
              "</style></head><body><div class='wrap'>"
-             "<div class='card'><h1>S7G2 - Controle de acesso</h1>"
-             "<p class='muted'>IP atual: <strong>%s</strong> | Mascara: <strong>%s</strong> | Gateway: <strong>%s</strong></p>"
+             "<div class='card'><h1>Ramo Estudantil IEEE UFJF - Controle de acesso</h1>"
+             "<p class='muted'>IP atual: <strong>%s</strong> | Mascara: <strong>%s</strong> | Rede: <strong>DHCP</strong></p>"
              "<p class='%s'>Link Ethernet: <strong>%s</strong></p>"
-             "<p class='muted'>Sessao admin web: <strong>%s</strong> | Persistencia QSPI: <strong>%s</strong></p>"
+             "<p class='muted'>Sessao admin web: <strong>%s</strong></p>"
+             "<p class='muted'>Persistencia QSPI: <strong>%s</strong></p>"
              "<div class='nav'><a class='small' href='/'>Inicio</a>%s%s</div></div>"
              "%s"
              "%s"
              "</div></body></html>",
              ip_text,
              netmask_text,
-             gateway_text,
              (0U != link_status) ? "ok" : "warn",
              (0U != link_status) ? "conectado" : "sem link",
              is_admin ? "autenticada" : "bloqueada",
@@ -2234,14 +2441,14 @@ static UINT render_light_login_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packe
     {
         snprintf(body,
                  sizeof(body),
-                 "<p class='ok'>A autenticacao admin ja esta ativa.</p>"
-                 "<div class='actions'><a class='small' href='/admin_profiles'>Ir para perfis</a><a class='small secondary' href='/logout'>Encerrar sessao</a></div>");
+                 "<p class='ok'>Você já está conectado como administrador.</p>"
+                 "<div class='actions'><a class='small' href='/admin_profiles'>Ir para perfis</a><a class='small secondary' href='/logout'>Encerrar sessão</a></div>");
     }
     else
     {
         snprintf(body,
                  sizeof(body),
-                 "<p class='muted'>Use o PIN admin para habilitar cadastro, edicao, importacao e controle da porta.</p>"
+                 "<p class='muted'>Digite a senha de administrador para utilizar o sistema.</p>"
                  "<form action='/login' method='post'>"
                  "<label>PIN admin</label><input type='password' name='pin' maxlength='8' placeholder='Digite o PIN'>"
                  "<button class='btn' type='submit'>Entrar</button></form>");
@@ -2328,7 +2535,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
     if (user_count <= 0)
     {
         strncpy(rows,
-                "<tr><td colspan='5'>Nenhum perfil carregado em RAM no momento.</td></tr>",
+                "<tr><td colspan='5'>Nenhum perfil carregado no momento.</td></tr>",
                 sizeof(rows) - 1U);
         rows[sizeof(rows) - 1U] = '\0';
     }
@@ -2378,7 +2585,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
              "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/import'>Importar perfis</a><a class='small' href='/save_users'>Persistir cadastros</a><a class='small secondary' href='/'>Voltar</a></div>"
              "%s"
              "%s"
-             "<p class='muted'>Mostrando %d a %d de %d perfis carregados em RAM.</p>"
+             "<p class='muted'>Mostrando %d a %d de %d perfis carregados.</p>"
              "<div class='table-wrap'><table><tr><th>Indice</th><th>Nome</th><th>Cargo</th><th>Capitulo</th><th>Cartoes</th><th>Acao</th></tr>%s</table></div>"
              "<div class='actions'>"
              "%s"
@@ -2388,7 +2595,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
              (NULL != message_to_render) ? message_to_render : "",
              (user_count > 0)
                  ? ""
-                 : "<p class='warn'>Se voce acabou de ligar a placa, aguarde alguns segundos e recarregue. Esta pagina usa o snapshot em RAM para ficar leve.</p>",
+                 : "<p class='warn'>Se você acabou de ligar a placa, aguarde alguns segundos e recarregue. Esta página usa a memória RAM para não travar o sistema.</p>",
              (user_count > 0) ? (start_index + 1) : 0,
              end_index,
              user_count,
@@ -2464,7 +2671,7 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
     net_build_photo_options(photo_options, sizeof(photo_options));
     if ('\0' != form_profile.photo_id[0])
     {
-        current_photo_status = net_photo_asset_exists(form_profile.photo_id) ? "asset encontrado" : "asset nao encontrado";
+        current_photo_status = net_photo_asset_exists(form_profile.photo_id) ? "asset encontrado" : "asset não encontrado";
     }
 
     net_html_escape(form_profile.name, form_name_html, sizeof(form_name_html));
@@ -2497,25 +2704,20 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
              "<label>Capitulo IEEE</label><input type='text' name='chapter' maxlength='47' value='%s' placeholder='Ex.: Computer Society'>"
              "<label>Cartoes (separados por virgula)</label><input type='text' name='cards' maxlength='255' value='%s' placeholder='E35C051C,1234ABCD'>"
              "<label>Foto (identificador)</label><input type='text' name='photo_id' list='photo-id-list' maxlength='63' value='%s' placeholder='Escolha um photo_id importado'>"
-             "<datalist id='photo-id-list'>%s</datalist>"
-             "<p class='muted'>Fotos no firmware: <strong>%u</strong>. Status do photo_id atual: <strong>%s</strong>.</p>"
              "<div class='actions'><button class='btn' type='submit'>Salvar perfil</button></div></form>"
-             "<p class='muted'>Esta pagina aceita mais de um cartao por perfil, separados por virgula.</p>"
+             "<p class='muted'>Esta página aceita mais de um cartão por perfil, com os IDs separados por vírgula.</p>"
              "</div></div></body></html>",
              editing ? "Editar perfil" : "Criar perfil",
              (NULL != message_to_render) ? message_to_render : "",
              (user_count > 0)
                  ? ""
-                 : "<p class='warn'>Os perfis ainda nao foram carregados na RAM. Se necessario, volte para a home e tente novamente em alguns segundos.</p>",
+                 : "<p class='warn'>Os perfis ainda nao foram carregados. Se necessario, volte para a página inicial e tente novamente em alguns segundos.</p>",
              editing ? edit_index : -1,
              form_name_html,
              form_role_html,
              form_chapter_html,
              form_cards_html,
-             form_photo_html,
-             photo_options,
-             (unsigned int) PROFILE_PHOTO_ID_COUNT,
-             current_photo_status);
+             form_photo_html);
 
     return send_html_response(server_ptr, packet_ptr, html);
 }
@@ -2532,11 +2734,11 @@ static UINT render_light_import_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
     snprintf(body,
              sizeof(body),
               "<form action='/import_profiles' method='post'>"
-              "<label>JSON de perfis</label>"
+              "<label>Importar perfis via JSON</label>"
               "<textarea name='import_json' placeholder='Cole aqui o JSON gerado em script/firebase_bundle/profiles_import.json'></textarea>"
               "<div class='actions'><button class='btn' type='submit'>Importar perfis</button><a class='small secondary' href='/admin_profiles'>Voltar</a></div></form>"
-              "<p class='muted'>Use o JSON simples de perfis, sem foto binaria. Os cartoes podem ficar vazios e ser vinculados depois.</p>"
-              "<p class='muted'>A importacao roda em background para nao travar a interface web.</p>");
+              "<p class='muted'>Use o JSON simples. Os cartoes podem ficar vazios e ser vinculados depois.</p>"
+              "<p class='muted'>A importação roda em segundo plano para nao travar a interface web.</p>");
 
     return render_light_shell(server_ptr, packet_ptr, "Importar perfis offline", body, message);
 }
@@ -2576,11 +2778,11 @@ static UINT render_light_upload_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
              "<h2>Upload de foto</h2>"
              "<p><a href='/'>Inicio</a><a href='/admin_profiles'>Perfis</a><a href='/admin_profiles'>Voltar</a></p>"
              "%s"
-             "<p class='m'>Foto HD em runtime via 16 blocos reais de 40x40. Escolha o perfil alvo abaixo.</p>"
+             "<p class='m'>Trocar foto de usuário. Selecione o perfil:</p>"
              "<label>Perfil</label><select id='photo-profile'>%s</select>"
              "<label>Arquivo de imagem</label><input id='photo-file' type='file' accept='image/*'>"
              "<p id='upload-status' class='m'>Selecione uma imagem para preparar o envio.</p>"
-             "<button id='upload-submit' type='button' disabled>Enviar foto HD</button>"
+             "<button id='upload-submit' type='button' disabled>Salvar nova foto</button>"
              "<iframe id='upload-target' name='upload-target' style='display:none;'></iframe>"
              "<form id='upload-stage-form' method='post' target='upload-target' style='display:none;'>"
              "<input type='hidden' id='upload-stage-profile' name='profile_index' value=''>"
@@ -2589,13 +2791,10 @@ static UINT render_light_upload_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
              "<input type='hidden' id='upload-stage-tile' name='tile' value='0'>"
              "<textarea id='upload-stage-data' name='data' style='display:none;'></textarea>"
              "</form>"
-             "<p class='m'>A imagem eh reduzida para %ux%u e remontada na placa em 16 blocos. Nesta versao ela nao persiste apos reboot.</p>"
              "<script src='/upload_photo_script'></script>"
              "</div></body></html>",
              (NULL != message_to_render) ? message_to_render : "",
              ('\0' != profile_options[0]) ? profile_options : "<option value=''>Nenhum perfil disponivel</option>",
-             (unsigned int) UPLOAD_IMAGE_DIM,
-             (unsigned int) UPLOAD_IMAGE_DIM,
              (unsigned int) UPLOAD_IMAGE_DIM,
              (unsigned int) UPLOAD_IMAGE_DIM);
 
@@ -2662,7 +2861,7 @@ static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *
     {
         for (int i = count - 1; i >= 0; i--)
         {
-            net_format_tick_timestamp(entries[i].tick, timestamp, sizeof(timestamp));
+            net_format_access_log_timestamp(&entries[i], timestamp, sizeof(timestamp));
             int written = snprintf(&rows[rows_len],
                                    sizeof(rows) - rows_len,
                                    "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
@@ -2680,7 +2879,7 @@ static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *
 
     snprintf(body,
              sizeof(body),
-             "<p class='muted'>Log em RAM dos acessos e eventos principais.</p>"
+             "<p class='muted'>Log de acesso com timestamp por NTP e persistencia na QSPI.</p>"
              "<div class='table-wrap'><table><tr><th>Timestamp</th><th>Evento</th><th>Dado</th><th>Usuario</th></tr>%s</table></div>",
              rows);
 
@@ -2780,8 +2979,8 @@ static UINT handle_light_add_user(NX_HTTP_SERVER *server_ptr, const char *query)
                                          persist_ok
                                              ? "<div class='card ok'>Perfil salvo e gravado automaticamente na QSPI.</div>"
                                              : (persist_requested
-                                                    ? "<div class='card warn'>Perfil salvo em runtime, mas a gravacao automatica na QSPI ainda nao foi confirmada.</div>"
-                                                    : "<div class='card warn'>Perfil salvo em runtime, mas nao foi possivel iniciar a gravacao automatica na QSPI.</div>"));
+                                                    ? "<div class='card warn'>Perfil salvo, mas a gravacao automatica na memória interna ainda não foi confirmada.</div>"
+                                                    : "<div class='card warn'>Perfil salvo, mas não foi possivel iniciar a gravacao automatica na memória interna.</div>"));
     }
 
     if (edit_index >= 0)
@@ -2794,7 +2993,7 @@ static UINT handle_light_add_user(NX_HTTP_SERVER *server_ptr, const char *query)
         location[sizeof(location) - 1U] = '\0';
     }
 
-    return light_redirect_with_flash(server_ptr, location, "<div class='card warn'>Nao foi possivel salvar o perfil. Verifique cartoes duplicados ou campos obrigatorios.</div>");
+    return light_redirect_with_flash(server_ptr, location, "<div class='card warn'>Nao foi possivel salvar o perfil. Verifique cartões duplicados ou campos obrigatórios.</div>");
 }
 
 static UINT handle_light_remove_user(NX_HTTP_SERVER *server_ptr, const char *query)
@@ -2809,7 +3008,7 @@ static UINT handle_light_remove_user(NX_HTTP_SERVER *server_ptr, const char *que
 
     if (index < 0)
     {
-        return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card warn'>Indice invalido para remocao.</div>");
+        return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card warn'>Indice invalido para remoção.</div>");
     }
 
     if (storage_profile_remove(index))
@@ -2819,11 +3018,11 @@ static UINT handle_light_remove_user(NX_HTTP_SERVER *server_ptr, const char *que
         return light_redirect_with_flash(server_ptr,
                                          "/admin_profiles",
                                          persist_requested
-                                             ? "<div class='card ok'>Perfil removido e persistencia automatica solicitada.</div>"
-                                             : "<div class='card ok'>Perfil removido em runtime. Se quiser, use \"Persistir cadastros\" como fallback.</div>");
+                                             ? "<div class='card ok'>Perfil removido e salvamento automático solicitada.</div>"
+                                             : "<div class='card ok'>Perfil removido. Se quiser, use \"Persistir cadastros\" para confirmar.</div>");
     }
 
-    return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card warn'>Perfil nao encontrado.</div>");
+    return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card warn'>Perfil não encontrado.</div>");
 }
 
 static UINT handle_light_save_users(NX_HTTP_SERVER *server_ptr)
@@ -2835,10 +3034,10 @@ static UINT handle_light_save_users(NX_HTTP_SERVER *server_ptr)
 
     if (storage_persist_now())
     {
-        return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card ok'>Persistencia solicitada. Aguarde alguns segundos e recarregue a pagina.</div>");
+        return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card ok'>Persistencia solicitada. Aguarde alguns segundos e recarregue a página.</div>");
     }
 
-    return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card warn'>Nao foi possivel persistir os cadastros agora.</div>");
+    return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card warn'>Não foi possivel salvar os cadastros agora.</div>");
 }
 
 static UINT handle_light_import_profiles(NX_HTTP_SERVER *server_ptr, const char *form_data)
@@ -2850,10 +3049,10 @@ static UINT handle_light_import_profiles(NX_HTTP_SERVER *server_ptr, const char 
 
     if (!net_queue_import_profiles(form_data))
     {
-        return light_redirect_with_flash(server_ptr, "/import", "<div class='card warn'>Cole o JSON de perfis antes de importar.</div>");
+        return light_redirect_with_flash(server_ptr, "/import", "<div class='card warn'>Cole o JSON antes de importar.</div>");
     }
 
-    return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card ok'>Importacao agendada. Recarregue a pagina em alguns instantes para ver o resultado.</div>");
+    return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card ok'>Importação agendada. Recarregue a página em alguns instantes para ver o resultado.</div>");
 }
 
 UINT authentication_check(NX_HTTP_SERVER *server_ptr,
@@ -2942,7 +3141,7 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         if (0 == strcmp(path, "/logout"))
         {
             net_admin_end_session();
-            return light_redirect_with_flash(server_ptr, "/", "<div class='card ok'>Sessao admin encerrada.</div>");
+            return light_redirect_with_flash(server_ptr, "/", "<div class='card ok'>Sessão de administração encerrada.</div>");
         }
         if (0 == strcmp(path, "/profiles"))
         {
@@ -3112,6 +3311,8 @@ void thread_net_entry(ULONG arg)
 
     ULONG actual_status = 0U;
     UINT status;
+    ULONG ip_address = 0U;
+    ULONG network_mask = 0U;
 
     network_stack_init_once();
     storage_init();
@@ -3121,25 +3322,31 @@ void thread_net_entry(ULONG arg)
     {
         g_net_debug_link_status = actual_status;
         g_net_debug_state = 4U;
-        status = nx_ip_address_set(&g_ip0, DEVICE_IP_ADDR, DEVICE_NETMASK);
+        status = g_net_dhcp_created ? nx_dhcp_start(&g_net_dhcp_client) : NX_NOT_ENABLED;
         g_net_debug_ip_status = status;
-        if (NX_SUCCESS == status)
+        if ((NX_SUCCESS == status) || (NX_DHCP_ALREADY_STARTED == status))
         {
-            ULONG ip_address = 0U;
-            ULONG network_mask = 0U;
-
-            (void) nx_ip_gateway_address_set(&g_ip0, DEVICE_GATEWAY_ADDR);
-            (void) nx_ip_address_get(&g_ip0, &ip_address, &network_mask);
-            g_net_debug_ip_address = ip_address;
-            g_net_debug_network_mask = network_mask;
             g_net_debug_state = 5U;
+            if (net_wait_for_dhcp_address(&ip_address, &network_mask))
+            {
+                g_net_debug_ip_address = ip_address;
+                g_net_debug_network_mask = network_mask;
 
-            app_state_lock();
-            g_app_state.net_ready = true;
-            app_state_unlock();
+                app_state_lock();
+                g_app_state.net_ready = true;
+                app_state_unlock();
 
-            g_net_debug_http_status = nx_http_server_start(&g_http_server0);
-            g_net_debug_state = (NX_SUCCESS == g_net_debug_http_status) ? 6U : 0xEEU;
+                g_net_debug_http_status = nx_http_server_start(&g_http_server0);
+                g_net_debug_state = (NX_SUCCESS == g_net_debug_http_status) ? 6U : 0xEEU;
+                if (NX_SUCCESS == g_net_debug_http_status)
+                {
+                    (void) net_sync_time_with_ntp();
+                }
+            }
+            else
+            {
+                g_net_debug_state = 0xEDU;
+            }
         }
     }
 
@@ -3166,6 +3373,7 @@ void thread_net_entry(ULONG arg)
         ULONG invalid_packet_releases = 0U;
 
         net_process_pending_actions();
+        net_service_ntp();
 
         (void) nx_ip_info_get(&g_ip0,
                               &ip_packets_sent,

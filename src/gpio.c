@@ -11,8 +11,24 @@
 #define BTN_POLL_MS         50
 #define BTN_ADMIN_HOLD_TICKS ((TX_TIMER_TICKS_PER_SECOND * 3U) / 2U)
 
+static void gpio_turn_off_board_leds(void)
+{
+    bsp_leds_t leds;
+
+    if (SSP_SUCCESS != R_BSP_LedsGet(&leds))
+    {
+        return;
+    }
+
+    for (uint32_t i = 0U; i < leds.led_count; i++)
+    {
+        (void) g_ioport.p_api->pinWrite(leds.p_leds[i], IOPORT_LEVEL_HIGH);
+    }
+}
+
 void gpio_init(void)
 {
+    gpio_turn_off_board_leds();
     g_ioport.p_api->pinWrite(PIN_RELAY_DOOR, IOPORT_LEVEL_HIGH);
     g_ioport.p_api->pinWrite(PIN_RELAY_LIGHT, IOPORT_LEVEL_LOW);
 }
@@ -170,7 +186,7 @@ void thread_gpio_entry(ULONG arg)
             door_open_tick = tx_time_get();
         } else if (current_door && is_door_pulsing) {
             if ((tx_time_get() - door_open_tick) >= DOOR_PULSE_TICKS) {
-                app_post_event(EVENT_DOOR_CLOSE, NULL);
+                app_set_door(false);
                 is_door_pulsing = false;
             }
         } else if (!current_door) {

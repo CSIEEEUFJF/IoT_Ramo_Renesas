@@ -35,6 +35,7 @@ bool storage_profile_remove(int index);
 bool storage_persist_now(void);
 bool storage_persist_wait(ULONG timeout_ticks);
 unsigned int storage_persist_status(void);
+bool storage_access_log_persist_now(void);
 bool storage_photo_persist_now(const char *photo_id);
 bool storage_photo_ensure_loaded(const char *photo_id);
 
