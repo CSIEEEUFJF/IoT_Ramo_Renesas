@@ -1,4 +1,4 @@
-# IoT Ramo Renesas
+# Design and Deployment of an Ethernet-Enabled Embedded Access Control Platform on a Renesas Synergy MCU
 
 Main project documentation for `IoTRamoRenesas`.
 
