@@ -1,4 +1,4 @@
-# Relatório Técnico — Sistema Embarcado de Controle de Acesso
+# Relatório Técnico — Projeto e Implementação de uma Plataforma Embarcada de Controle de Acesso com Ethernet baseada em Microcontrolador Renesas Synergy
 
 Data de emissão: `2026-03-20`
 
