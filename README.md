@@ -1,4 +1,4 @@
-# IoT Ramo Renesas
+# Projeto e Implementação de uma Plataforma Embarcada de Controle de Acesso com Ethernet baseada em Microcontrolador Renesas Synergy
 
 Documentacao principal do projeto `IoTRamoRenesas`.
 
