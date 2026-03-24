@@ -3,7 +3,7 @@
 
 **Data:** `2026-03-20`  
 **Ramo:** `Ramo Estudantil IEEE UFJF`  
-**Capítulo** `IEEE Computer Society Universidade Federal de Juiz de Fora Student Branch Chapter and IEEE Robotics and Automation Society Universidade Federal de Juiz de Fora Student Branch`  
+**Capítulos:** `IEEE Computer Society Universidade Federal de Juiz de Fora Student Branch Chapter e IEEE Robotics and Automation Society Universidade Federal de Juiz de Fora Student Branch`  
 **Projeto:** `IoTRamoRenesas`  
 **Plataforma:** `Renesas SK-S7G2`  
 
