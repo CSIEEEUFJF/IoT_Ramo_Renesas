@@ -2,10 +2,10 @@
 ## Projeto e Implementação de uma Plataforma Embarcada de Controle de Acesso com Ethernet baseada em Microcontrolador Renesas Synergy
 
 **Data:** `2026-03-20`  
-**Ramo:** `Ramo Estudantil IEEE UFJF` 
-**Capítulo** `IEEE Computer Society Universidade Federal de Juiz de Fora Student Branch Chapter and IEEE Robotics and Automation Society Universidade Federal de Juiz de Fora Student Branch`
+**Ramo:** `Ramo Estudantil IEEE UFJF`  
+**Capítulo** `IEEE Computer Society Universidade Federal de Juiz de Fora Student Branch Chapter and IEEE Robotics and Automation Society Universidade Federal de Juiz de Fora Student Branch`  
 **Projeto:** `IoTRamoRenesas`  
-**Plataforma:** `Renesas SK-S7G2`
+**Plataforma:** `Renesas SK-S7G2`  
 
 ## Contexto
 
