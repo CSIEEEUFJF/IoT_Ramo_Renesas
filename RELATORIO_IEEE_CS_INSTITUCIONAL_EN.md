@@ -2,10 +2,10 @@
 ## Design and Deployment of an Ethernet-Enabled Embedded Access Control Platform on a Renesas Synergy MCU
 
 **Date:** `2026-03-20`  
-**Branch:** `Universidade Federal de Juiz de Fora IEEE Student Branch` 
-**Capítulo** `IEEE Computer Society Universidade Federal de Juiz de Fora Student Branch Chapter and IEEE Robotics and Automation Society Universidade Federal de Juiz de Fora Student Branch`
+**Branch:** `Universidade Federal de Juiz de Fora IEEE Student Branch`  
+**Chapters:** `IEEE Computer Society Universidade Federal de Juiz de Fora Student Branch Chapter and IEEE Robotics and Automation Society Universidade Federal de Juiz de Fora Student Branch`  
 **Project:** `Design and Deployment of an Ethernet-Enabled Embedded Access Control Platform on a Renesas Synergy MCU`  
-**Platform:** `Renesas Synergy S7G2 Starter Kit`
+**Platform:** `Renesas Synergy S7G2 Starter Kit`  
 
 ## Context
 
