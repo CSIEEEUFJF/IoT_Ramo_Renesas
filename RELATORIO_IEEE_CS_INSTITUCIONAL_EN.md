@@ -1,14 +1,15 @@
 # Institutional Report
-## IoT Ramo Renesas Project
+## Design and Deployment of an Ethernet-Enabled Embedded Access Control Platform on a Renesas Synergy MCU
 
 **Date:** `2026-03-20`  
-**Branch:** `IEEE UFJF Student Branch`  
-**Project:** `IoTRamoRenesas`  
-**Platform:** `Renesas SK-S7G2`
+**Branch:** `Universidade Federal de Juiz de Fora IEEE Student Branch` 
+**Capítulo** `IEEE Computer Society Universidade Federal de Juiz de Fora Student Branch Chapter and IEEE Robotics and Automation Society Universidade Federal de Juiz de Fora Student Branch`
+**Project:** `Design and Deployment of an Ethernet-Enabled Embedded Access Control Platform on a Renesas Synergy MCU`  
+**Platform:** `Renesas Synergy S7G2 Starter Kit`
 
 ## Context
 
-`IoTRamoRenesas` started as an embedded access-control idea. The initial goal was straightforward: use the `Renesas SK-S7G2` board to read RFID cards, show the result on a local display, and allow some level of administration over the network. As development progressed, the scope grew and the project moved well beyond a simple proof of concept.
+`Design and Deployment of an Ethernet-Enabled Embedded Access Control Platform on a Renesas Synergy MCU` started as an embedded access-control idea. The initial goal was straightforward: use the `Renesas SK-S7G2` board to read RFID cards, show the result on a local display, and allow some level of administration over the network. As development progressed, the scope grew and the project moved well beyond a simple proof of concept.
 
 At this point, the system combines RFID authentication, a local touch-based interface, an administrative web panel, QSPI-based persistence, user photo display, door control, and event logging. In practice, what began as an experimental baseline now behaves like a complete embedded system ready for demonstration.
 
@@ -42,12 +43,12 @@ It is also worth noting that the system already supports profile import through 
 
 ## Why this matters
 
-The value of `IoTRamoRenesas` comes from the fact that it brings together, in a single system, several engineering layers that are often treated separately in academic projects. Here, they had to work together at the same time: firmware, graphical interface, authentication, networking, persistent storage, and physical board operation.
+The value of `Design and Deployment of an Ethernet-Enabled Embedded Access Control Platform on a Renesas Synergy MCU` comes from the fact that it brings together, in a single system, several engineering layers that are often treated separately in academic projects. Here, they had to work together at the same time: firmware, graphical interface, authentication, networking, persistent storage, and physical board operation.
 
 For the IEEE UFJF Student Branch, this means having a concrete baseline for technical demonstrations, training of new members, and continued development. For the IEEE Computer Society, the project is directly connected to core areas such as embedded systems, embedded networking, low-level software, and hardware-software integration.
 
 ## Closing remarks
 
-`IoTRamoRenesas` has reached a point where it can already be presented as a mature technical delivery. There is still room for future improvement, as in any living project, but the core system is built, integrated, and working.
+`Design and Deployment of an Ethernet-Enabled Embedded Access Control Platform on a Renesas Synergy MCU` has reached a point where it can already be presented as a mature technical delivery. There is still room for future improvement, as in any living project, but the core system is built, integrated, and working.
 
 More than an isolated experiment, the project has become a real embedded platform that demonstrates technical capability, development discipline, and clear potential for continuity within IEEE UFJF activities.
