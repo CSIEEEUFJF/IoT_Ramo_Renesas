@@ -1,4 +1,4 @@
-# Technical Report — Embedded Access Control System
+# Technical Report — Design and Deployment of an Ethernet-Enabled Embedded Access Control Platform on a Renesas Synergy MCU
 
 Issue date: `2026-03-20`
 
