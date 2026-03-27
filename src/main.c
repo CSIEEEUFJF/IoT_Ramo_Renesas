@@ -176,7 +176,7 @@ static void app_metric_log_push_locked(const app_metric_entry_t *entry)
     }
 }
 
-static void app_access_log_add_locked(app_event_type_t type, const char *data)
+static void app_access_log_add_locked(app_event_type_t type, const char *data, app_access_log_entry_t *out_entry)
 {
     app_access_log_entry_t entry;
 
@@ -195,6 +195,11 @@ static void app_access_log_add_locked(app_event_type_t type, const char *data)
     entry.user[sizeof(entry.user) - 1U] = '\0';
 
     app_access_log_push_locked(&entry);
+
+    if (NULL != out_entry)
+    {
+        *out_entry = entry;
+    }
 }
 
 static app_metric_kind_t app_metric_kind_from_text(const char *metric_name)
@@ -523,6 +528,11 @@ void app_set_door(bool open)
     g_app_state.door_open = open;
     gpio_set_door(open);
     app_state_unlock();
+
+    if (open)
+    {
+        app_metric_finish_door(true);
+    }
 }
 
 void app_set_light(bool on)
@@ -536,6 +546,9 @@ void app_set_light(bool on)
 void app_post_event(app_event_type_t type, const char * data)
 {
     app_event_t ev = { .type = type };
+    app_access_log_entry_t access_log_entry;
+
+    memset(&access_log_entry, 0, sizeof(access_log_entry));
 
     switch (type)
     {
@@ -582,9 +595,9 @@ void app_post_event(app_event_type_t type, const char * data)
         case EVENT_CARD_ALREADY_REGISTERED:
         case EVENT_CARD_REGISTRATION_FAILED:
             app_state_lock();
-            app_access_log_add_locked(type, data);
+            app_access_log_add_locked(type, data, &access_log_entry);
             app_state_unlock();
-            (void) storage_access_log_persist_now();
+            (void) storage_access_log_enqueue(&access_log_entry);
             break;
 
         default:

@@ -103,7 +103,9 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define FORM_PHOTO_BUFFER_SIZE    64
 #define ROWS_BUFFER_SIZE         8192
 #define PROFILES_PAGE_SIZE          8
+#define STORAGE_EXPORT_PAGE_SIZE    5
 #define ACCESS_LOG_PAGE_SIZE       10
+#define METRICS_PAGE_SIZE           4
 #define PHOTO_OPTIONS_BUFFER_SIZE 2048
 #define PROFILE_OPTIONS_BUFFER_SIZE 4096
 #define METRIC_BUFFER_SIZE 8192
@@ -175,6 +177,7 @@ static UINT send_plain_status_response(NX_HTTP_SERVER *server, NX_PACKET *packet
 static UINT send_callback_response(NX_HTTP_SERVER *server, const char *status_code, const char *information);
 static UINT send_redirect(NX_HTTP_SERVER *server, const char *location);
 static UINT light_redirect_with_flash(NX_HTTP_SERVER *server_ptr, const char *location, const char *message);
+static int net_format_metric_csv_line(char *out, size_t out_size, const app_metric_entry_t *entry);
 
 static void net_set_flash_message(const char *message)
 {
@@ -1755,7 +1758,8 @@ static void extract_query_from_packet(NX_PACKET *packet_ptr, char *query_out, si
 
 static UINT send_html_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *html)
 {
-    UINT status;
+    ULONG html_len;
+    size_t offset = 0U;
 
     if (NULL == html)
     {
@@ -1763,36 +1767,30 @@ static UINT send_html_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, co
         return NX_PTR_ERROR;
     }
 
-    status = nx_http_server_callback_generate_response_header(server,
-                                                              &packet_ptr,
-                                                              NX_HTTP_STATUS_OK,
-                                                              strlen(html),
-                                                              "text/html",
-                                                              NULL);
-    if (NX_SUCCESS != status)
+    html_len = (ULONG) strlen(html);
+    if (NX_HTTP_CALLBACK_COMPLETED != send_stream_response_header(server, packet_ptr, html_len, "text/html"))
     {
-        g_net_debug_last_response_status = status;
-        return status;
+        return g_net_debug_last_response_status;
     }
 
-    status = nx_packet_data_append(packet_ptr,
-                                   (VOID *) html,
-                                   strlen(html),
-                                   server->nx_http_server_packet_pool_ptr,
-                                   NET_HTTP_PACKET_WAIT_TICKS);
-    if (NX_SUCCESS != status)
+    while (offset < (size_t) html_len)
     {
-        nx_packet_release(packet_ptr);
-        g_net_debug_last_response_status = status;
-        return status;
-    }
+        ULONG chunk_len = (ULONG) sizeof(g_net_download_chunk);
 
-    status = nx_http_server_callback_packet_send(server, packet_ptr);
-    if (NX_SUCCESS != status)
-    {
-        nx_packet_release(packet_ptr);
-        g_net_debug_last_response_status = status;
-        return status;
+        if (((size_t) html_len - offset) < (size_t) chunk_len)
+        {
+            chunk_len = (ULONG) ((size_t) html_len - offset);
+        }
+
+        g_net_debug_last_response_status = nx_http_server_callback_data_send(server,
+                                                                             (VOID *) &html[offset],
+                                                                             chunk_len);
+        if (NX_SUCCESS != g_net_debug_last_response_status)
+        {
+            return g_net_debug_last_response_status;
+        }
+
+        offset += (size_t) chunk_len;
     }
 
     g_net_debug_last_response_status = NX_HTTP_CALLBACK_COMPLETED;
@@ -2143,6 +2141,30 @@ static UINT send_redirect(NX_HTTP_SERVER *server, const char *location)
 
     g_net_debug_last_response_status = NX_HTTP_CALLBACK_COMPLETED;
     return NX_HTTP_CALLBACK_COMPLETED;
+}
+
+static int net_format_metric_csv_line(char *out, size_t out_size, const app_metric_entry_t *entry)
+{
+    char timestamp[32];
+    char duration_text[24];
+
+    if ((NULL == out) || (0U == out_size) || (NULL == entry))
+    {
+        return -1;
+    }
+
+    app_format_metric_timestamp(entry, timestamp, sizeof(timestamp));
+    net_format_ms_x10(net_ticks_to_ms_x10(entry->duration_ticks), duration_text, sizeof(duration_text));
+
+    return snprintf(out,
+                    out_size,
+                    "%s,%s,%s,%lu,%s,%s\r\n",
+                    timestamp,
+                    app_metric_kind_text(entry->kind),
+                    app_metric_case_text(entry->case_id),
+                    (unsigned long) entry->duration_ticks,
+                    duration_text,
+                    entry->success ? "1" : "0");
 }
 
 static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message, int edit_index)
@@ -2631,11 +2653,14 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
                                const char *message)
 {
     static char html[HTML_BUFFER_SIZE];
-    static char content_card[HTML_BUFFER_SIZE / 2];
     const char *message_to_render = message;
-    const char *content_html = "";
     const bool render_content_card = (((NULL != title) && ('\0' != title[0])) ||
                                       ((NULL != body_html) && ('\0' != body_html[0])));
+    const char *content_card_open = render_content_card ? "<div class='card'>" : "";
+    const char *content_card_close = render_content_card ? "</div>" : "";
+    const char *content_title_open = ((NULL != title) && ('\0' != title[0])) ? "<h2>" : "";
+    const char *content_title_text = ((NULL != title) && ('\0' != title[0])) ? title : "";
+    const char *content_title_close = ((NULL != title) && ('\0' != title[0])) ? "</h2>" : "";
     char ip_text[20];
     char netmask_text[20];
     ULONG ip_address = 0U;
@@ -2652,16 +2677,6 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
     {
         message_to_render = g_net_flash_message;
         g_net_flash_message[0] = '\0';
-    }
-
-    if (render_content_card)
-    {
-        snprintf(content_card,
-                 sizeof(content_card),
-                 "<div class='card'><h2>%s</h2>%s</div>",
-                 (NULL != title) ? title : "",
-                 (NULL != body_html) ? body_html : "");
-        content_html = content_card;
     }
 
     snprintf(html,
@@ -2687,7 +2702,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
              "<p class='muted'>Persistencia QSPI: <strong>%s</strong></p>"
              "<div class='nav'><a class='small' href='/'>Inicio</a>%s%s</div></div>"
              "%s"
-             "%s"
+             "%s%s%s%s%s%s"
              "</div></body></html>",
              ip_text,
              netmask_text,
@@ -2698,7 +2713,12 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
              is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/import'>Importar</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
              is_admin ? "<a class='small secondary' href='/logout'>Sair</a>" : "<a class='small' href='/login'>Entrar</a>",
              (NULL != message_to_render) ? message_to_render : "",
-             content_html);
+             content_card_open,
+             content_title_open,
+             content_title_text,
+             content_title_close,
+             (NULL != body_html) ? body_html : "",
+             content_card_close);
 
     return send_html_response(server_ptr, packet_ptr, html);
 }
@@ -3116,12 +3136,21 @@ static UINT render_light_upload_script(NX_HTTP_SERVER *server_ptr, NX_PACKET *pa
     return send_javascript_response(server_ptr, packet_ptr, script);
 }
 
-static UINT render_light_metrics_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
+static UINT render_light_metrics_page(NX_HTTP_SERVER *server_ptr,
+                                      NX_PACKET *packet_ptr,
+                                      const char *message,
+                                      int page)
 {
     const char *message_to_render = message;
     int metric_count;
     int group_count = 0;
     size_t body_len = 0U;
+    int start_index;
+    int end_index;
+    bool has_prev;
+    bool has_next;
+    char prev_button[96];
+    char next_button[96];
 
     if (!net_admin_is_authenticated())
     {
@@ -3132,6 +3161,11 @@ static UINT render_light_metrics_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     {
         message_to_render = g_net_flash_message;
         g_net_flash_message[0] = '\0';
+    }
+
+    if (page < 0)
+    {
+        page = 0;
     }
 
     metric_count = app_metric_snapshot(g_net_metric_snapshot, APP_METRIC_LOG_SIZE);
@@ -3185,28 +3219,63 @@ static UINT render_light_metrics_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
         }
     }
 
+    start_index = page * METRICS_PAGE_SIZE;
+    if ((start_index >= group_count) && (group_count > 0))
+    {
+        start_index = 0;
+        page = 0;
+    }
+    end_index = start_index + METRICS_PAGE_SIZE;
+    if (end_index > group_count)
+    {
+        end_index = group_count;
+    }
+    has_prev = (page > 0);
+    has_next = (end_index < group_count);
+    if (has_prev)
+    {
+        snprintf(prev_button, sizeof(prev_button), "<a class='small secondary' href='/metrics/%d'>Anterior</a>", page - 1);
+    }
+    else
+    {
+        prev_button[0] = '\0';
+    }
+    if (has_next)
+    {
+        snprintf(next_button, sizeof(next_button), "<a class='small' href='/metrics/%d'>Proxima</a>", page + 1);
+    }
+    else
+    {
+        next_button[0] = '\0';
+    }
+
     if (group_count <= 0)
     {
         body_len = (size_t) snprintf(g_net_metric_buffer,
                                      sizeof(g_net_metric_buffer),
-                                     "%s"
-                                     "<p class='muted'>As metricas sao coletadas automaticamente com <code>tx_time_get()</code>, persistidas na QSPI e agregadas aqui em tempo de consulta.</p>"
+                                     "<p class='muted'>As metricas sao coletadas automaticamente com <code>tx_time_get()</code>, persistidas na QSPI e exibidas em paginas menores para nao travar a interface.</p>"
+                                     "<p class='muted'>Cada pagina mostra ate %d grupos agregados.</p>"
                                      "<div class='actions'><a class='small' href='/metrics_download' download='metrics_log.csv'>Baixar log bruto (CSV)</a><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
+                                     "<p class='muted'>Mostrando 0 a 0 de 0 grupos agregados.</p>"
                                      "<div class='table-wrap'><table><tr><th>Metrica</th><th>Caso</th><th>N</th><th>Media</th><th>Mediana</th><th>Min</th><th>Max</th><th>Desvio padrao</th><th>Falhas</th></tr>"
                                      "<tr><td colspan='9'>Nenhuma metrica coletada ainda.</td></tr></table></div>",
-                                     (NULL != message_to_render) ? message_to_render : "");
+                                     METRICS_PAGE_SIZE);
     }
     else
     {
         body_len = (size_t) snprintf(g_net_metric_buffer,
                                      sizeof(g_net_metric_buffer),
-                                     "%s"
-                                     "<p class='muted'>As metricas sao coletadas automaticamente com <code>tx_time_get()</code>, persistidas na QSPI e agregadas aqui em tempo de consulta.</p>"
+                                     "<p class='muted'>As metricas sao coletadas automaticamente com <code>tx_time_get()</code>, persistidas na QSPI e exibidas em paginas menores para nao travar a interface.</p>"
+                                     "<p class='muted'>Cada pagina mostra ate %d grupos agregados.</p>"
                                      "<div class='actions'><a class='small' href='/metrics_download' download='metrics_log.csv'>Baixar log bruto (CSV)</a><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
+                                     "<p class='muted'>Mostrando %d a %d de %d grupos agregados.</p>"
                                      "<div class='table-wrap'><table><tr><th>Metrica</th><th>Caso</th><th>N</th><th>Media</th><th>Mediana</th><th>Min</th><th>Max</th><th>Desvio padrao</th><th>Falhas</th></tr>",
-                                     (NULL != message_to_render) ? message_to_render : "");
+                                     METRICS_PAGE_SIZE,
+                                     start_index + 1,
+                                     end_index,
+                                     group_count);
 
-        for (int g = 0; g < group_count; g++)
+        for (int g = start_index; g < end_index; g++)
         {
             int duration_count = 0;
             uint64_t mean_ms_x10;
@@ -3303,21 +3372,36 @@ static UINT render_light_metrics_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
         }
         if (body_len < sizeof(g_net_metric_buffer))
         {
-            (void) snprintf(&g_net_metric_buffer[body_len],
-                            sizeof(g_net_metric_buffer) - body_len,
-                            "</table></div>");
+            int written = snprintf(&g_net_metric_buffer[body_len],
+                                   sizeof(g_net_metric_buffer) - body_len,
+                                   "</table></div>");
+            if ((written > 0) && ((size_t) written < (sizeof(g_net_metric_buffer) - body_len)))
+            {
+                body_len += (size_t) written;
+            }
         }
     }
 
-    return render_light_shell(server_ptr, packet_ptr, "Metricas de desempenho", g_net_metric_buffer, NULL);
+    if ((body_len < sizeof(g_net_metric_buffer)) &&
+        ((strlen(prev_button) + strlen(next_button) + 32U) < (sizeof(g_net_metric_buffer) - body_len)))
+    {
+        (void) snprintf(&g_net_metric_buffer[body_len],
+                        sizeof(g_net_metric_buffer) - body_len,
+                        "<div class='actions'>%s%s</div>",
+                        prev_button,
+                        next_button);
+    }
+
+    return render_light_shell(server_ptr, packet_ptr, "Metricas de desempenho", g_net_metric_buffer, message_to_render);
 }
 
 static UINT handle_light_metrics_download(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
 {
-    char timestamp[32];
-    char duration_text[24];
+    static const char csv_header[] = "timestamp,metric,case,duration_ticks,duration_ms,success\r\n";
+    char line_buffer[160];
     int metric_count;
-    size_t offset = 0U;
+    ULONG total_size = (ULONG) (sizeof(csv_header) - 1U);
+    size_t chunk_len = 0U;
 
     if (!net_admin_is_authenticated())
     {
@@ -3325,33 +3409,55 @@ static UINT handle_light_metrics_download(NX_HTTP_SERVER *server_ptr, NX_PACKET 
     }
 
     metric_count = app_metric_snapshot(g_net_metric_snapshot, APP_METRIC_LOG_SIZE);
-    offset = (size_t) snprintf(g_net_metric_buffer,
-                               sizeof(g_net_metric_buffer),
-                               "timestamp,metric,case,duration_ticks,duration_ms,success\r\n");
-
-    for (int i = 0; (i < metric_count) && (offset < sizeof(g_net_metric_buffer)); i++)
+    for (int i = 0; i < metric_count; i++)
     {
-        int written;
+        int written = net_format_metric_csv_line(line_buffer, sizeof(line_buffer), &g_net_metric_snapshot[i]);
 
-        app_format_metric_timestamp(&g_net_metric_snapshot[i], timestamp, sizeof(timestamp));
-        net_format_ms_x10(net_ticks_to_ms_x10(g_net_metric_snapshot[i].duration_ticks), duration_text, sizeof(duration_text));
-        written = snprintf(&g_net_metric_buffer[offset],
-                           sizeof(g_net_metric_buffer) - offset,
-                           "%s,%s,%s,%lu,%s,%s\r\n",
-                           timestamp,
-                           app_metric_kind_text(g_net_metric_snapshot[i].kind),
-                           app_metric_case_text(g_net_metric_snapshot[i].case_id),
-                           (unsigned long) g_net_metric_snapshot[i].duration_ticks,
-                           duration_text,
-                           g_net_metric_snapshot[i].success ? "1" : "0");
-        if ((written <= 0) || ((size_t) written >= (sizeof(g_net_metric_buffer) - offset)))
+        if ((written <= 0) || ((size_t) written >= sizeof(line_buffer)))
         {
-            break;
+            return send_plain_status_response(server_ptr, packet_ptr, NX_HTTP_STATUS_INTERNAL_ERROR, "ERR_EXPORT");
         }
-        offset += (size_t) written;
+
+        total_size += (ULONG) written;
     }
 
-    return send_plain_response(server_ptr, packet_ptr, g_net_metric_buffer);
+    if (NX_HTTP_CALLBACK_COMPLETED != send_stream_response_header(server_ptr, packet_ptr, total_size, "text/csv"))
+    {
+        return g_net_debug_last_response_status;
+    }
+
+    memcpy(g_net_download_chunk, csv_header, sizeof(csv_header) - 1U);
+    chunk_len = sizeof(csv_header) - 1U;
+
+    for (int i = 0; i < metric_count; i++)
+    {
+        int written = net_format_metric_csv_line(line_buffer, sizeof(line_buffer), &g_net_metric_snapshot[i]);
+
+        if ((written <= 0) || ((size_t) written >= sizeof(line_buffer)))
+        {
+            return NX_NOT_SUCCESSFUL;
+        }
+
+        if ((chunk_len + (size_t) written) > sizeof(g_net_download_chunk))
+        {
+            if (NX_SUCCESS != nx_http_server_callback_data_send(server_ptr, g_net_download_chunk, (ULONG) chunk_len))
+            {
+                return NX_NOT_SUCCESSFUL;
+            }
+            chunk_len = 0U;
+        }
+
+        memcpy(&g_net_download_chunk[chunk_len], line_buffer, (size_t) written);
+        chunk_len += (size_t) written;
+    }
+
+    if ((chunk_len > 0U) &&
+        (NX_SUCCESS != nx_http_server_callback_data_send(server_ptr, g_net_download_chunk, (ULONG) chunk_len)))
+    {
+        return NX_NOT_SUCCESSFUL;
+    }
+
+    return NX_HTTP_CALLBACK_COMPLETED;
 }
 
 static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
@@ -3359,10 +3465,6 @@ static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
                                              const char *message,
                                              int page)
 {
-    char *body = g_net_metric_buffer;
-    char *rows = g_net_metric_buffer + (METRIC_BUFFER_SIZE / 2);
-    const size_t body_size = METRIC_BUFFER_SIZE / 2;
-    const size_t rows_size = METRIC_BUFFER_SIZE / 2;
     const char *message_to_render = message;
     storage_user_profile_t profile;
     int profile_count;
@@ -3372,7 +3474,8 @@ static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
     bool has_next;
     char prev_button[96];
     char next_button[96];
-    size_t rows_len = 0U;
+    size_t body_len = 0U;
+    int written;
 
     if (!net_admin_is_authenticated())
     {
@@ -3391,13 +3494,13 @@ static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
     }
 
     profile_count = storage_user_count();
-    start_index = page * PROFILES_PAGE_SIZE;
-    if (start_index > profile_count)
+    start_index = page * STORAGE_EXPORT_PAGE_SIZE;
+    if ((start_index >= profile_count) && (profile_count > 0))
     {
         start_index = 0;
         page = 0;
     }
-    end_index = start_index + PROFILES_PAGE_SIZE;
+    end_index = start_index + STORAGE_EXPORT_PAGE_SIZE;
     if (end_index > profile_count)
     {
         end_index = profile_count;
@@ -3421,21 +3524,36 @@ static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
         next_button[0] = '\0';
     }
 
-    rows[0] = '\0';
+    written = snprintf(g_net_metric_buffer,
+                       sizeof(g_net_metric_buffer),
+                       "<p class='muted'>A listagem foi paginada para manter a interface leve. Cada pagina mostra ate %d perfis persistidos.</p>"
+                       "<div class='actions'><a class='small' href='/storage_users_download' download='users.json'>Baixar users.json</a><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
+                       "<p class='muted'>Mostrando %d a %d de %d perfis persistidos.</p>"
+                       "<div class='table-wrap'><table><tr><th>Nome</th><th>Cargo</th><th>Photo ID</th><th>Arquivo</th></tr>",
+                       STORAGE_EXPORT_PAGE_SIZE,
+                       (profile_count > 0) ? (start_index + 1) : 0,
+                       end_index,
+                       profile_count);
+    if ((written <= 0) || ((size_t) written >= sizeof(g_net_metric_buffer)))
+    {
+        return render_light_shell(server_ptr, packet_ptr, "Exportar dados do storage", "<p class='warn'>Nao foi possivel montar a pagina de exportacao.</p>", message_to_render);
+    }
+    body_len = (size_t) written;
 
     if (profile_count <= 0)
     {
-        strncpy(rows,
-                "<tr><td colspan='4'>Nenhum perfil carregado a partir do storage.</td></tr>",
-                rows_size - 1U);
-        rows[rows_size - 1U] = '\0';
+        written = snprintf(&g_net_metric_buffer[body_len],
+                           sizeof(g_net_metric_buffer) - body_len,
+                           "<tr><td colspan='4'>Nenhum perfil carregado a partir do storage.</td></tr>");
+        if ((written > 0) && ((size_t) written < (sizeof(g_net_metric_buffer) - body_len)))
+        {
+            body_len += (size_t) written;
+        }
     }
     else
     {
         for (int i = start_index; i < end_index; i++)
         {
-            int written;
-
             if (!storage_profile_get(i, &profile))
             {
                 continue;
@@ -3443,8 +3561,8 @@ static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
 
             if ('\0' != profile.photo_id[0])
             {
-                written = snprintf(&rows[rows_len],
-                                   rows_size - rows_len,
+                written = snprintf(&g_net_metric_buffer[body_len],
+                                   sizeof(g_net_metric_buffer) - body_len,
                                    "<tr><td>%s</td><td>%s</td><td>%s</td><td><a class='small' href='/storage_photo_download?photo_id=%s' download>Baixar foto</a></td></tr>",
                                    profile.name,
                                    ('\0' != profile.role[0]) ? profile.role : "-",
@@ -3453,61 +3571,89 @@ static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
             }
             else
             {
-                written = snprintf(&rows[rows_len],
-                                   rows_size - rows_len,
+                written = snprintf(&g_net_metric_buffer[body_len],
+                                   sizeof(g_net_metric_buffer) - body_len,
                                    "<tr><td>%s</td><td>%s</td><td>-</td><td>-</td></tr>",
                                    profile.name,
                                    ('\0' != profile.role[0]) ? profile.role : "-");
             }
 
-            if ((written <= 0) || ((size_t) written >= (rows_size - rows_len)))
+            if ((written <= 0) || ((size_t) written >= (sizeof(g_net_metric_buffer) - body_len)))
             {
                 break;
             }
-            rows_len += (size_t) written;
+            body_len += (size_t) written;
         }
     }
 
-    snprintf(body,
-             body_size,
-             "%s"
-             "<p class='muted'>Baixe o arquivo persistido de perfis e, separadamente, cada foto salva na QSPI.</p>"
-             "<div class='actions'><a class='small' href='/storage_users_download' download='users.json'>Baixar users.json</a><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
-             "<p class='muted'>Mostrando %d a %d de %d perfis persistidos.</p>"
-             "<div class='table-wrap'><table><tr><th>Nome</th><th>Cargo</th><th>Photo ID</th><th>Arquivo</th></tr>%s</table></div>",
-             (NULL != message_to_render) ? message_to_render : "",
-             (profile_count > 0) ? (start_index + 1) : 0,
-             end_index,
-             profile_count,
-             rows);
-
-    if ((strlen(body) + strlen(prev_button) + strlen(next_button) + 128U) < body_size)
+    if (body_len < sizeof(g_net_metric_buffer))
     {
-        snprintf(body + strlen(body),
-                 body_size - strlen(body),
-                 "<div class='actions'>%s%s</div>",
-                 prev_button,
-                 next_button);
+        written = snprintf(&g_net_metric_buffer[body_len],
+                           sizeof(g_net_metric_buffer) - body_len,
+                           "</table></div>");
+        if ((written > 0) && ((size_t) written < (sizeof(g_net_metric_buffer) - body_len)))
+        {
+            body_len += (size_t) written;
+        }
     }
 
-    return render_light_shell(server_ptr, packet_ptr, "Exportar dados do storage", body, NULL);
+    if ((body_len < sizeof(g_net_metric_buffer)) &&
+        ((strlen(prev_button) + strlen(next_button) + 32U) < (sizeof(g_net_metric_buffer) - body_len)))
+    {
+        (void) snprintf(&g_net_metric_buffer[body_len],
+                        sizeof(g_net_metric_buffer) - body_len,
+                        "<div class='actions'>%s%s</div>",
+                        prev_button,
+                        next_button);
+    }
+
+    return render_light_shell(server_ptr, packet_ptr, "Exportar dados do storage", g_net_metric_buffer, message_to_render);
 }
 
 static UINT handle_light_storage_users_download(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
 {
-    size_t out_len = 0U;
+    ULONG total_size = 0U;
+    ULONG offset = 0U;
 
     if (!net_admin_is_authenticated())
     {
         return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para baixar os perfis persistidos.</div>");
     }
 
-    if (!storage_export_users_json(g_net_metric_buffer, sizeof(g_net_metric_buffer), &out_len) || (0U == out_len))
+    if (!storage_export_users_json_info(&total_size) || (0U == total_size))
     {
         return light_redirect_with_flash(server_ptr, "/storage_export", "<div class='card warn'>Nao foi possivel ler o users.json da QSPI.</div>");
     }
 
-    return send_buffer_response(server_ptr, packet_ptr, g_net_metric_buffer, out_len, "application/json");
+    if (NX_HTTP_CALLBACK_COMPLETED != send_stream_response_header(server_ptr, packet_ptr, total_size, "application/json"))
+    {
+        return g_net_debug_last_response_status;
+    }
+
+    while (offset < total_size)
+    {
+        size_t read_now = 0U;
+        size_t request_size = sizeof(g_net_download_chunk);
+
+        if ((total_size - offset) < request_size)
+        {
+            request_size = (size_t) (total_size - offset);
+        }
+
+        if (!storage_export_users_json_read(offset, g_net_download_chunk, request_size, &read_now) || (0U == read_now))
+        {
+            return NX_NOT_SUCCESSFUL;
+        }
+
+        if (NX_SUCCESS != nx_http_server_callback_data_send(server_ptr, g_net_download_chunk, (ULONG) read_now))
+        {
+            return NX_NOT_SUCCESSFUL;
+        }
+
+        offset += (ULONG) read_now;
+    }
+
+    return NX_HTTP_CALLBACK_COMPLETED;
 }
 
 static UINT handle_light_storage_photo_download(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *query)
@@ -3531,7 +3677,7 @@ static UINT handle_light_storage_photo_download(NX_HTTP_SERVER *server_ptr, NX_P
         return light_redirect_with_flash(server_ptr, "/storage_export", "<div class='card warn'>Nao foi possivel abrir a foto persistida na QSPI.</div>");
     }
 
-    if (NX_SUCCESS != send_stream_response_header(server_ptr, packet_ptr, info.total_size, "application/octet-stream"))
+    if (NX_HTTP_CALLBACK_COMPLETED != send_stream_response_header(server_ptr, packet_ptr, info.total_size, "application/octet-stream"))
     {
         return g_net_debug_last_response_status;
     }
@@ -3673,10 +3819,10 @@ static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr,
              "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.actions{flex-direction:column;align-items:stretch;gap:8px;}.small{display:block;width:100%%;box-sizing:border-box;text-align:center;}.table-wrap{margin:0 -4px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}th,td{padding:8px;font-size:13px;white-space:nowrap;}}"
              "</style></head><body><div class='wrap'><div class='card'>"
              "<h1>Log de acesso</h1>"
-             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/admin_profiles'>Perfis</a><a class='small secondary' href='/'>Voltar</a></div>"
+             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/save_access_log'>Salvar log</a><a class='small secondary' href='/'>Voltar</a></div>"
              "%s"
-             "<p class='muted'>Log de acesso com timestamp por NTP e persistencia na QSPI.</p>"
-             "<p class='muted'>Mostrando %d evento(s) nesta pagina, de um total de %d.</p>"
+             "<p class='muted'>A tela mostra os ultimos eventos em RAM. O arquivo persistido cresce em append na QSPI e gira por tamanho.</p>"
+             "<p class='muted'>Mostrando %d evento(s) nesta pagina, de um total de %d em memoria.</p>"
              "<div class='table-wrap'><table><tr><th>Timestamp</th><th>Evento</th><th>Dado</th><th>Usuario</th></tr>%s</table></div>"
              "<div class='actions'>%s%s</div>"
              "</div></div></body></html>",
@@ -3912,6 +4058,21 @@ static UINT handle_light_save_users(NX_HTTP_SERVER *server_ptr)
     return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card warn'>Não foi possivel salvar os cadastros agora.</div>");
 }
 
+static UINT handle_light_save_access_log(NX_HTTP_SERVER *server_ptr)
+{
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para persistir o log de acesso.</div>");
+    }
+
+    if (storage_access_log_persist_now())
+    {
+        return light_redirect_with_flash(server_ptr, "/access_log", "<div class='card ok'>Persistencia do log de acesso solicitada. Aguarde alguns segundos e recarregue a página.</div>");
+    }
+
+    return light_redirect_with_flash(server_ptr, "/access_log", "<div class='card warn'>Não foi possivel salvar o log de acesso agora.</div>");
+}
+
 static UINT handle_light_import_profiles(NX_HTTP_SERVER *server_ptr, const char *form_data)
 {
     if (!net_admin_is_authenticated())
@@ -3985,7 +4146,7 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
     /* Prefira o resource do NetX para extrair a query. */
     g_net_debug_http_stage = 2U;
     extract_query_from_resource(resource, query, sizeof(query));
-    if ((query[0] == '\0') && (NX_HTTP_SERVER_GET_REQUEST != request_type))
+    if (query[0] == '\0')
     {
         extract_query_from_packet(packet_ptr, query, sizeof(query));
     }
@@ -4082,7 +4243,14 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         }
         if (0 == strcmp(path, "/metrics"))
         {
-            return render_light_metrics_page(server_ptr, packet_ptr, NULL);
+            return render_light_metrics_page(server_ptr, packet_ptr, NULL, query_get_int(query, "page", 0));
+        }
+        if (0 == strncmp(path, "/metrics/", strlen("/metrics/")))
+        {
+            return render_light_metrics_page(server_ptr,
+                                             packet_ptr,
+                                             NULL,
+                                             net_path_get_index_after_prefix(path, "/metrics/", 0));
         }
         if (0 == strcmp(path, "/metrics_download"))
         {
@@ -4122,6 +4290,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         if (0 == strcmp(path, "/save_users"))
         {
             return handle_light_save_users(server_ptr);
+        }
+        if (0 == strcmp(path, "/save_access_log"))
+        {
+            return handle_light_save_access_log(server_ptr);
         }
         if (0 == strcmp(path, "/portaon"))
         {
