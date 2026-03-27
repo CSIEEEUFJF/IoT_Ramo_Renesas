@@ -106,6 +106,8 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define ACCESS_LOG_PAGE_SIZE       10
 #define PHOTO_OPTIONS_BUFFER_SIZE 2048
 #define PROFILE_OPTIONS_BUFFER_SIZE 4096
+#define METRIC_BUFFER_SIZE 8192
+#define METRIC_GROUP_MAX 24
 #define UPLOAD_IMAGE_DIM        160U
 #define UPLOAD_TILE_DIM         40U
 #define UPLOAD_TILE_COUNT_X     (UPLOAD_IMAGE_DIM / UPLOAD_TILE_DIM)
@@ -114,6 +116,7 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define UPLOAD_TILE_PIXEL_BYTES (UPLOAD_TILE_DIM * UPLOAD_TILE_DIM * 2U)
 #define UPLOAD_TILE_B64_BUFFER_SIZE ((UPLOAD_TILE_PIXEL_BYTES * 4U / 3U) + 128U)
 #define HTTP_SEND_CHUNK_SIZE      512U
+#define NET_DOWNLOAD_CHUNK_SIZE  1024U
 #define NET_HTTP_PACKET_WAIT_TICKS (TX_TIMER_TICKS_PER_SECOND / 4U)
 #define NET_DHCP_WAIT_SLICE_TICKS (TX_TIMER_TICKS_PER_SECOND / 2U)
 #define NET_DHCP_MAX_WAIT_TICKS   (TX_TIMER_TICKS_PER_SECOND * 30U)
@@ -125,6 +128,17 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define NET_NTP_RESYNC_INTERVAL_TICKS (6U * 60U * 60U * TX_TIMER_TICKS_PER_SECOND)
 #define WEB_ADMIN_PIN           "1234"
 #define WEB_ADMIN_SESSION_TICKS (10U * 60U * TX_TIMER_TICKS_PER_SECOND)
+
+typedef struct st_net_metric_group
+{
+    app_metric_kind_t kind;
+    app_metric_case_t case_id;
+    int count;
+    int failures;
+    uint64_t sum_ticks;
+    ULONG min_ticks;
+    ULONG max_ticks;
+} net_metric_group_t;
 
 static char g_net_flash_message[512] = {0};
 static ULONG g_net_admin_session_deadline = 0U;
@@ -145,10 +159,17 @@ static int g_net_pending_upload_width = (int) UPLOAD_IMAGE_DIM;
 static int g_net_pending_upload_height = (int) UPLOAD_IMAGE_DIM;
 static uint32_t g_net_pending_upload_tile_mask = 0U;
 static char g_net_pending_upload_photo_id[STORAGE_PHOTO_ID_MAX_LEN];
+static app_metric_entry_t g_net_metric_snapshot[APP_METRIC_LOG_SIZE];
+static net_metric_group_t g_net_metric_groups[METRIC_GROUP_MAX];
+static ULONG g_net_metric_durations[APP_METRIC_LOG_SIZE];
+static char g_net_metric_buffer[METRIC_BUFFER_SIZE];
+static uint8_t g_net_download_chunk[NET_DOWNLOAD_CHUNK_SIZE];
 
 static UINT send_html_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *html);
 static UINT send_plain_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *text);
 static UINT send_javascript_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *script);
+static UINT send_buffer_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const void *data, size_t data_len, const char *content_type);
+static UINT send_stream_response_header(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, ULONG data_len, const char *content_type);
 static UINT send_plain_response_fresh(NX_HTTP_SERVER *server, const char *text);
 static UINT send_plain_status_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *status_code, const char *text);
 static UINT send_callback_response(NX_HTTP_SERVER *server, const char *status_code, const char *information);
@@ -236,6 +257,102 @@ static void net_admin_begin_session(void)
 static void net_admin_end_session(void)
 {
     g_net_admin_session_deadline = 0U;
+}
+
+static const char *net_metric_http_case_for_path(const char *path)
+{
+    if (NULL == path)
+    {
+        return NULL;
+    }
+
+    if (0 == strcmp(path, "/login"))
+    {
+        return "/login";
+    }
+    if ((0 == strcmp(path, "/admin_profiles")) ||
+        (0 == strncmp(path, "/admin_profiles/", strlen("/admin_profiles/"))))
+    {
+        return "/admin_profiles";
+    }
+    if (0 == strcmp(path, "/import_profiles"))
+    {
+        return "/import_profiles";
+    }
+    if ((0 == strcmp(path, "/upload_photo")) ||
+        (0 == strcmp(path, "/upload_photo_begin")) ||
+        (0 == strcmp(path, "/upload_photo_chunk")) ||
+        (0 == strcmp(path, "/upload_photo_commit")))
+    {
+        return "/upload_photo";
+    }
+    if ((0 == strcmp(path, "/metrics")) ||
+        (0 == strcmp(path, "/metrics_download")) ||
+        (0 == strncmp(path, "/metrics/", strlen("/metrics/"))))
+    {
+        return "/metrics";
+    }
+
+    return NULL;
+}
+
+static const char *net_metric_import_case_for_count(int imported_count)
+{
+    if (imported_count <= 10)
+    {
+        return "10 perfis";
+    }
+    if (imported_count <= 50)
+    {
+        return "50 perfis";
+    }
+    return "50+ perfis";
+}
+
+static uint64_t net_isqrt64(uint64_t value)
+{
+    uint64_t result = 0U;
+    uint64_t bit = (uint64_t) 1U << 62;
+
+    while (bit > value)
+    {
+        bit >>= 2;
+    }
+
+    while (bit != 0U)
+    {
+        if (value >= (result + bit))
+        {
+            value -= (result + bit);
+            result = (result >> 1U) + bit;
+        }
+        else
+        {
+            result >>= 1U;
+        }
+        bit >>= 2U;
+    }
+
+    return result;
+}
+
+static uint64_t net_ticks_to_ms_x10(ULONG ticks)
+{
+    return ((uint64_t) ticks * 10000ULL) / (uint64_t) TX_TIMER_TICKS_PER_SECOND;
+}
+
+static void net_format_ms_x10(uint64_t value_x10, char *out, size_t out_size)
+{
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    snprintf(out,
+             out_size,
+             "%llu.%llums",
+             (unsigned long long) (value_x10 / 10ULL),
+             (unsigned long long) (value_x10 % 10ULL));
 }
 
 static bool net_photo_asset_exists(const char *photo_id)
@@ -1567,6 +1684,7 @@ static void net_process_pending_actions(void)
     bool import_pending = false;
     int imported_count = 0;
     bool persist_requested = false;
+    ULONG import_start_tick = 0U;
 
     net_action_lock();
     if (g_net_import_pending)
@@ -1583,7 +1701,12 @@ static void net_process_pending_actions(void)
 
     if (import_pending)
     {
+        import_start_tick = tx_time_get();
         imported_count = import_profiles_from_json(g_net_pending_import_work_json);
+        app_metric_add("JSON import",
+                       net_metric_import_case_for_count(imported_count),
+                       tx_time_get() - import_start_tick,
+                       (imported_count > 0));
         if (imported_count > 0)
         {
             persist_requested = storage_persist_now();
@@ -1752,6 +1875,86 @@ static UINT send_javascript_response(NX_HTTP_SERVER *server, NX_PACKET *packet_p
     if (NX_SUCCESS != status)
     {
         nx_packet_release(packet_ptr);
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    status = nx_http_server_callback_packet_send(server, packet_ptr);
+    if (NX_SUCCESS != status)
+    {
+        nx_packet_release(packet_ptr);
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    g_net_debug_last_response_status = NX_HTTP_CALLBACK_COMPLETED;
+    return NX_HTTP_CALLBACK_COMPLETED;
+}
+
+static UINT send_buffer_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const void *data, size_t data_len, const char *content_type)
+{
+    UINT status;
+
+    if ((NULL == data) || (NULL == content_type))
+    {
+        g_net_debug_last_response_status = NX_PTR_ERROR;
+        return NX_PTR_ERROR;
+    }
+
+    status = nx_http_server_callback_generate_response_header(server,
+                                                              &packet_ptr,
+                                                              NX_HTTP_STATUS_OK,
+                                                              data_len,
+                                                              (CHAR *) content_type,
+                                                              NULL);
+    if (NX_SUCCESS != status)
+    {
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    status = nx_packet_data_append(packet_ptr,
+                                   (VOID *) data,
+                                   data_len,
+                                   server->nx_http_server_packet_pool_ptr,
+                                   NET_HTTP_PACKET_WAIT_TICKS);
+    if (NX_SUCCESS != status)
+    {
+        nx_packet_release(packet_ptr);
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    status = nx_http_server_callback_packet_send(server, packet_ptr);
+    if (NX_SUCCESS != status)
+    {
+        nx_packet_release(packet_ptr);
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    g_net_debug_last_response_status = NX_HTTP_CALLBACK_COMPLETED;
+    return NX_HTTP_CALLBACK_COMPLETED;
+}
+
+static UINT send_stream_response_header(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, ULONG data_len, const char *content_type)
+{
+    UINT status;
+
+    if (NULL == content_type)
+    {
+        g_net_debug_last_response_status = NX_PTR_ERROR;
+        return NX_PTR_ERROR;
+    }
+
+    status = nx_http_server_callback_generate_response_header(server,
+                                                              &packet_ptr,
+                                                              NX_HTTP_STATUS_OK,
+                                                              data_len,
+                                                              (CHAR *) content_type,
+                                                              NULL);
+    if (NX_SUCCESS != status)
+    {
         g_net_debug_last_response_status = status;
         return status;
     }
@@ -2492,7 +2695,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
              (0U != link_status) ? "conectado" : "sem link",
              is_admin ? "autenticada" : "bloqueada",
              light_persist_status_text(),
-             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/import'>Importar</a><a class='small' href='/access_log'>Log</a><a class='small' href='/door'>Porta</a>" : "",
+             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/import'>Importar</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
              is_admin ? "<a class='small secondary' href='/logout'>Sair</a>" : "<a class='small' href='/login'>Entrar</a>",
              (NULL != message_to_render) ? message_to_render : "",
              content_html);
@@ -2650,7 +2853,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
              "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.actions{flex-direction:column;align-items:stretch;gap:8px;}.small{display:block;width:100%%;box-sizing:border-box;text-align:center;}.table-wrap{margin:0 -4px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}th,td{padding:8px;font-size:13px;white-space:nowrap;}}"
              "</style></head><body><div class='wrap'><div class='card'>"
              "<h1>Perfis existentes</h1>"
-             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/import'>Importar perfis</a><a class='small' href='/save_users'>Persistir cadastros</a><a class='small secondary' href='/'>Voltar</a></div>"
+             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/import'>Importar perfis</a><a class='small' href='/storage_export'>Exportar storage</a><a class='small' href='/save_users'>Persistir cadastros</a><a class='small secondary' href='/'>Voltar</a></div>"
              "%s"
              "%s"
              "<p class='muted'>Mostrando %d a %d de %d perfis carregados.</p>"
@@ -2911,6 +3114,452 @@ static UINT render_light_upload_script(NX_HTTP_SERVER *server_ptr, NX_PACKET *pa
              (unsigned int) UPLOAD_TILE_DIM);
 
     return send_javascript_response(server_ptr, packet_ptr, script);
+}
+
+static UINT render_light_metrics_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
+{
+    const char *message_to_render = message;
+    int metric_count;
+    int group_count = 0;
+    size_t body_len = 0U;
+
+    if (!net_admin_is_authenticated())
+    {
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para visualizar as metricas.</div>");
+    }
+
+    if ((NULL == message_to_render) && ('\0' != g_net_flash_message[0]))
+    {
+        message_to_render = g_net_flash_message;
+        g_net_flash_message[0] = '\0';
+    }
+
+    metric_count = app_metric_snapshot(g_net_metric_snapshot, APP_METRIC_LOG_SIZE);
+    memset(g_net_metric_groups, 0, sizeof(g_net_metric_groups));
+    g_net_metric_buffer[0] = '\0';
+
+    for (int i = 0; i < metric_count; i++)
+    {
+        int group_index = -1;
+
+        if (APP_METRIC_KIND_UNKNOWN == g_net_metric_snapshot[i].kind)
+        {
+            continue;
+        }
+
+        for (int g = 0; g < group_count; g++)
+        {
+            if ((g_net_metric_groups[g].kind == g_net_metric_snapshot[i].kind) &&
+                (g_net_metric_groups[g].case_id == g_net_metric_snapshot[i].case_id))
+            {
+                group_index = g;
+                break;
+            }
+        }
+
+        if ((group_index < 0) && (group_count < METRIC_GROUP_MAX))
+        {
+            group_index = group_count++;
+            g_net_metric_groups[group_index].kind = g_net_metric_snapshot[i].kind;
+            g_net_metric_groups[group_index].case_id = g_net_metric_snapshot[i].case_id;
+            g_net_metric_groups[group_index].min_ticks = g_net_metric_snapshot[i].duration_ticks;
+            g_net_metric_groups[group_index].max_ticks = g_net_metric_snapshot[i].duration_ticks;
+        }
+
+        if (group_index >= 0)
+        {
+            g_net_metric_groups[group_index].count++;
+            g_net_metric_groups[group_index].sum_ticks += g_net_metric_snapshot[i].duration_ticks;
+            if (g_net_metric_snapshot[i].duration_ticks < g_net_metric_groups[group_index].min_ticks)
+            {
+                g_net_metric_groups[group_index].min_ticks = g_net_metric_snapshot[i].duration_ticks;
+            }
+            if (g_net_metric_snapshot[i].duration_ticks > g_net_metric_groups[group_index].max_ticks)
+            {
+                g_net_metric_groups[group_index].max_ticks = g_net_metric_snapshot[i].duration_ticks;
+            }
+            if (!g_net_metric_snapshot[i].success)
+            {
+                g_net_metric_groups[group_index].failures++;
+            }
+        }
+    }
+
+    if (group_count <= 0)
+    {
+        body_len = (size_t) snprintf(g_net_metric_buffer,
+                                     sizeof(g_net_metric_buffer),
+                                     "%s"
+                                     "<p class='muted'>As metricas sao coletadas automaticamente com <code>tx_time_get()</code>, persistidas na QSPI e agregadas aqui em tempo de consulta.</p>"
+                                     "<div class='actions'><a class='small' href='/metrics_download' download='metrics_log.csv'>Baixar log bruto (CSV)</a><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
+                                     "<div class='table-wrap'><table><tr><th>Metrica</th><th>Caso</th><th>N</th><th>Media</th><th>Mediana</th><th>Min</th><th>Max</th><th>Desvio padrao</th><th>Falhas</th></tr>"
+                                     "<tr><td colspan='9'>Nenhuma metrica coletada ainda.</td></tr></table></div>",
+                                     (NULL != message_to_render) ? message_to_render : "");
+    }
+    else
+    {
+        body_len = (size_t) snprintf(g_net_metric_buffer,
+                                     sizeof(g_net_metric_buffer),
+                                     "%s"
+                                     "<p class='muted'>As metricas sao coletadas automaticamente com <code>tx_time_get()</code>, persistidas na QSPI e agregadas aqui em tempo de consulta.</p>"
+                                     "<div class='actions'><a class='small' href='/metrics_download' download='metrics_log.csv'>Baixar log bruto (CSV)</a><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
+                                     "<div class='table-wrap'><table><tr><th>Metrica</th><th>Caso</th><th>N</th><th>Media</th><th>Mediana</th><th>Min</th><th>Max</th><th>Desvio padrao</th><th>Falhas</th></tr>",
+                                     (NULL != message_to_render) ? message_to_render : "");
+
+        for (int g = 0; g < group_count; g++)
+        {
+            int duration_count = 0;
+            uint64_t mean_ms_x10;
+            uint64_t median_ms_x10;
+            uint64_t stddev_ms_x10 = 0U;
+            char mean_text[24];
+            char median_text[24];
+            char min_text[24];
+            char max_text[24];
+            char stddev_text[24];
+
+            for (int i = 0; i < metric_count; i++)
+            {
+                if ((g_net_metric_groups[g].kind == g_net_metric_snapshot[i].kind) &&
+                    (g_net_metric_groups[g].case_id == g_net_metric_snapshot[i].case_id) &&
+                    (duration_count < APP_METRIC_LOG_SIZE))
+                {
+                    g_net_metric_durations[duration_count++] = g_net_metric_snapshot[i].duration_ticks;
+                }
+            }
+
+            for (int i = 1; i < duration_count; i++)
+            {
+                ULONG value = g_net_metric_durations[i];
+                int j = i - 1;
+                while ((j >= 0) && (g_net_metric_durations[j] > value))
+                {
+                    g_net_metric_durations[j + 1] = g_net_metric_durations[j];
+                    j--;
+                }
+                g_net_metric_durations[j + 1] = value;
+            }
+
+            mean_ms_x10 = (g_net_metric_groups[g].sum_ticks * 10000ULL) /
+                          ((uint64_t) TX_TIMER_TICKS_PER_SECOND * (uint64_t) g_net_metric_groups[g].count);
+            if (duration_count > 0)
+            {
+                if (0 != (duration_count % 2))
+                {
+                    median_ms_x10 = net_ticks_to_ms_x10(g_net_metric_durations[duration_count / 2]);
+                }
+                else
+                {
+                    uint64_t median_ticks_x10 = ((uint64_t) g_net_metric_durations[(duration_count / 2) - 1] +
+                                                 (uint64_t) g_net_metric_durations[duration_count / 2]) * 5ULL;
+                    median_ms_x10 = (median_ticks_x10 * 1000ULL) / (uint64_t) TX_TIMER_TICKS_PER_SECOND;
+                }
+
+                if (g_net_metric_groups[g].count > 0)
+                {
+                    uint64_t mean_ticks_x100 = (g_net_metric_groups[g].sum_ticks * 100ULL) / (uint64_t) g_net_metric_groups[g].count;
+                    uint64_t variance_acc = 0U;
+
+                    for (int i = 0; i < duration_count; i++)
+                    {
+                        int64_t diff = ((int64_t) g_net_metric_durations[i] * 100LL) - (int64_t) mean_ticks_x100;
+                        variance_acc += (uint64_t) (diff * diff);
+                    }
+
+                    variance_acc /= (uint64_t) g_net_metric_groups[g].count;
+                    stddev_ms_x10 = (net_isqrt64(variance_acc) * 100ULL) / (uint64_t) TX_TIMER_TICKS_PER_SECOND;
+                }
+            }
+            else
+            {
+                median_ms_x10 = 0U;
+            }
+
+            net_format_ms_x10(mean_ms_x10, mean_text, sizeof(mean_text));
+            net_format_ms_x10(median_ms_x10, median_text, sizeof(median_text));
+            net_format_ms_x10(net_ticks_to_ms_x10(g_net_metric_groups[g].min_ticks), min_text, sizeof(min_text));
+            net_format_ms_x10(net_ticks_to_ms_x10(g_net_metric_groups[g].max_ticks), max_text, sizeof(max_text));
+            net_format_ms_x10(stddev_ms_x10, stddev_text, sizeof(stddev_text));
+
+            {
+                int written = snprintf(&g_net_metric_buffer[body_len],
+                                       sizeof(g_net_metric_buffer) - body_len,
+                                       "<tr><td>%s</td><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%d</td></tr>",
+                                       app_metric_kind_text(g_net_metric_groups[g].kind),
+                                       app_metric_case_text(g_net_metric_groups[g].case_id),
+                                       g_net_metric_groups[g].count,
+                                       mean_text,
+                                       median_text,
+                                       min_text,
+                                       max_text,
+                                       stddev_text,
+                                       g_net_metric_groups[g].failures);
+                if ((written <= 0) || ((size_t) written >= (sizeof(g_net_metric_buffer) - body_len)))
+                {
+                    break;
+                }
+                body_len += (size_t) written;
+            }
+        }
+        if (body_len < sizeof(g_net_metric_buffer))
+        {
+            (void) snprintf(&g_net_metric_buffer[body_len],
+                            sizeof(g_net_metric_buffer) - body_len,
+                            "</table></div>");
+        }
+    }
+
+    return render_light_shell(server_ptr, packet_ptr, "Metricas de desempenho", g_net_metric_buffer, NULL);
+}
+
+static UINT handle_light_metrics_download(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
+{
+    char timestamp[32];
+    char duration_text[24];
+    int metric_count;
+    size_t offset = 0U;
+
+    if (!net_admin_is_authenticated())
+    {
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para baixar o log de metricas.</div>");
+    }
+
+    metric_count = app_metric_snapshot(g_net_metric_snapshot, APP_METRIC_LOG_SIZE);
+    offset = (size_t) snprintf(g_net_metric_buffer,
+                               sizeof(g_net_metric_buffer),
+                               "timestamp,metric,case,duration_ticks,duration_ms,success\r\n");
+
+    for (int i = 0; (i < metric_count) && (offset < sizeof(g_net_metric_buffer)); i++)
+    {
+        int written;
+
+        app_format_metric_timestamp(&g_net_metric_snapshot[i], timestamp, sizeof(timestamp));
+        net_format_ms_x10(net_ticks_to_ms_x10(g_net_metric_snapshot[i].duration_ticks), duration_text, sizeof(duration_text));
+        written = snprintf(&g_net_metric_buffer[offset],
+                           sizeof(g_net_metric_buffer) - offset,
+                           "%s,%s,%s,%lu,%s,%s\r\n",
+                           timestamp,
+                           app_metric_kind_text(g_net_metric_snapshot[i].kind),
+                           app_metric_case_text(g_net_metric_snapshot[i].case_id),
+                           (unsigned long) g_net_metric_snapshot[i].duration_ticks,
+                           duration_text,
+                           g_net_metric_snapshot[i].success ? "1" : "0");
+        if ((written <= 0) || ((size_t) written >= (sizeof(g_net_metric_buffer) - offset)))
+        {
+            break;
+        }
+        offset += (size_t) written;
+    }
+
+    return send_plain_response(server_ptr, packet_ptr, g_net_metric_buffer);
+}
+
+static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
+                                             NX_PACKET *packet_ptr,
+                                             const char *message,
+                                             int page)
+{
+    char *body = g_net_metric_buffer;
+    char *rows = g_net_metric_buffer + (METRIC_BUFFER_SIZE / 2);
+    const size_t body_size = METRIC_BUFFER_SIZE / 2;
+    const size_t rows_size = METRIC_BUFFER_SIZE / 2;
+    const char *message_to_render = message;
+    storage_user_profile_t profile;
+    int profile_count;
+    int start_index;
+    int end_index;
+    bool has_prev;
+    bool has_next;
+    char prev_button[96];
+    char next_button[96];
+    size_t rows_len = 0U;
+
+    if (!net_admin_is_authenticated())
+    {
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para exportar dados do storage.</div>");
+    }
+
+    if ((NULL == message_to_render) && ('\0' != g_net_flash_message[0]))
+    {
+        message_to_render = g_net_flash_message;
+        g_net_flash_message[0] = '\0';
+    }
+
+    if (page < 0)
+    {
+        page = 0;
+    }
+
+    profile_count = storage_user_count();
+    start_index = page * PROFILES_PAGE_SIZE;
+    if (start_index > profile_count)
+    {
+        start_index = 0;
+        page = 0;
+    }
+    end_index = start_index + PROFILES_PAGE_SIZE;
+    if (end_index > profile_count)
+    {
+        end_index = profile_count;
+    }
+    has_prev = (page > 0);
+    has_next = (end_index < profile_count);
+    if (has_prev)
+    {
+        snprintf(prev_button, sizeof(prev_button), "<a class='small secondary' href='/storage_export/%d'>Anterior</a>", page - 1);
+    }
+    else
+    {
+        prev_button[0] = '\0';
+    }
+    if (has_next)
+    {
+        snprintf(next_button, sizeof(next_button), "<a class='small' href='/storage_export/%d'>Proxima</a>", page + 1);
+    }
+    else
+    {
+        next_button[0] = '\0';
+    }
+
+    rows[0] = '\0';
+
+    if (profile_count <= 0)
+    {
+        strncpy(rows,
+                "<tr><td colspan='4'>Nenhum perfil carregado a partir do storage.</td></tr>",
+                rows_size - 1U);
+        rows[rows_size - 1U] = '\0';
+    }
+    else
+    {
+        for (int i = start_index; i < end_index; i++)
+        {
+            int written;
+
+            if (!storage_profile_get(i, &profile))
+            {
+                continue;
+            }
+
+            if ('\0' != profile.photo_id[0])
+            {
+                written = snprintf(&rows[rows_len],
+                                   rows_size - rows_len,
+                                   "<tr><td>%s</td><td>%s</td><td>%s</td><td><a class='small' href='/storage_photo_download?photo_id=%s' download>Baixar foto</a></td></tr>",
+                                   profile.name,
+                                   ('\0' != profile.role[0]) ? profile.role : "-",
+                                   profile.photo_id,
+                                   profile.photo_id);
+            }
+            else
+            {
+                written = snprintf(&rows[rows_len],
+                                   rows_size - rows_len,
+                                   "<tr><td>%s</td><td>%s</td><td>-</td><td>-</td></tr>",
+                                   profile.name,
+                                   ('\0' != profile.role[0]) ? profile.role : "-");
+            }
+
+            if ((written <= 0) || ((size_t) written >= (rows_size - rows_len)))
+            {
+                break;
+            }
+            rows_len += (size_t) written;
+        }
+    }
+
+    snprintf(body,
+             body_size,
+             "%s"
+             "<p class='muted'>Baixe o arquivo persistido de perfis e, separadamente, cada foto salva na QSPI.</p>"
+             "<div class='actions'><a class='small' href='/storage_users_download' download='users.json'>Baixar users.json</a><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
+             "<p class='muted'>Mostrando %d a %d de %d perfis persistidos.</p>"
+             "<div class='table-wrap'><table><tr><th>Nome</th><th>Cargo</th><th>Photo ID</th><th>Arquivo</th></tr>%s</table></div>",
+             (NULL != message_to_render) ? message_to_render : "",
+             (profile_count > 0) ? (start_index + 1) : 0,
+             end_index,
+             profile_count,
+             rows);
+
+    if ((strlen(body) + strlen(prev_button) + strlen(next_button) + 128U) < body_size)
+    {
+        snprintf(body + strlen(body),
+                 body_size - strlen(body),
+                 "<div class='actions'>%s%s</div>",
+                 prev_button,
+                 next_button);
+    }
+
+    return render_light_shell(server_ptr, packet_ptr, "Exportar dados do storage", body, NULL);
+}
+
+static UINT handle_light_storage_users_download(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
+{
+    size_t out_len = 0U;
+
+    if (!net_admin_is_authenticated())
+    {
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para baixar os perfis persistidos.</div>");
+    }
+
+    if (!storage_export_users_json(g_net_metric_buffer, sizeof(g_net_metric_buffer), &out_len) || (0U == out_len))
+    {
+        return light_redirect_with_flash(server_ptr, "/storage_export", "<div class='card warn'>Nao foi possivel ler o users.json da QSPI.</div>");
+    }
+
+    return send_buffer_response(server_ptr, packet_ptr, g_net_metric_buffer, out_len, "application/json");
+}
+
+static UINT handle_light_storage_photo_download(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *query)
+{
+    char photo_id[STORAGE_PHOTO_ID_MAX_LEN];
+    storage_photo_export_info_t info;
+    ULONG offset = 0U;
+
+    if (!net_admin_is_authenticated())
+    {
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para baixar as fotos persistidas.</div>");
+    }
+
+    if (!query_get_value(query, "photo_id", photo_id, sizeof(photo_id)))
+    {
+        return light_redirect_with_flash(server_ptr, "/storage_export", "<div class='card warn'>Selecione um photo_id valido.</div>");
+    }
+
+    if (!storage_photo_export_info(photo_id, &info))
+    {
+        return light_redirect_with_flash(server_ptr, "/storage_export", "<div class='card warn'>Nao foi possivel abrir a foto persistida na QSPI.</div>");
+    }
+
+    if (NX_SUCCESS != send_stream_response_header(server_ptr, packet_ptr, info.total_size, "application/octet-stream"))
+    {
+        return g_net_debug_last_response_status;
+    }
+
+    while (offset < info.total_size)
+    {
+        size_t read_now = 0U;
+        size_t request_size = sizeof(g_net_download_chunk);
+
+        if ((info.total_size - offset) < request_size)
+        {
+            request_size = (size_t) (info.total_size - offset);
+        }
+
+        if (!storage_photo_export_read(photo_id, offset, g_net_download_chunk, request_size, &read_now) || (0U == read_now))
+        {
+            return NX_NOT_SUCCESSFUL;
+        }
+
+        if (NX_SUCCESS != nx_http_server_callback_data_send(server_ptr, g_net_download_chunk, (ULONG) read_now))
+        {
+            return NX_NOT_SUCCESSFUL;
+        }
+
+        offset += (ULONG) read_now;
+    }
+
+    return NX_HTTP_CALLBACK_COMPLETED;
 }
 
 static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr,
@@ -3431,6 +4080,33 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         {
             return render_light_door_page(server_ptr, packet_ptr, NULL);
         }
+        if (0 == strcmp(path, "/metrics"))
+        {
+            return render_light_metrics_page(server_ptr, packet_ptr, NULL);
+        }
+        if (0 == strcmp(path, "/metrics_download"))
+        {
+            return handle_light_metrics_download(server_ptr, packet_ptr);
+        }
+        if (0 == strcmp(path, "/storage_export"))
+        {
+            return render_light_storage_export_page(server_ptr, packet_ptr, NULL, query_get_int(query, "page", 0));
+        }
+        if (0 == strncmp(path, "/storage_export/", strlen("/storage_export/")))
+        {
+            return render_light_storage_export_page(server_ptr,
+                                                    packet_ptr,
+                                                    NULL,
+                                                    net_path_get_index_after_prefix(path, "/storage_export/", 0));
+        }
+        if (0 == strcmp(path, "/storage_users_download"))
+        {
+            return handle_light_storage_users_download(server_ptr, packet_ptr);
+        }
+        if (0 == strcmp(path, "/storage_photo_download"))
+        {
+            return handle_light_storage_photo_download(server_ptr, packet_ptr, query);
+        }
         if (0 == strcmp(path, "/add_user"))
         {
             return handle_light_add_user(server_ptr, query);
@@ -3523,11 +4199,23 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
 UINT request_notify(NX_HTTP_SERVER *server_ptr, UINT request_type, CHAR *resource, NX_PACKET *packet_ptr)
 {
     UINT status;
-
+    ULONG start_tick = tx_time_get();
+    char path_copy[sizeof(g_net_debug_last_path)];
+    const char *metric_case;
     g_net_debug_http_inflight = 1U;
     net_http_lock();
     status = request_notify_impl(server_ptr, request_type, resource, packet_ptr);
     net_http_unlock();
+    strncpy(path_copy, (const char *) g_net_debug_last_path, sizeof(path_copy) - 1U);
+    path_copy[sizeof(path_copy) - 1U] = '\0';
+    metric_case = net_metric_http_case_for_path(path_copy);
+    if (NULL != metric_case)
+    {
+        app_metric_add("HTTP latency",
+                       metric_case,
+                       tx_time_get() - start_tick,
+                       ((NX_SUCCESS == status) || (NX_HTTP_CALLBACK_COMPLETED == status)));
+    }
     g_net_debug_http_inflight = 0U;
     g_net_debug_http_exit_count++;
     g_net_debug_http_stage = 6U;

@@ -20,6 +20,7 @@ extern const char * API_KEY;
 #define NAME_MAX_LEN    32
 #define EVENT_QUEUE_SIZE 16
 #define ACCESS_LOG_SIZE  32
+#define APP_METRIC_LOG_SIZE 128
 
 typedef enum
 {
@@ -60,6 +61,52 @@ typedef struct {
     char user[NAME_MAX_LEN];
 } app_access_log_entry_t;
 
+typedef enum
+{
+    APP_METRIC_KIND_UNKNOWN = 0,
+    APP_METRIC_KIND_RFID_READ,
+    APP_METRIC_KIND_AUTH,
+    APP_METRIC_KIND_DOOR_ACTUATION,
+    APP_METRIC_KIND_HTTP,
+    APP_METRIC_KIND_JSON_IMPORT,
+    APP_METRIC_KIND_STORAGE_PERSIST,
+    APP_METRIC_KIND_STORAGE_LOAD,
+    APP_METRIC_KIND_UI_RESULT,
+    APP_METRIC_KIND_REBOOT_PERSISTENCE,
+} app_metric_kind_t;
+
+typedef enum
+{
+    APP_METRIC_CASE_UNKNOWN = 0,
+    APP_METRIC_CASE_UID_4_BYTES,
+    APP_METRIC_CASE_UID_7_BYTES,
+    APP_METRIC_CASE_UID_10_BYTES,
+    APP_METRIC_CASE_AUTH_OK,
+    APP_METRIC_CASE_AUTH_DENIED,
+    APP_METRIC_CASE_ROUTE_LOGIN,
+    APP_METRIC_CASE_ROUTE_ADMIN_PROFILES,
+    APP_METRIC_CASE_ROUTE_IMPORT_PROFILES,
+    APP_METRIC_CASE_ROUTE_UPLOAD_PHOTO,
+    APP_METRIC_CASE_ROUTE_METRICS,
+    APP_METRIC_CASE_IMPORT_10_PROFILES,
+    APP_METRIC_CASE_IMPORT_50_PROFILES,
+    APP_METRIC_CASE_IMPORT_50_PLUS_PROFILES,
+    APP_METRIC_CASE_USERS_JSON,
+    APP_METRIC_CASE_ACCESS_LOG,
+    APP_METRIC_CASE_METRICS_LOG,
+    APP_METRIC_CASE_PHOTO,
+    APP_METRIC_CASE_AFTER_REBOOT,
+} app_metric_case_t;
+
+typedef struct {
+    ULONG tick;
+    ULONG unix_utc;
+    ULONG duration_ticks;
+    app_metric_kind_t kind;
+    app_metric_case_t case_id;
+    bool success;
+} app_metric_entry_t;
+
 /* Estado global da aplicação */
 typedef struct {
     bool    door_open;
@@ -91,6 +138,17 @@ void app_access_log_restore(const app_access_log_entry_t *entries, int entry_cou
 void app_time_set_utc(ULONG unix_utc);
 bool app_time_get_utc(ULONG *out_unix_utc);
 void app_format_access_log_timestamp(const app_access_log_entry_t *entry, char *out, size_t out_size);
+void app_metric_add(const char *metric_name, const char *case_name, ULONG duration_ticks, bool success);
+void app_metric_add_no_persist(const char *metric_name, const char *case_name, ULONG duration_ticks, bool success);
+int app_metric_snapshot(app_metric_entry_t *out_entries, int max_entries);
+void app_metric_restore(const app_metric_entry_t *entries, int entry_count);
+void app_format_metric_timestamp(const app_metric_entry_t *entry, char *out, size_t out_size);
+const char *app_metric_kind_text(app_metric_kind_t kind);
+const char *app_metric_case_text(app_metric_case_t case_id);
+void app_metric_begin_door(const char *case_name);
+void app_metric_finish_door(bool success);
+void app_metric_begin_ui_result(const char *case_name);
+void app_metric_finish_ui_result(bool success);
 
 /* Protótipos das Threads */
 void thread_rfid_entry   (ULONG arg);

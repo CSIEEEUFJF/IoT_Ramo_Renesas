@@ -527,6 +527,7 @@ void thread_rfid_entry(ULONG arg)
 
     while (1)
     {
+        ULONG detect_start_tick = tx_time_get();
         bool enroll_mode = app_is_enrollment_mode();
         g_rfid_debug_loop_count++;
         g_rfid_debug_last_tick = tx_time_get();
@@ -549,12 +550,18 @@ void thread_rfid_entry(ULONG arg)
 
         if (rc522_read_uid(uid, &uid_size))
         {
+            ULONG auth_start_tick;
             rfid_uid_to_string(uid, uid_size, uid_text, sizeof(uid_text));
             g_rfid_debug_last_status = RC522_STATUS_OK;
             g_rfid_debug_last_uid_size = uid_size;
             memcpy((char *) g_rfid_debug_last_uid, uid_text, sizeof(g_rfid_debug_last_uid) - 1U);
             g_rfid_debug_last_uid[sizeof(g_rfid_debug_last_uid) - 1U] = '\0';
             last_seen_tick = tx_time_get();
+            app_metric_add("RFID read latency",
+                           (4U == uid_size) ? "UID 4 bytes" : ((7U == uid_size) ? "UID 7 bytes" : "UID 10 bytes"),
+                           last_seen_tick - detect_start_tick,
+                           true);
+            auth_start_tick = tx_time_get();
 
             if (enroll_mode)
             {
@@ -635,14 +642,19 @@ void thread_rfid_entry(ULONG arg)
 
                 if (storage_check_uid(uid_text, user_name))
                 {
+                    app_metric_begin_ui_result("autorizado");
+                    app_metric_begin_door("autorizado");
                     app_set_last_identity(uid_text, user_name);
                     app_set_door(true);
                     app_post_event(EVENT_RFID_AUTH_OK, uid_text);
+                    app_metric_add("Auth latency", "autorizado", tx_time_get() - auth_start_tick, true);
                 }
                 else
                 {
+                    app_metric_begin_ui_result("negado");
                     app_set_last_identity(uid_text, "N" "\303\243" "o cadastrado");
                     app_post_event(EVENT_RFID_AUTH_FAIL, uid_text);
+                    app_metric_add("Auth latency", "negado", tx_time_get() - auth_start_tick, true);
                 }
             }
         }

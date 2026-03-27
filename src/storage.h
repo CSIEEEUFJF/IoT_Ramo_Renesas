@@ -24,6 +24,14 @@ typedef struct
     char cards[STORAGE_MAX_CARDS_PER_USER][UID_MAX_LEN];
 } storage_user_profile_t;
 
+typedef struct
+{
+    uint16_t width;
+    uint16_t height;
+    ULONG payload_size;
+    ULONG total_size;
+} storage_photo_export_info_t;
+
 void storage_init(void);
 bool storage_check_uid(const char *uid_str, char *out_name);
 int  storage_user_count(void);
@@ -41,6 +49,12 @@ bool storage_persist_now(void);
 bool storage_persist_wait(ULONG timeout_ticks);
 unsigned int storage_persist_status(void);
 bool storage_access_log_persist_now(void);
+bool storage_access_log_ensure_loaded(void);
+bool storage_metrics_persist_now(void);
+bool storage_metrics_ensure_loaded(void);
+bool storage_export_users_json(char *out, size_t out_size, size_t *out_len);
+bool storage_photo_export_info(const char *photo_id, storage_photo_export_info_t *out_info);
+bool storage_photo_export_read(const char *photo_id, ULONG offset, void *out, size_t out_size, size_t *out_read);
 bool storage_photo_persist_now(const char *photo_id);
 bool storage_photo_ensure_loaded(const char *photo_id);
 

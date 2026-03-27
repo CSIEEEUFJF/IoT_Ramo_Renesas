@@ -36,6 +36,10 @@ void gpio_init(void)
 void gpio_set_door(bool open)
 {
     g_ioport.p_api->pinWrite(PIN_RELAY_DOOR, open ? IOPORT_LEVEL_LOW : IOPORT_LEVEL_HIGH);
+    if (open)
+    {
+        app_metric_finish_door(true);
+    }
 }
 
 void gpio_set_light(bool on)

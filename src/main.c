@@ -51,11 +51,20 @@ static uint8_t stack_gpio   [STACK_SIZE_GPIO]   BSP_ALIGN_VARIABLE(8);
 
 static TX_MUTEX  g_state_mutex;
 static app_access_log_entry_t g_access_log[ACCESS_LOG_SIZE];
+static app_metric_entry_t g_metric_log[APP_METRIC_LOG_SIZE];
 static int g_access_log_next = 0;
 static int g_access_log_count = 0;
+static int g_metric_log_next = 0;
+static int g_metric_log_count = 0;
 static ULONG g_app_time_base_utc = 0U;
 static ULONG g_app_time_base_tick = 0U;
 static bool g_app_time_synced = false;
+static bool g_app_metric_door_pending = false;
+static bool g_app_metric_ui_pending = false;
+static ULONG g_app_metric_door_start_tick = 0U;
+static ULONG g_app_metric_ui_start_tick = 0U;
+static app_metric_case_t g_app_metric_door_case = APP_METRIC_CASE_UNKNOWN;
+static app_metric_case_t g_app_metric_ui_case = APP_METRIC_CASE_UNKNOWN;
 volatile app_state_t g_app_state = {
     .door_open     = false,
     .light_on      = false,
@@ -71,6 +80,8 @@ TX_QUEUE g_event_queue;
 static uint8_t event_queue_buf[EVENT_QUEUE_SIZE * sizeof(app_event_t)];
 volatile UINT g_app_debug_event_queue_status = TX_SUCCESS;
 volatile ULONG g_app_debug_event_queue_fail_count = 0U;
+
+static void app_format_unix_timestamp_local(ULONG unix_utc, char *out, size_t out_size);
 
 static void app_store_last_uid(const char *uid)
 {
@@ -99,6 +110,42 @@ static bool app_time_get_utc_locked(ULONG *out_unix_utc)
     return true;
 }
 
+static void app_format_timestamp_from_tick_utc(ULONG tick, ULONG unix_utc, char *out, size_t out_size)
+{
+    ULONG total_seconds;
+    ULONG hours;
+    ULONG minutes;
+    ULONG seconds;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    if (unix_utc > 0U)
+    {
+        app_format_unix_timestamp_local(unix_utc, out, out_size);
+        return;
+    }
+
+    if (tick > 0U)
+    {
+        total_seconds = tick / TX_TIMER_TICKS_PER_SECOND;
+        hours = (total_seconds / 3600U) % 24U;
+        minutes = (total_seconds % 3600U) / 60U;
+        seconds = total_seconds % 60U;
+        snprintf(out,
+                 out_size,
+                 "T+%02lu:%02lu:%02lu",
+                 (unsigned long) hours,
+                 (unsigned long) minutes,
+                 (unsigned long) seconds);
+        return;
+    }
+
+    snprintf(out, out_size, "Sem horario");
+}
+
 static void app_access_log_push_locked(const app_access_log_entry_t *entry)
 {
     if (NULL == entry)
@@ -111,6 +158,21 @@ static void app_access_log_push_locked(const app_access_log_entry_t *entry)
     if (g_access_log_count < ACCESS_LOG_SIZE)
     {
         g_access_log_count++;
+    }
+}
+
+static void app_metric_log_push_locked(const app_metric_entry_t *entry)
+{
+    if (NULL == entry)
+    {
+        return;
+    }
+
+    g_metric_log[g_metric_log_next] = *entry;
+    g_metric_log_next = (g_metric_log_next + 1) % APP_METRIC_LOG_SIZE;
+    if (g_metric_log_count < APP_METRIC_LOG_SIZE)
+    {
+        g_metric_log_count++;
     }
 }
 
@@ -133,6 +195,119 @@ static void app_access_log_add_locked(app_event_type_t type, const char *data)
     entry.user[sizeof(entry.user) - 1U] = '\0';
 
     app_access_log_push_locked(&entry);
+}
+
+static app_metric_kind_t app_metric_kind_from_text(const char *metric_name)
+{
+    if (NULL == metric_name)
+    {
+        return APP_METRIC_KIND_UNKNOWN;
+    }
+
+    if (0 == strcmp(metric_name, "RFID read latency")) { return APP_METRIC_KIND_RFID_READ; }
+    if (0 == strcmp(metric_name, "Auth latency")) { return APP_METRIC_KIND_AUTH; }
+    if (0 == strcmp(metric_name, "Door actuation")) { return APP_METRIC_KIND_DOOR_ACTUATION; }
+    if (0 == strcmp(metric_name, "HTTP latency")) { return APP_METRIC_KIND_HTTP; }
+    if (0 == strcmp(metric_name, "JSON import")) { return APP_METRIC_KIND_JSON_IMPORT; }
+    if (0 == strcmp(metric_name, "Storage persist latency")) { return APP_METRIC_KIND_STORAGE_PERSIST; }
+    if (0 == strcmp(metric_name, "Storage load latency")) { return APP_METRIC_KIND_STORAGE_LOAD; }
+    if (0 == strcmp(metric_name, "UI result latency")) { return APP_METRIC_KIND_UI_RESULT; }
+    if (0 == strcmp(metric_name, "Reboot persistence")) { return APP_METRIC_KIND_REBOOT_PERSISTENCE; }
+    return APP_METRIC_KIND_UNKNOWN;
+}
+
+static app_metric_case_t app_metric_case_from_text(const char *case_name)
+{
+    if (NULL == case_name)
+    {
+        return APP_METRIC_CASE_UNKNOWN;
+    }
+
+    if (0 == strcmp(case_name, "UID 4 bytes")) { return APP_METRIC_CASE_UID_4_BYTES; }
+    if (0 == strcmp(case_name, "UID 7 bytes")) { return APP_METRIC_CASE_UID_7_BYTES; }
+    if (0 == strcmp(case_name, "UID 10 bytes")) { return APP_METRIC_CASE_UID_10_BYTES; }
+    if (0 == strcmp(case_name, "autorizado")) { return APP_METRIC_CASE_AUTH_OK; }
+    if (0 == strcmp(case_name, "negado")) { return APP_METRIC_CASE_AUTH_DENIED; }
+    if (0 == strcmp(case_name, "/login")) { return APP_METRIC_CASE_ROUTE_LOGIN; }
+    if (0 == strcmp(case_name, "/admin_profiles")) { return APP_METRIC_CASE_ROUTE_ADMIN_PROFILES; }
+    if (0 == strcmp(case_name, "/import_profiles")) { return APP_METRIC_CASE_ROUTE_IMPORT_PROFILES; }
+    if (0 == strcmp(case_name, "/upload_photo")) { return APP_METRIC_CASE_ROUTE_UPLOAD_PHOTO; }
+    if (0 == strcmp(case_name, "/metrics")) { return APP_METRIC_CASE_ROUTE_METRICS; }
+    if (0 == strcmp(case_name, "10 perfis")) { return APP_METRIC_CASE_IMPORT_10_PROFILES; }
+    if (0 == strcmp(case_name, "50 perfis")) { return APP_METRIC_CASE_IMPORT_50_PROFILES; }
+    if (0 == strcmp(case_name, "50+ perfis")) { return APP_METRIC_CASE_IMPORT_50_PLUS_PROFILES; }
+    if (0 == strcmp(case_name, "users.json")) { return APP_METRIC_CASE_USERS_JSON; }
+    if (0 == strcmp(case_name, "access.log")) { return APP_METRIC_CASE_ACCESS_LOG; }
+    if (0 == strcmp(case_name, "metrics.log")) { return APP_METRIC_CASE_METRICS_LOG; }
+    if (0 == strcmp(case_name, "photo")) { return APP_METRIC_CASE_PHOTO; }
+    if (0 == strcmp(case_name, "apos reboot")) { return APP_METRIC_CASE_AFTER_REBOOT; }
+    return APP_METRIC_CASE_UNKNOWN;
+}
+
+const char *app_metric_kind_text(app_metric_kind_t kind)
+{
+    switch (kind)
+    {
+        case APP_METRIC_KIND_RFID_READ: return "RFID read latency";
+        case APP_METRIC_KIND_AUTH: return "Auth latency";
+        case APP_METRIC_KIND_DOOR_ACTUATION: return "Door actuation";
+        case APP_METRIC_KIND_HTTP: return "HTTP latency";
+        case APP_METRIC_KIND_JSON_IMPORT: return "JSON import";
+        case APP_METRIC_KIND_STORAGE_PERSIST: return "Storage persist latency";
+        case APP_METRIC_KIND_STORAGE_LOAD: return "Storage load latency";
+        case APP_METRIC_KIND_UI_RESULT: return "UI result latency";
+        case APP_METRIC_KIND_REBOOT_PERSISTENCE: return "Reboot persistence";
+        default: return "Unknown";
+    }
+}
+
+const char *app_metric_case_text(app_metric_case_t case_id)
+{
+    switch (case_id)
+    {
+        case APP_METRIC_CASE_UID_4_BYTES: return "UID 4 bytes";
+        case APP_METRIC_CASE_UID_7_BYTES: return "UID 7 bytes";
+        case APP_METRIC_CASE_UID_10_BYTES: return "UID 10 bytes";
+        case APP_METRIC_CASE_AUTH_OK: return "autorizado";
+        case APP_METRIC_CASE_AUTH_DENIED: return "negado";
+        case APP_METRIC_CASE_ROUTE_LOGIN: return "/login";
+        case APP_METRIC_CASE_ROUTE_ADMIN_PROFILES: return "/admin_profiles";
+        case APP_METRIC_CASE_ROUTE_IMPORT_PROFILES: return "/import_profiles";
+        case APP_METRIC_CASE_ROUTE_UPLOAD_PHOTO: return "/upload_photo";
+        case APP_METRIC_CASE_ROUTE_METRICS: return "/metrics";
+        case APP_METRIC_CASE_IMPORT_10_PROFILES: return "10 perfis";
+        case APP_METRIC_CASE_IMPORT_50_PROFILES: return "50 perfis";
+        case APP_METRIC_CASE_IMPORT_50_PLUS_PROFILES: return "50+ perfis";
+        case APP_METRIC_CASE_USERS_JSON: return "users.json";
+        case APP_METRIC_CASE_ACCESS_LOG: return "access.log";
+        case APP_METRIC_CASE_METRICS_LOG: return "metrics.log";
+        case APP_METRIC_CASE_PHOTO: return "photo";
+        case APP_METRIC_CASE_AFTER_REBOOT: return "apos reboot";
+        default: return "-";
+    }
+}
+
+static void app_metric_add_locked_internal(app_metric_kind_t kind,
+                                           app_metric_case_t case_id,
+                                           ULONG duration_ticks,
+                                           bool success)
+{
+    app_metric_entry_t entry;
+
+    if (APP_METRIC_KIND_UNKNOWN == kind)
+    {
+        return;
+    }
+
+    memset(&entry, 0, sizeof(entry));
+    entry.tick = tx_time_get();
+    entry.duration_ticks = duration_ticks;
+    entry.success = success;
+    entry.kind = kind;
+    entry.case_id = case_id;
+    (void) app_time_get_utc_locked(&entry.unix_utc);
+
+    app_metric_log_push_locked(&entry);
 }
 
 static void app_civil_from_days(int64_t days_since_unix_epoch, int *year, unsigned int *month, unsigned int *day)
@@ -280,38 +455,12 @@ bool app_time_get_utc(ULONG *out_unix_utc)
 
 void app_format_access_log_timestamp(const app_access_log_entry_t *entry, char *out, size_t out_size)
 {
-    ULONG total_seconds;
-    ULONG hours;
-    ULONG minutes;
-    ULONG seconds;
-
     if ((NULL == entry) || (NULL == out) || (0U == out_size))
     {
         return;
     }
 
-    if (entry->unix_utc > 0U)
-    {
-        app_format_unix_timestamp_local(entry->unix_utc, out, out_size);
-        return;
-    }
-
-    if (entry->tick > 0U)
-    {
-        total_seconds = entry->tick / TX_TIMER_TICKS_PER_SECOND;
-        hours = (total_seconds / 3600U) % 24U;
-        minutes = (total_seconds % 3600U) / 60U;
-        seconds = total_seconds % 60U;
-        snprintf(out,
-                 out_size,
-                 "T+%02lu:%02lu:%02lu",
-                 (unsigned long) hours,
-                 (unsigned long) minutes,
-                 (unsigned long) seconds);
-        return;
-    }
-
-    snprintf(out, out_size, "Sem horario");
+    app_format_timestamp_from_tick_utc(entry->tick, entry->unix_utc, out, out_size);
 }
 
 void hal_entry(void)
@@ -458,6 +607,8 @@ int app_access_log_snapshot(app_access_log_entry_t *out_entries, int max_entries
         return 0;
     }
 
+    (void) storage_access_log_ensure_loaded();
+
     app_state_lock();
     count = g_access_log_count;
     if (count > max_entries)
@@ -474,6 +625,60 @@ int app_access_log_snapshot(app_access_log_entry_t *out_entries, int max_entries
         }
         source_index %= ACCESS_LOG_SIZE;
         out_entries[i] = g_access_log[source_index];
+    }
+    app_state_unlock();
+
+    return count;
+}
+
+void app_metric_add(const char *metric_name, const char *case_name, ULONG duration_ticks, bool success)
+{
+    app_metric_kind_t kind = app_metric_kind_from_text(metric_name);
+    app_metric_case_t case_id = app_metric_case_from_text(case_name);
+
+    app_state_lock();
+    app_metric_add_locked_internal(kind, case_id, duration_ticks, success);
+    app_state_unlock();
+    (void) storage_metrics_persist_now();
+}
+
+void app_metric_add_no_persist(const char *metric_name, const char *case_name, ULONG duration_ticks, bool success)
+{
+    app_metric_kind_t kind = app_metric_kind_from_text(metric_name);
+    app_metric_case_t case_id = app_metric_case_from_text(case_name);
+
+    app_state_lock();
+    app_metric_add_locked_internal(kind, case_id, duration_ticks, success);
+    app_state_unlock();
+}
+
+int app_metric_snapshot(app_metric_entry_t *out_entries, int max_entries)
+{
+    int count;
+
+    if ((NULL == out_entries) || (max_entries <= 0))
+    {
+        return 0;
+    }
+
+    (void) storage_metrics_ensure_loaded();
+
+    app_state_lock();
+    count = g_metric_log_count;
+    if (count > max_entries)
+    {
+        count = max_entries;
+    }
+
+    for (int i = 0; i < count; i++)
+    {
+        int source_index = (g_metric_log_next - g_metric_log_count + i);
+        while (source_index < 0)
+        {
+            source_index += APP_METRIC_LOG_SIZE;
+        }
+        source_index %= APP_METRIC_LOG_SIZE;
+        out_entries[i] = g_metric_log[source_index];
     }
     app_state_unlock();
 
@@ -530,4 +735,140 @@ void app_access_log_restore(const app_access_log_entry_t *entries, int entry_cou
     }
 
     app_state_unlock();
+}
+
+void app_metric_restore(const app_metric_entry_t *entries, int entry_count)
+{
+    static app_metric_entry_t current_entries[APP_METRIC_LOG_SIZE];
+    int current_count = 0;
+
+    if ((NULL == entries) || (entry_count <= 0))
+    {
+        return;
+    }
+
+    app_state_lock();
+
+    current_count = g_metric_log_count;
+    if (current_count > APP_METRIC_LOG_SIZE)
+    {
+        current_count = APP_METRIC_LOG_SIZE;
+    }
+
+    for (int i = 0; i < current_count; i++)
+    {
+        int source_index = (g_metric_log_next - g_metric_log_count + i);
+        while (source_index < 0)
+        {
+            source_index += APP_METRIC_LOG_SIZE;
+        }
+        source_index %= APP_METRIC_LOG_SIZE;
+        current_entries[i] = g_metric_log[source_index];
+    }
+
+    memset(g_metric_log, 0, sizeof(g_metric_log));
+    g_metric_log_next = 0;
+    g_metric_log_count = 0;
+
+    if (entry_count > APP_METRIC_LOG_SIZE)
+    {
+        entries += (entry_count - APP_METRIC_LOG_SIZE);
+        entry_count = APP_METRIC_LOG_SIZE;
+    }
+
+    for (int i = 0; i < entry_count; i++)
+    {
+        app_metric_log_push_locked(&entries[i]);
+    }
+
+    for (int i = 0; i < current_count; i++)
+    {
+        app_metric_log_push_locked(&current_entries[i]);
+    }
+
+    app_state_unlock();
+}
+
+void app_format_metric_timestamp(const app_metric_entry_t *entry, char *out, size_t out_size)
+{
+    if ((NULL == entry) || (NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    app_format_timestamp_from_tick_utc(entry->tick, entry->unix_utc, out, out_size);
+}
+
+void app_metric_begin_door(const char *case_name)
+{
+    app_state_lock();
+    g_app_metric_door_pending = true;
+    g_app_metric_door_start_tick = tx_time_get();
+    g_app_metric_door_case = app_metric_case_from_text(case_name);
+    app_state_unlock();
+}
+
+void app_metric_finish_door(bool success)
+{
+    ULONG start_tick = 0U;
+    app_metric_case_t case_id = APP_METRIC_CASE_UNKNOWN;
+    bool pending = false;
+
+    app_state_lock();
+    pending = g_app_metric_door_pending;
+    if (pending)
+    {
+        start_tick = g_app_metric_door_start_tick;
+        case_id = g_app_metric_door_case;
+        g_app_metric_door_pending = false;
+        g_app_metric_door_start_tick = 0U;
+        g_app_metric_door_case = APP_METRIC_CASE_UNKNOWN;
+    }
+    app_state_unlock();
+
+    if (pending)
+    {
+        app_metric_add_no_persist(app_metric_kind_text(APP_METRIC_KIND_DOOR_ACTUATION),
+                                  app_metric_case_text(case_id),
+                                  tx_time_get() - start_tick,
+                                  success);
+        (void) storage_metrics_persist_now();
+    }
+}
+
+void app_metric_begin_ui_result(const char *case_name)
+{
+    app_state_lock();
+    g_app_metric_ui_pending = true;
+    g_app_metric_ui_start_tick = tx_time_get();
+    g_app_metric_ui_case = app_metric_case_from_text(case_name);
+    app_state_unlock();
+}
+
+void app_metric_finish_ui_result(bool success)
+{
+    ULONG start_tick = 0U;
+    app_metric_case_t case_id = APP_METRIC_CASE_UNKNOWN;
+    bool pending = false;
+
+    app_state_lock();
+    pending = g_app_metric_ui_pending;
+    if (pending)
+    {
+        start_tick = g_app_metric_ui_start_tick;
+        case_id = g_app_metric_ui_case;
+        g_app_metric_ui_pending = false;
+        g_app_metric_ui_start_tick = 0U;
+        g_app_metric_ui_case = APP_METRIC_CASE_UNKNOWN;
+    }
+    app_state_unlock();
+
+    if (pending)
+    {
+        app_metric_add_no_persist(app_metric_kind_text(APP_METRIC_KIND_UI_RESULT),
+                                  app_metric_case_text(case_id),
+                                  tx_time_get() - start_tick,
+                                  success);
+        (void) storage_metrics_persist_now();
+    }
 }

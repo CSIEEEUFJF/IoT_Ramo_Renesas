@@ -2939,6 +2939,10 @@ static void ui_render_screen(const ui_status_t *status, const ui_snapshot_t *sna
     user_text = snapshot->last_user;
     SSP_PARAMETER_NOT_USED(user_text);
     ui_render(status, snapshot);
+    if (UI_VIEW_RESULT == status->view)
+    {
+        app_metric_finish_ui_result(true);
+    }
 }
 
 void thread_ui_entry(ULONG arg)
