@@ -2,7 +2,7 @@
 
 Documentacao principal do projeto `IoTRamoRenesas`.
 
-Ultima revisao desta documentacao: `2026-03-20`
+Ultima revisao desta documentacao: `2026-04-07`
 
 ## 1. Visao geral
 
@@ -38,7 +38,7 @@ Pontos importantes do estado atual:
 - o PIN `1234` continua ativo como fallback padrao
 - o fluxo de porta registra somente abertura, nao fechamento
 - a tela reduz o brilho visual para cerca de `30%` apos `60s` de inatividade
-- os LEDs onboard expostos pelo BSP sobem apagados
+- os reles de porta e luz sao configurados explicitamente como GPIO no boot
 
 ## 3. Hardware e perifericos
 
@@ -89,8 +89,8 @@ Touch:
 
 Mapeamento atual em [`src/gpio.c`](./src/gpio.c):
 
-- rele da porta: `P006`
-- rele da luz: `P005`
+- rele da porta: `D6 -> P613`
+- rele da luz: `D5 -> P608`
 - botao da porta: `P008`
 - botao da luz: `P009`
 
@@ -99,16 +99,7 @@ Comportamento:
 - a porta abre por pulso temporizado de `5s`
 - o fechamento automatico nao gera evento de log
 - os botoes locais tambem podem disparar eventos de UI
-
-### 3.5 LEDs onboard
-
-O BSP do kit expoe oficialmente 3 LEDs em [`synergy/board/s7g2_sk/bsp_leds.c`](./synergy/board/s7g2_sk/bsp_leds.c):
-
-- `LED1_GREEN`
-- `LED2_RED`
-- `LED3_YELLOW`
-
-Em [`src/gpio.c`](./src/gpio.c), todos esses LEDs sao desligados no boot via `R_BSP_LedsGet()`.
+- os pinos dos reles sao configurados manualmente em `gpio_init()`, pois nao dependem do `pin_data.c`
 
 ## 4. Estrutura do repositorio
 
@@ -178,7 +169,6 @@ Arquivos de apoio:
   - rele da porta
   - rele da luz
   - botoes fisicos
-  - desligamento dos LEDs onboard
 
 ## 5.2 Threads da aplicacao
 
@@ -378,8 +368,9 @@ Por isso:
 Constantes relevantes em [`src/storage.c`](./src/storage.c):
 
 - `STORAGE_MEDIA_SAFE_DELAY_TICKS = 2s`
-- `JSON_BUFFER_SIZE = 4096`
+- `JSON_BUFFER_SIZE = 8192`
 - `ACCESS_LOG_BUFFER_SIZE = 4096`
+- `ACCESS_LOG_ROTATE_SIZE = 64 KB`
 
 ## 9.2 Arquivos persistidos
 
@@ -429,6 +420,12 @@ Cada linha e serializada como:
 unix_utc|tipo_evento|dado|usuario
 ```
 
+Observacoes:
+
+- a gravacao e incremental, em append
+- o arquivo ativo gira por tamanho e usa `access.bak` como arquivo de rotacao
+- o boot recarrega o final do log persistido, nao apenas o buffer atual em RAM
+
 ### `photo_XXXXXXXX.bin`
 
 Cada foto persistida usa um nome derivado do `photo_id`.
@@ -453,6 +450,7 @@ APIs principais em [`src/storage.h`](./src/storage.h):
 
 - `storage_persist_now()`
 - `storage_persist_wait()`
+- `storage_access_log_enqueue()`
 - `storage_access_log_persist_now()`
 - `storage_photo_persist_now()`
 - `storage_photo_ensure_loaded()`
@@ -630,8 +628,9 @@ Pagina web:
 
 Persistencia:
 
-- salva em `access.log` na QSPI
-- recarrega no boot com atraso seguro
+- salva em `access.log` na QSPI com append incremental
+- gira para `access.bak` quando o arquivo ativo atinge o limite configurado
+- recarrega no boot com atraso seguro, lendo o final dos arquivos persistidos
 
 ## 14. Rede
 

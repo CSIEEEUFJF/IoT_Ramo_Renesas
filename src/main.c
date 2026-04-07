@@ -528,11 +528,6 @@ void app_set_door(bool open)
     g_app_state.door_open = open;
     gpio_set_door(open);
     app_state_unlock();
-
-    if (open)
-    {
-        app_metric_finish_door(true);
-    }
 }
 
 void app_set_light(bool on)

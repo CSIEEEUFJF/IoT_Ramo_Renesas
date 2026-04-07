@@ -2,7 +2,7 @@
 
 Main project documentation for `IoTRamoRenesas`.
 
-Last review of this documentation: `2026-03-20`
+Last review of this documentation: `2026-04-07`
 
 ## 1. Overview
 
@@ -38,7 +38,7 @@ Important points about the current state:
 - PIN `1234` remains enabled as the default fallback
 - door flow records opening only, not closing
 - screen dims visual brightness to about `30%` after `60s` of inactivity
-- onboard LEDs exposed by BSP boot in OFF state
+- door and light relays are explicitly configured as GPIO at boot
 
 ## 3. Hardware and peripherals
 
@@ -89,8 +89,8 @@ Touch:
 
 Current mapping in [`src/gpio.c`](./src/gpio.c):
 
-- door relay: `P006`
-- light relay: `P005`
+- door relay: `D6 -> P613`
+- light relay: `D5 -> P608`
 - door button: `P008`
 - light button: `P009`
 
@@ -99,16 +99,7 @@ Behavior:
 - door opens with a timed `5s` pulse
 - automatic closing does not generate a log event
 - local buttons can also trigger UI events
-
-### 3.5 Onboard LEDs
-
-The kit BSP officially exposes 3 LEDs in [`synergy/board/s7g2_sk/bsp_leds.c`](./synergy/board/s7g2_sk/bsp_leds.c):
-
-- `LED1_GREEN`
-- `LED2_RED`
-- `LED3_YELLOW`
-
-In [`src/gpio.c`](./src/gpio.c), all these LEDs are turned off at boot via `R_BSP_LedsGet()`.
+- relay pins are configured manually in `gpio_init()`, instead of relying on `pin_data.c`
 
 ## 4. Repository structure
 
@@ -178,7 +169,6 @@ Support files:
   - door relay
   - light relay
   - physical buttons
-  - onboard LED shutdown
 
 ## 5.2 Application threads
 
@@ -378,8 +368,9 @@ Because of this:
 Relevant constants in [`src/storage.c`](./src/storage.c):
 
 - `STORAGE_MEDIA_SAFE_DELAY_TICKS = 2s`
-- `JSON_BUFFER_SIZE = 4096`
+- `JSON_BUFFER_SIZE = 8192`
 - `ACCESS_LOG_BUFFER_SIZE = 4096`
+- `ACCESS_LOG_ROTATE_SIZE = 64 KB`
 
 ## 9.2 Persisted files
 
@@ -429,6 +420,12 @@ Each line is serialized as:
 unix_utc|event_type|data|user
 ```
 
+Notes:
+
+- writing is incremental, using append
+- the active file rotates by size and uses `access.bak` as the rollover file
+- boot reloads the tail of the persisted log, not only the current in-RAM buffer
+
 ### `photo_XXXXXXXX.bin`
 
 Each persisted photo uses a file name derived from `photo_id`.
@@ -453,6 +450,7 @@ Main APIs in [`src/storage.h`](./src/storage.h):
 
 - `storage_persist_now()`
 - `storage_persist_wait()`
+- `storage_access_log_enqueue()`
 - `storage_access_log_persist_now()`
 - `storage_photo_persist_now()`
 - `storage_photo_ensure_loaded()`
@@ -630,8 +628,9 @@ Web page:
 
 Persistence:
 
-- saved as `access.log` in QSPI
-- reloaded during boot with safe delay
+- saved as `access.log` in QSPI with incremental append
+- rotates to `access.bak` when the active file reaches the configured limit
+- reloaded during boot with safe delay, reading the tail of the persisted files
 
 ## 14. Network
 

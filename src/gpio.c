@@ -1,9 +1,9 @@
 #include "gpio.h"
 #include "main.h"
 
-/* Pinos baseados na configuração comum do kit */
-#define PIN_RELAY_DOOR   IOPORT_PORT_00_PIN_06
-#define PIN_RELAY_LIGHT  IOPORT_PORT_00_PIN_05
+/* Reles ligados ao header Arduino: D6 = P613 (porta), D5 = P608 (luz). */
+#define PIN_RELAY_DOOR   IOPORT_PORT_06_PIN_13
+#define PIN_RELAY_LIGHT  IOPORT_PORT_06_PIN_08
 #define PIN_BTN_DOOR     IOPORT_PORT_00_PIN_08
 #define PIN_BTN_LIGHT    IOPORT_PORT_00_PIN_09
 
@@ -11,24 +11,17 @@
 #define BTN_POLL_MS         50
 #define BTN_ADMIN_HOLD_TICKS ((TX_TIMER_TICKS_PER_SECOND * 3U) / 2U)
 
-static void gpio_turn_off_board_leds(void)
-{
-    bsp_leds_t leds;
-
-    if (SSP_SUCCESS != R_BSP_LedsGet(&leds))
-    {
-        return;
-    }
-
-    for (uint32_t i = 0U; i < leds.led_count; i++)
-    {
-        (void) g_ioport.p_api->pinWrite(leds.p_leds[i], IOPORT_LEVEL_HIGH);
-    }
-}
-
 void gpio_init(void)
 {
-    gpio_turn_off_board_leds();
+    /* Estes pinos nao sao inicializados pelo pin_data gerado, entao forçamos o modo GPIO. */
+    (void) g_ioport.p_api->pinCfg(PIN_RELAY_DOOR,
+                                  IOPORT_CFG_PORT_DIRECTION_OUTPUT |
+                                  IOPORT_CFG_PORT_OUTPUT_HIGH |
+                                  IOPORT_CFG_DRIVE_MID);
+    (void) g_ioport.p_api->pinCfg(PIN_RELAY_LIGHT,
+                                  IOPORT_CFG_PORT_DIRECTION_OUTPUT |
+                                  IOPORT_CFG_PORT_OUTPUT_LOW |
+                                  IOPORT_CFG_DRIVE_MID);
     g_ioport.p_api->pinWrite(PIN_RELAY_DOOR, IOPORT_LEVEL_HIGH);
     g_ioport.p_api->pinWrite(PIN_RELAY_LIGHT, IOPORT_LEVEL_LOW);
 }
@@ -186,7 +179,7 @@ void thread_gpio_entry(ULONG arg)
             door_open_tick = tx_time_get();
         } else if (current_door && is_door_pulsing) {
             if ((tx_time_get() - door_open_tick) >= DOOR_PULSE_TICKS) {
-                app_set_door(false);
+                app_post_event(EVENT_DOOR_CLOSE, NULL);
                 is_door_pulsing = false;
             }
         } else if (!current_door) {
