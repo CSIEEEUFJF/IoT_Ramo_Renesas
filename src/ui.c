@@ -20,10 +20,10 @@
 #define UI_TOUCH_DEBOUNCE_TICKS (TX_TIMER_TICKS_PER_SECOND / 20U)
 #define UI_PIN_LENGTH          4U
 #define UI_ADMIN_PIN           "1234"
-#define UI_LOGO_IDLE_WIDTH     200
-#define UI_LOGO_IDLE_HEIGHT    200
-#define UI_LOGO_WAIT_WIDTH     216
-#define UI_LOGO_WAIT_HEIGHT    51
+#define UI_LOGO_ENROLL_WIDTH   196
+#define UI_LOGO_ENROLL_HEIGHT  51
+#define UI_LOGO_WAIT_WIDTH     RAMO_LOGO_WIDTH
+#define UI_LOGO_WAIT_HEIGHT    RAMO_LOGO_HEIGHT
 #define UI_GEAR_BUTTON_SIZE    28
 #define UI_GEAR_TOOTH_SIZE     4
 #define UI_GEAR_CENTER_SIZE    8
@@ -1171,7 +1171,17 @@ static bool ui_touch_poll(ui_touch_event_t *event)
             scaled_x = UI_SCREEN_WIDTH - 1;
         }
 
-        scaled_y = UI_SCREEN_HEIGHT - scaled_y;
+        /* Mantem o touch alinhado com a rotacao de 180 graus aplicada ao painel. */
+        scaled_x = (UI_SCREEN_WIDTH - 1) - scaled_x;
+        if (scaled_x < 0)
+        {
+            scaled_x = 0;
+        }
+        else if (scaled_x >= UI_SCREEN_WIDTH)
+        {
+            scaled_x = UI_SCREEN_WIDTH - 1;
+        }
+
         if (scaled_y < 0)
         {
             scaled_y = 0;
@@ -2253,10 +2263,10 @@ static void ui_draw_enroll_wait_screen(const ui_status_t *status)
 
     ui_fit_pixel_text_to_width(ip_text, top_line, sizeof(top_line), 216, 1U);
     ui_fill_rect(0, 0, UI_SCREEN_WIDTH, UI_SCREEN_HEIGHT, UI_COLOR_TEXT);
-    ui_draw_rgb565_image_scaled((UI_SCREEN_WIDTH - 136) / 2,
-                                22,
-                                136,
-                                136,
+    ui_draw_rgb565_image_scaled((UI_SCREEN_WIDTH - UI_LOGO_ENROLL_WIDTH) / 2,
+                                64,
+                                UI_LOGO_ENROLL_WIDTH,
+                                UI_LOGO_ENROLL_HEIGHT,
                                 g_ramo_logo_rgb565,
                                 (int32_t) RAMO_LOGO_WIDTH,
                                 (int32_t) RAMO_LOGO_HEIGHT);

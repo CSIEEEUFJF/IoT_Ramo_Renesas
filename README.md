@@ -96,7 +96,7 @@ Mapeamento atual em [`src/gpio.c`](./src/gpio.c):
 
 Comportamento:
 
-- a porta abre por pulso temporizado de `5s`
+- a porta abre por pulso temporizado de `2s`
 - o fechamento automatico nao gera evento de log
 - os botoes locais tambem podem disparar eventos de UI
 - os pinos dos reles sao configurados manualmente em `gpio_init()`, pois nao dependem do `pin_data.c`

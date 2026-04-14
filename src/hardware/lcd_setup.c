@@ -104,7 +104,8 @@ void lcd_setup(void)
     lcd_write(ILI9341_POWER2,       (const uint8_t *) "\x10", 1U);
     lcd_write(ILI9341_VCOM1,        (const uint8_t *) "\x3E\x28", 2U);
     lcd_write(ILI9341_VCOM2,        (const uint8_t *) "\x86", 1U);
-    lcd_write(ILI9341_MAC,          (const uint8_t *) "\x48", 1U);
+    /* Rotaciona a imagem em 180 graus para coincidir com a montagem fisica atual. */
+    lcd_write(ILI9341_MAC,          (const uint8_t *) "\x88", 1U);
     lcd_write(ILI9341_PIXEL_FORMAT, (const uint8_t *) "\x55", 1U);
     lcd_write(ILI9341_FRM_CTRL1,    (const uint8_t *) "\x00\x18", 2U);
     lcd_write(ILI9341_DFC,          (const uint8_t *) "\x08\x82\x27", 3U);

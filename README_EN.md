@@ -96,7 +96,7 @@ Current mapping in [`src/gpio.c`](./src/gpio.c):
 
 Behavior:
 
-- door opens with a timed `5s` pulse
+- door opens with a timed `2s` pulse
 - automatic closing does not generate a log event
 - local buttons can also trigger UI events
 - relay pins are configured manually in `gpio_init()`, instead of relying on `pin_data.c`
