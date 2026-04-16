@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdarg.h>
 
 extern NX_IP g_ip0;
 extern NX_HTTP_SERVER g_http_server0;
@@ -1168,6 +1169,57 @@ static bool profile_from_query(const char *query, storage_user_profile_t *profil
     }
 
     return ('\0' != profile->name[0]);
+}
+
+static int parse_profile_index_csv(const char *csv, int *out_indices, int max_indices)
+{
+    const char *cursor = csv;
+    int count = 0;
+
+    if ((NULL == csv) || (NULL == out_indices) || (max_indices <= 0))
+    {
+        return 0;
+    }
+
+    while ('\0' != *cursor)
+    {
+        char *end_ptr = NULL;
+        long value;
+
+        while (('\0' != *cursor) &&
+               (isspace((unsigned char) *cursor) || (',' == *cursor) || (';' == *cursor)))
+        {
+            cursor++;
+        }
+
+        if ('\0' == *cursor)
+        {
+            break;
+        }
+
+        value = strtol(cursor, &end_ptr, 10);
+        if ((NULL == end_ptr) || (end_ptr == cursor))
+        {
+            while (('\0' != *cursor) && (',' != *cursor) && (';' != *cursor))
+            {
+                cursor++;
+            }
+            continue;
+        }
+
+        if (count < max_indices)
+        {
+            out_indices[count++] = (int) value;
+        }
+
+        cursor = end_ptr;
+        while (('\0' != *cursor) && (',' != *cursor) && (';' != *cursor))
+        {
+            cursor++;
+        }
+    }
+
+    return count;
 }
 
 static bool import_extract_json_string(const char *object_start,
@@ -2614,6 +2666,33 @@ static const char *light_persist_status_text(void)
     }
 }
 
+static bool net_appendf(char *buffer, size_t buffer_size, size_t *offset, const char *format, ...)
+{
+    va_list args;
+    int written;
+
+    if ((NULL == buffer) || (NULL == offset) || (NULL == format) || (*offset >= buffer_size))
+    {
+        return false;
+    }
+
+    va_start(args, format);
+    written = vsnprintf(&buffer[*offset], buffer_size - *offset, format, args);
+    va_end(args);
+
+    if ((written < 0) || ((size_t) written >= (buffer_size - *offset)))
+    {
+        if (buffer_size > 0U)
+        {
+            buffer[buffer_size - 1U] = '\0';
+        }
+        return false;
+    }
+
+    *offset += (size_t) written;
+    return true;
+}
+
 static void extract_query_from_resource(const char *resource, char *query_out, size_t query_size)
 {
     const char *q_mark;
@@ -2710,7 +2789,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
              (0U != link_status) ? "conectado" : "sem link",
              is_admin ? "autenticada" : "bloqueada",
              light_persist_status_text(),
-             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/import'>Importar</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
+             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/import'>Importar</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/meeting_mode'>Reuniao</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
              is_admin ? "<a class='small secondary' href='/logout'>Sair</a>" : "<a class='small' href='/login'>Entrar</a>",
              (NULL != message_to_render) ? message_to_render : "",
              content_card_open,
@@ -3836,6 +3915,181 @@ static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr,
     return send_html_response(server_ptr, packet_ptr, html);
 }
 
+static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
+{
+    size_t offset = 0U;
+    int user_count;
+    int selectable_count = 0;
+    bool active;
+    unsigned int selected_profiles;
+    unsigned int allowed_cards;
+
+    if (!net_admin_is_authenticated())
+    {
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para configurar o modo reuniao.</div>");
+    }
+
+    active = storage_meeting_mode_is_active();
+    selected_profiles = storage_meeting_mode_selected_profile_count();
+    allowed_cards = storage_meeting_mode_allowed_card_count();
+    user_count = storage_user_count();
+
+    g_net_metric_buffer[0] = '\0';
+    if (!net_appendf(g_net_metric_buffer,
+                     sizeof(g_net_metric_buffer),
+                     &offset,
+                     "<p class='%s'><strong>Modo reuniao %s.</strong></p>"
+                     "<p class='muted'>Quando ativo, apenas os perfis selecionados nesta pagina liberam a entrada por RFID.</p>"
+                     "<p class='muted'>Botoes locais e o comando manual da porta continuam disponiveis como override administrativo.</p>"
+                     "<p class='muted'>Perfis liberados agora: <strong>%u</strong> | Cartoes liberados: <strong>%u</strong></p>",
+                     active ? "ok" : "warn",
+                     active ? "ativo" : "desativado",
+                     selected_profiles,
+                     allowed_cards))
+    {
+        return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
+    }
+
+    if (active)
+    {
+        if (!net_appendf(g_net_metric_buffer,
+                         sizeof(g_net_metric_buffer),
+                         &offset,
+                         "<div class='actions'><a class='small danger' href='/meeting_mode_stop'>Encerrar modo reuniao</a></div>"))
+        {
+            return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
+        }
+    }
+
+    if (!net_appendf(g_net_metric_buffer,
+                     sizeof(g_net_metric_buffer),
+                     &offset,
+                     "<form action='/meeting_mode_start' method='post' onsubmit='return syncMeetingModeSelection();'>"
+                     "<input type='hidden' name='selected' id='meeting_mode_selected' value=''>"
+                     "<div style='max-height:360px;overflow:auto;border:1px solid #e7ebf2;border-radius:12px;padding:12px;background:#f8fbff;'>"))
+    {
+        return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+        char name_html[NAME_MAX_LEN * 6];
+        char role_html[STORAGE_ROLE_MAX_LEN * 6];
+        char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6];
+        char cards_csv[FORM_CARDS_BUFFER_SIZE];
+        const char *checked = "";
+
+        if (!storage_profile_get(i, &profile) || (0U == profile.card_count))
+        {
+            continue;
+        }
+
+        selectable_count++;
+        checked = storage_meeting_mode_profile_selected(&profile) ? " checked" : "";
+        profile_cards_to_csv(&profile, cards_csv, sizeof(cards_csv));
+        net_html_escape(profile.name, name_html, sizeof(name_html));
+        net_html_escape(('\0' != profile.role[0]) ? profile.role : "-", role_html, sizeof(role_html));
+        net_html_escape(('\0' != profile.chapter[0]) ? profile.chapter : "-", chapter_html, sizeof(chapter_html));
+
+        if (!net_appendf(g_net_metric_buffer,
+                         sizeof(g_net_metric_buffer),
+                         &offset,
+                         "<label style='display:flex;align-items:flex-start;gap:10px;padding:10px 4px;border-bottom:1px solid #eef2f7;'>"
+                         "<input type='checkbox' class='meeting-member' value='%d'%s style='width:auto;margin:3px 0 0 0;'>"
+                         "<span><strong>%s</strong><br><span class='muted'>%s | %s | %s</span></span>"
+                         "</label>",
+                         i,
+                         checked,
+                         name_html,
+                         role_html,
+                         chapter_html,
+                         ('\0' != cards_csv[0]) ? cards_csv : "-"))
+        {
+            break;
+        }
+    }
+
+    if (0 == selectable_count)
+    {
+        (void) net_appendf(g_net_metric_buffer,
+                           sizeof(g_net_metric_buffer),
+                           &offset,
+                           "<p class='warn'>Nenhum perfil com cartao RFID vinculado esta disponivel para o modo reuniao.</p>");
+    }
+
+    if (!net_appendf(g_net_metric_buffer,
+                     sizeof(g_net_metric_buffer),
+                     &offset,
+                     "</div>"
+                     "<p class='muted'>Perfis sem cartao nao aparecem nessa selecao. Marque os membros permitidos e clique em iniciar.</p>"
+                     "<div class='actions'><button class='btn' type='submit'>Iniciar modo reuniao</button><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
+                     "</form>"
+                     "<script>"
+                     "function syncMeetingModeSelection(){"
+                     "var values=[];"
+                     "var checks=document.querySelectorAll('.meeting-member');"
+                     "for(var i=0;i<checks.length;i++){if(checks[i].checked){values.push(checks[i].value);}}"
+                     "document.getElementById('meeting_mode_selected').value=values.join(',');"
+                     "return true;"
+                     "}"
+                     "</script>"))
+    {
+        return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
+    }
+
+    return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", g_net_metric_buffer, message);
+}
+
+static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const char *form_data)
+{
+    char selected_text[512];
+    int selected_indices[STORAGE_MAX_USERS];
+    int selected_count;
+    unsigned int selected_profiles = 0U;
+    unsigned int allowed_cards = 0U;
+
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para iniciar o modo reuniao.</div>");
+    }
+
+    selected_text[0] = '\0';
+    (void) query_get_value_raw(form_data, "selected", selected_text, sizeof(selected_text));
+    selected_count = parse_profile_index_csv(selected_text, selected_indices, STORAGE_MAX_USERS);
+    if (selected_count <= 0)
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Selecione ao menos um perfil com cartao para iniciar a reuniao.</div>");
+    }
+
+    if (!storage_meeting_mode_start(selected_indices, selected_count, &selected_profiles, &allowed_cards))
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Nao foi possivel iniciar o modo reuniao. Verifique se os perfis escolhidos possuem cartoes validos.</div>");
+    }
+
+    {
+        char message[192];
+
+        snprintf(message,
+                 sizeof(message),
+                 "<div class='card ok'>Modo reuniao ativado com %u perfil(is) e %u cartao(oes) liberado(s). Apenas os membros selecionados entram por RFID.</div>",
+                 selected_profiles,
+                 allowed_cards);
+        return light_redirect_with_flash(server_ptr, "/meeting_mode", message);
+    }
+}
+
+static UINT handle_light_meeting_mode_stop(NX_HTTP_SERVER *server_ptr)
+{
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para encerrar o modo reuniao.</div>");
+    }
+
+    storage_meeting_mode_stop();
+    return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card ok'>Modo reuniao encerrado. O acesso voltou ao comportamento normal.</div>");
+}
+
 static UINT render_light_door_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
 {
     static char body[3072];
@@ -4237,6 +4491,14 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
                                                 NULL,
                                                 net_path_get_index_after_prefix(path, "/access_log/", 0));
         }
+        if (0 == strcmp(path, "/meeting_mode"))
+        {
+            return render_light_meeting_mode_page(server_ptr, packet_ptr, NULL);
+        }
+        if (0 == strcmp(path, "/meeting_mode_stop"))
+        {
+            return handle_light_meeting_mode_stop(server_ptr);
+        }
         if (0 == strcmp(path, "/door"))
         {
             return render_light_door_page(server_ptr, packet_ptr, NULL);
@@ -4361,6 +4623,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         if (0 == strcmp(path, "/import_profiles"))
         {
             return handle_light_import_profiles(server_ptr, body);
+        }
+        if (0 == strcmp(path, "/meeting_mode_start"))
+        {
+            return handle_light_meeting_mode_start(server_ptr, body);
         }
     }
 

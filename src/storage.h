@@ -32,8 +32,16 @@ typedef struct
     ULONG total_size;
 } storage_photo_export_info_t;
 
+typedef enum
+{
+    STORAGE_ACCESS_RESULT_NOT_FOUND = 0,
+    STORAGE_ACCESS_RESULT_GRANTED,
+    STORAGE_ACCESS_RESULT_DENIED_MEETING_MODE,
+} storage_access_result_t;
+
 void storage_init(void);
 bool storage_check_uid(const char *uid_str, char *out_name);
+storage_access_result_t storage_authorize_uid(const char *uid_str, char *out_name);
 int  storage_user_count(void);
 bool storage_user_get(int index, char *out_name, char *out_uid);
 bool storage_add_user(const char *uid_str, const char *name);
@@ -44,6 +52,15 @@ bool storage_profile_get(int index, storage_user_profile_t *out_profile);
 bool storage_profile_find_by_uid(const char *uid_str, storage_user_profile_t *out_profile);
 bool storage_profile_upsert(const storage_user_profile_t *profile, int edit_index);
 bool storage_profile_remove(int index);
+bool storage_meeting_mode_start(const int *profile_indices,
+                                int profile_count,
+                                unsigned int *out_selected_profiles,
+                                unsigned int *out_allowed_cards);
+void storage_meeting_mode_stop(void);
+bool storage_meeting_mode_is_active(void);
+unsigned int storage_meeting_mode_selected_profile_count(void);
+unsigned int storage_meeting_mode_allowed_card_count(void);
+bool storage_meeting_mode_profile_selected(const storage_user_profile_t *profile);
 bool storage_admin_pin_valid(const char *pin);
 bool storage_persist_now(void);
 bool storage_persist_wait(ULONG timeout_ticks);

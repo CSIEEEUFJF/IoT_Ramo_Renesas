@@ -25,6 +25,7 @@ extern ssp_err_t fx_media_init0_format(void);
 #define ACCESS_LOG_BUFFER_SIZE 4096
 #define ACCESS_LOG_ROTATE_SIZE (64U * 1024U)
 #define ACCESS_LOG_PENDING_SIZE 48U
+#define STORAGE_MEETING_MODE_MAX_ALLOWED_CARDS (STORAGE_MAX_USERS * STORAGE_MAX_CARDS_PER_USER)
 #define ACCESS_LOG_FILE_NAME "access.log"
 #define ACCESS_LOG_ARCHIVE_FILE_NAME "access.bak"
 #define METRICS_LOG_BUFFER_SIZE 6144
@@ -57,6 +58,7 @@ static bool g_storage_metrics_persist_requested = false;
 static bool g_storage_photo_persist_requested = false;
 static bool g_storage_load_requested = false;
 static bool g_recent_user_valid = false;
+static bool g_storage_meeting_mode_active = false;
 static TX_MUTEX g_storage_mutex;
 static TX_MUTEX g_storage_media_mutex;
 static TX_SEMAPHORE g_storage_persist_semaphore;
@@ -70,6 +72,7 @@ static char g_storage_load_json[JSON_BUFFER_SIZE];
 static char g_storage_persist_json[JSON_BUFFER_SIZE];
 static char g_storage_persist_work_json[JSON_BUFFER_SIZE];
 static app_access_log_entry_t g_storage_access_log_pending[ACCESS_LOG_PENDING_SIZE];
+static char g_storage_meeting_mode_allowed_cards[STORAGE_MEETING_MODE_MAX_ALLOWED_CARDS][UID_MAX_LEN];
 static char g_storage_access_log_work_text[ACCESS_LOG_BUFFER_SIZE];
 static char g_storage_metrics_text[METRICS_LOG_BUFFER_SIZE];
 static char g_storage_pending_photo_id[STORAGE_PHOTO_ID_MAX_LEN];
@@ -79,6 +82,8 @@ static size_t g_storage_persist_work_json_size = 0U;
 static size_t g_storage_access_log_work_text_size = 0U;
 static size_t g_storage_metrics_text_size = 0U;
 static unsigned int g_storage_access_log_pending_count = 0U;
+static unsigned int g_storage_meeting_mode_selected_profiles = 0U;
+static unsigned int g_storage_meeting_mode_allowed_count = 0U;
 static volatile ULONG g_storage_persist_status = STORAGE_PERSIST_STATUS_IDLE;
 volatile ULONG g_storage_debug_worker_runs = 0U;
 volatile ULONG g_storage_debug_last_stage = 0U;
@@ -786,6 +791,88 @@ static int storage_find_user_by_card_locked(const char *uid_str)
     }
 
     return -1;
+}
+
+static const user_t *storage_find_profile_by_uid_locked(const char *uid_str)
+{
+    int index;
+
+    index = storage_find_user_by_card_locked(uid_str);
+    if (index >= 0)
+    {
+        return &g_users[index];
+    }
+
+    if (g_recent_user_valid)
+    {
+        char cleaned_uid[UID_MAX_LEN];
+
+        storage_copy_clean_uid(cleaned_uid, sizeof(cleaned_uid), uid_str);
+        if ('\0' != cleaned_uid[0])
+        {
+            for (unsigned int card_index = 0U; card_index < g_recent_user.card_count; card_index++)
+            {
+                if (0 == strcmp(g_recent_user.cards[card_index], cleaned_uid))
+                {
+                    return &g_recent_user;
+                }
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static void storage_meeting_mode_clear_locked(void)
+{
+    memset(g_storage_meeting_mode_allowed_cards, 0, sizeof(g_storage_meeting_mode_allowed_cards));
+    g_storage_meeting_mode_active = false;
+    g_storage_meeting_mode_selected_profiles = 0U;
+    g_storage_meeting_mode_allowed_count = 0U;
+}
+
+static bool storage_meeting_mode_uid_allowed_locked(const char *uid_str)
+{
+    char cleaned_uid[UID_MAX_LEN];
+
+    if ((NULL == uid_str) || ('\0' == uid_str[0]))
+    {
+        return false;
+    }
+
+    storage_copy_clean_uid(cleaned_uid, sizeof(cleaned_uid), uid_str);
+    if ('\0' == cleaned_uid[0])
+    {
+        return false;
+    }
+
+    for (unsigned int i = 0U; i < g_storage_meeting_mode_allowed_count; i++)
+    {
+        if (0 == strcmp(g_storage_meeting_mode_allowed_cards[i], cleaned_uid))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool storage_meeting_mode_profile_selected_locked(const user_t *profile)
+{
+    if (!g_storage_meeting_mode_active || (NULL == profile))
+    {
+        return false;
+    }
+
+    for (unsigned int card_index = 0U; card_index < profile->card_count; card_index++)
+    {
+        if (storage_meeting_mode_uid_allowed_locked(profile->cards[card_index]))
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static const char *storage_find_within_object(const char *start, const char *end, const char *pattern)
@@ -2414,6 +2501,7 @@ bool storage_check_uid(const char *uid_str, char *out_name)
 {
     bool found = false;
     char cleaned_uid[UID_MAX_LEN];
+    const user_t *profile = NULL;
 
     if ((NULL == uid_str) || (NULL == out_name))
     {
@@ -2429,40 +2517,61 @@ bool storage_check_uid(const char *uid_str, char *out_name)
     storage_init();
     storage_lock();
     storage_ensure_loaded_locked();
-
-    for (int i = 0; i < g_user_count; i++)
+    profile = storage_find_profile_by_uid_locked(cleaned_uid);
+    if (NULL != profile)
     {
-        for (unsigned int card_index = 0U; card_index < g_users[i].card_count; card_index++)
-        {
-            if (0 == strcmp(g_users[i].cards[card_index], cleaned_uid))
-            {
-                storage_copy_text(out_name, NAME_MAX_LEN, g_users[i].name, strlen(g_users[i].name));
-                found = true;
-                break;
-            }
-        }
-
-        if (found)
-        {
-            break;
-        }
-    }
-
-    if (!found && g_recent_user_valid)
-    {
-        for (unsigned int card_index = 0U; card_index < g_recent_user.card_count; card_index++)
-        {
-            if (0 == strcmp(g_recent_user.cards[card_index], cleaned_uid))
-            {
-                storage_copy_text(out_name, NAME_MAX_LEN, g_recent_user.name, strlen(g_recent_user.name));
-                found = true;
-                break;
-            }
-        }
+        storage_copy_text(out_name, NAME_MAX_LEN, profile->name, strlen(profile->name));
+        found = true;
     }
 
     storage_unlock();
     return found;
+}
+
+storage_access_result_t storage_authorize_uid(const char *uid_str, char *out_name)
+{
+    storage_access_result_t result = STORAGE_ACCESS_RESULT_NOT_FOUND;
+    char cleaned_uid[UID_MAX_LEN];
+    const user_t *profile = NULL;
+
+    if ((NULL == uid_str) || ('\0' == uid_str[0]))
+    {
+        return STORAGE_ACCESS_RESULT_NOT_FOUND;
+    }
+
+    storage_copy_clean_uid(cleaned_uid, sizeof(cleaned_uid), uid_str);
+    if ('\0' == cleaned_uid[0])
+    {
+        return STORAGE_ACCESS_RESULT_NOT_FOUND;
+    }
+
+    if (NULL != out_name)
+    {
+        out_name[0] = '\0';
+    }
+
+    storage_init();
+    storage_lock();
+    storage_ensure_loaded_locked();
+
+    profile = storage_find_profile_by_uid_locked(cleaned_uid);
+    if (NULL != profile)
+    {
+        if (NULL != out_name)
+        {
+            storage_copy_text(out_name, NAME_MAX_LEN, profile->name, strlen(profile->name));
+        }
+
+        result = STORAGE_ACCESS_RESULT_GRANTED;
+        if (g_storage_meeting_mode_active &&
+            !storage_meeting_mode_uid_allowed_locked(cleaned_uid))
+        {
+            result = STORAGE_ACCESS_RESULT_DENIED_MEETING_MODE;
+        }
+    }
+
+    storage_unlock();
+    return result;
 }
 
 int storage_user_count(void)
@@ -2584,8 +2693,8 @@ bool storage_profile_get(int index, storage_user_profile_t *out_profile)
 bool storage_profile_find_by_uid(const char *uid_str, storage_user_profile_t *out_profile)
 {
     bool ok = false;
-    int index;
     char cleaned_uid[UID_MAX_LEN];
+    const user_t *profile = NULL;
 
     if ((NULL == uid_str) || (NULL == out_profile) || ('\0' == uid_str[0]))
     {
@@ -2602,23 +2711,11 @@ bool storage_profile_find_by_uid(const char *uid_str, storage_user_profile_t *ou
     storage_lock();
     storage_ensure_loaded_locked();
 
-    index = storage_find_user_by_card_locked(cleaned_uid);
-    if (index >= 0)
+    profile = storage_find_profile_by_uid_locked(cleaned_uid);
+    if (NULL != profile)
     {
-        *out_profile = g_users[index];
+        *out_profile = *profile;
         ok = true;
-    }
-    else if (g_recent_user_valid)
-    {
-        for (unsigned int card_index = 0U; card_index < g_recent_user.card_count; card_index++)
-        {
-            if (0 == strcmp(g_recent_user.cards[card_index], cleaned_uid))
-            {
-                *out_profile = g_recent_user;
-                ok = true;
-                break;
-            }
-        }
     }
 
     storage_unlock();
@@ -2795,6 +2892,149 @@ bool storage_profile_remove(int index)
 
     storage_unlock();
     return ok;
+}
+
+bool storage_meeting_mode_start(const int *profile_indices,
+                                int profile_count,
+                                unsigned int *out_selected_profiles,
+                                unsigned int *out_allowed_cards)
+{
+    unsigned int selected_profiles = 0U;
+    unsigned int allowed_cards = 0U;
+    bool seen_profiles[STORAGE_MAX_USERS];
+
+    memset(seen_profiles, 0, sizeof(seen_profiles));
+
+    storage_init();
+    storage_lock();
+    storage_ensure_loaded_locked();
+    storage_meeting_mode_clear_locked();
+
+    if ((NULL != profile_indices) && (profile_count > 0))
+    {
+        for (int i = 0; i < profile_count; i++)
+        {
+            int index = profile_indices[i];
+            const user_t *profile;
+
+            if ((index < 0) || (index >= g_user_count) || seen_profiles[index])
+            {
+                continue;
+            }
+
+            profile = &g_users[index];
+            seen_profiles[index] = true;
+            if (!storage_profile_has_cards(profile))
+            {
+                continue;
+            }
+
+            selected_profiles++;
+            for (unsigned int card_index = 0U; card_index < profile->card_count; card_index++)
+            {
+                char cleaned_uid[UID_MAX_LEN];
+                bool duplicate_card = false;
+
+                storage_copy_clean_uid(cleaned_uid, sizeof(cleaned_uid), profile->cards[card_index]);
+                if ('\0' == cleaned_uid[0])
+                {
+                    continue;
+                }
+
+                for (unsigned int existing = 0U; existing < allowed_cards; existing++)
+                {
+                    if (0 == strcmp(g_storage_meeting_mode_allowed_cards[existing], cleaned_uid))
+                    {
+                        duplicate_card = true;
+                        break;
+                    }
+                }
+
+                if (duplicate_card || (allowed_cards >= STORAGE_MEETING_MODE_MAX_ALLOWED_CARDS))
+                {
+                    continue;
+                }
+
+                storage_copy_text(g_storage_meeting_mode_allowed_cards[allowed_cards],
+                                  sizeof(g_storage_meeting_mode_allowed_cards[allowed_cards]),
+                                  cleaned_uid,
+                                  strlen(cleaned_uid));
+                allowed_cards++;
+            }
+        }
+    }
+
+    g_storage_meeting_mode_selected_profiles = selected_profiles;
+    g_storage_meeting_mode_allowed_count = allowed_cards;
+    g_storage_meeting_mode_active = ((selected_profiles > 0U) && (allowed_cards > 0U));
+    if (!g_storage_meeting_mode_active)
+    {
+        storage_meeting_mode_clear_locked();
+    }
+
+    if (NULL != out_selected_profiles)
+    {
+        *out_selected_profiles = g_storage_meeting_mode_selected_profiles;
+    }
+    if (NULL != out_allowed_cards)
+    {
+        *out_allowed_cards = g_storage_meeting_mode_allowed_count;
+    }
+
+    storage_unlock();
+    return g_storage_meeting_mode_active;
+}
+
+void storage_meeting_mode_stop(void)
+{
+    storage_init();
+    storage_lock();
+    storage_meeting_mode_clear_locked();
+    storage_unlock();
+}
+
+bool storage_meeting_mode_is_active(void)
+{
+    bool active;
+
+    storage_init();
+    storage_lock();
+    active = g_storage_meeting_mode_active;
+    storage_unlock();
+    return active;
+}
+
+unsigned int storage_meeting_mode_selected_profile_count(void)
+{
+    unsigned int count;
+
+    storage_init();
+    storage_lock();
+    count = g_storage_meeting_mode_selected_profiles;
+    storage_unlock();
+    return count;
+}
+
+unsigned int storage_meeting_mode_allowed_card_count(void)
+{
+    unsigned int count;
+
+    storage_init();
+    storage_lock();
+    count = g_storage_meeting_mode_allowed_count;
+    storage_unlock();
+    return count;
+}
+
+bool storage_meeting_mode_profile_selected(const storage_user_profile_t *profile)
+{
+    bool selected;
+
+    storage_init();
+    storage_lock();
+    selected = storage_meeting_mode_profile_selected_locked(profile);
+    storage_unlock();
+    return selected;
 }
 
 bool storage_admin_pin_valid(const char *pin)

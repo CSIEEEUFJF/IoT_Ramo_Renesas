@@ -640,7 +640,9 @@ void thread_rfid_entry(ULONG arg)
                 strncpy(last_seen_uid, uid_text, sizeof(last_seen_uid) - 1U);
                 last_seen_uid[sizeof(last_seen_uid) - 1U] = '\0';
 
-                if (storage_check_uid(uid_text, user_name))
+                storage_access_result_t access_result = storage_authorize_uid(uid_text, user_name);
+
+                if (STORAGE_ACCESS_RESULT_GRANTED == access_result)
                 {
                     app_metric_begin_ui_result("autorizado");
                     app_metric_begin_door("autorizado");
@@ -652,7 +654,10 @@ void thread_rfid_entry(ULONG arg)
                 else
                 {
                     app_metric_begin_ui_result("negado");
-                    app_set_last_identity(uid_text, "N" "\303\243" "o cadastrado");
+                    app_set_last_identity(uid_text,
+                                          (STORAGE_ACCESS_RESULT_DENIED_MEETING_MODE == access_result)
+                                              ? user_name
+                                              : "N" "\303\243" "o cadastrado");
                     app_post_event(EVENT_RFID_AUTH_FAIL, uid_text);
                     app_metric_add("Auth latency", "negado", tx_time_get() - auth_start_tick, true);
                 }
