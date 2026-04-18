@@ -1,0 +1,43 @@
+#ifndef WEBPAGE_H
+#define WEBPAGE_H
+
+const char index_html[] =
+"HTTP/1.1 200 OK\r\n"
+"Content-Type: text/html; charset=UTF-8\r\n"
+"Connection: close\r\n\r\n"
+"<!DOCTYPE html><html lang='pt'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>"
+"<title>Registro Ramo Estudantil IEEE UFJF</title><style>"
+"body{font-family:Arial;background:#f4f4f9;padding:20px}.container{max-width:500px;background:#fff;padding:20px;border-radius:8px}"
+".form-group{margin-bottom:15px}label{display:block;font-weight:bold}input[type='text']{width:100%;padding:8px;box-sizing:border-box}"
+".rfid-group{display:flex;gap:10px}button{background:#00629B;color:#fff;border:none;padding:10px;cursor:pointer;width:100%}"
+"#preview{margin-top:10px;display:none;border:1px solid #ccc}"
+"</style></head><body><div class='container'><h2>Registro de Membro</h2><form id='form'>"
+"<div class='form-group'><label>Nome</label><input type='text' id='nome' required></div>"
+"<div class='form-group'><label>Cargo</label><input type='text' id='cargo' required></div>"
+"<div class='form-group'><label>Capítulo</label><input type='text' id='capitulo' required></div>"
+"<div class='form-group'><label>Cartões RFID</label><div class='rfid-group'>"
+"<input type='text' id='rfid1' required><input type='text' id='rfid2'><input type='text' id='rfid3'></div></div>"
+"<div class='form-group'><label>Foto</label><input type='file' id='foto' accept='image/*' required>"
+"<canvas id='canvas' width='64' height='64' style='display:none'></canvas><canvas id='preview' width='64' height='64'></canvas></div>"
+"<button type='submit'>Salvar</button></form><div id='status'></div></div>"
+"<script>"
+"document.getElementById('foto').addEventListener('change',e=>{"
+"  const f=e.target.files[0];if(!f)return;const img=new Image();"
+"  img.onload=()=>{document.getElementById('preview').style.display='block';"
+"  document.getElementById('canvas').getContext('2d').drawImage(img,0,0,64,64);"
+"  document.getElementById('preview').getContext('2d').drawImage(img,0,0,64,64);};"
+"  img.src=URL.createObjectURL(f);"
+"});"
+"document.getElementById('form').addEventListener('submit',e=>{"
+"  e.preventDefault(); const s=document.getElementById('status'); s.innerText='Enviando';"
+"  const d=document.getElementById('canvas').getContext('2d').getImageData(0,0,64,64).data;"
+"  const r=[]; for(let i=0;i<d.length;i+=4){ r.push(((d[i]>>3)<<11)|((d[i+1]>>2)<<5)|(d[i+2]>>3)); }"
+"  fetch('/api/cadastro',{method:'POST',headers:{'Content-Type':'application/json'},"
+"  body:JSON.stringify({nome:document.getElementById('nome').value,cargo:document.getElementById('cargo').value,"
+"  capitulo:document.getElementById('capitulo').value,rfids:[document.getElementById('rfid1').value,"
+"  document.getElementById('rfid2').value,document.getElementById('rfid3').value],foto:r})})"
+"  .then(res=>{if(res.ok){s.innerText='Guardado!';document.getElementById('form').reset();}else{s.innerText='Erro!';}});"
+"});"
+"</script></body></html>";
+
+#endif // WEBPAGE_H

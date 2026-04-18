@@ -1,0 +1,8 @@
+Debug/
+JLinkLog.log
+*.jlink
+*.launch
+_sample_gui/
+_sample_netx/
+_sx8654_pack/
+_sx8654_pack.zip

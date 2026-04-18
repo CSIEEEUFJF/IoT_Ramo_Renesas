@@ -1,0 +1,6 @@
+/* generated configuration header file - do not edit */
+#ifndef SF_BLOCK_MEDIA_LX_NOR_CFG_H_
+#define SF_BLOCK_MEDIA_LX_NOR_CFG_H_
+#define SF_BLOCK_MEDIA_LX_NOR_CFG_PARAM_CHECKING_ENABLE (BSP_CFG_PARAM_CHECKING_ENABLE)
+#define SF_BLOCK_MEDIA_LX_NOR_BLOCK_SIZE_BYTES (512U)
+#endif /* SF_BLOCK_MEDIA_LX_NOR_CFG_H_ */
