@@ -4,6 +4,7 @@
 #include "ui.h"
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 
@@ -21,13 +22,21 @@ UINT g_lx_nor0_system_error(UINT error_code)
 extern ssp_err_t fx_media_init0_format(void);
 /* ========================================================================= */
 
-#define JSON_BUFFER_SIZE 8192
+#define USERS_JSON_CHUNK_SIZE 512U
+#define USERS_JSON_OBJECT_SIZE 1024U
 #define ACCESS_LOG_BUFFER_SIZE 4096
 #define ACCESS_LOG_ROTATE_SIZE (64U * 1024U)
 #define ACCESS_LOG_PENDING_SIZE 48U
 #define STORAGE_MEETING_MODE_MAX_ALLOWED_CARDS (STORAGE_MAX_USERS * STORAGE_MAX_CARDS_PER_USER)
+#define USERS_FILE_NAME "users.json"
+#define USERS_TEMP_FILE_NAME "users.tmp"
+#define USERS_BACKUP_FILE_NAME "users.bak"
 #define ACCESS_LOG_FILE_NAME "access.log"
 #define ACCESS_LOG_ARCHIVE_FILE_NAME "access.bak"
+#define MEETING_SCHEDULE_FILE_NAME "meeting.json"
+#define MEETING_SCHEDULE_TEMP_FILE_NAME "meeting.tmp"
+#define MEETING_SCHEDULE_BACKUP_FILE_NAME "meeting.bak"
+#define MEETING_SCHEDULE_BUFFER_SIZE 3072U
 #define METRICS_LOG_BUFFER_SIZE 6144
 #define STORAGE_MEDIA_SAFE_DELAY_TICKS (2U * TX_TIMER_TICKS_PER_SECOND)
 #define STORAGE_THREAD_STACK_SIZE 2048U
@@ -47,8 +56,10 @@ static int g_user_count = 0;
 static bool g_storage_initialized = false;
 static bool g_storage_mutex_ready = false;
 static bool g_storage_media_mutex_ready = false;
+static bool g_storage_io_mutex_ready = false;
 static bool g_storage_media_ready = false;
 static bool g_storage_loaded = false;
+static bool g_storage_users_load_failed = false;
 static bool g_storage_access_log_loaded = false;
 static bool g_storage_metrics_loaded = false;
 static bool g_storage_thread_ready = false;
@@ -61,6 +72,7 @@ static bool g_recent_user_valid = false;
 static bool g_storage_meeting_mode_active = false;
 static TX_MUTEX g_storage_mutex;
 static TX_MUTEX g_storage_media_mutex;
+static TX_MUTEX g_storage_io_mutex;
 static TX_SEMAPHORE g_storage_persist_semaphore;
 static TX_THREAD g_storage_thread;
 static ULONG g_storage_thread_stack[STORAGE_THREAD_STACK_SIZE / sizeof(ULONG)];
@@ -68,22 +80,27 @@ static FX_FILE g_users_file;
 static FX_FILE g_access_log_file;
 static FX_FILE g_metrics_file;
 static FX_FILE g_photo_file;
-static char g_storage_load_json[JSON_BUFFER_SIZE];
-static char g_storage_persist_json[JSON_BUFFER_SIZE];
-static char g_storage_persist_work_json[JSON_BUFFER_SIZE];
+static FX_FILE g_meeting_schedule_file;
+static user_t g_storage_users_io_snapshot[STORAGE_MAX_USERS];
+static user_t g_storage_recent_io_snapshot;
+static char g_storage_users_json_chunk[USERS_JSON_CHUNK_SIZE];
+static char g_storage_users_json_object[USERS_JSON_OBJECT_SIZE];
 static app_access_log_entry_t g_storage_access_log_pending[ACCESS_LOG_PENDING_SIZE];
+static app_access_log_entry_t g_storage_access_log_work_entries[ACCESS_LOG_PENDING_SIZE];
 static char g_storage_meeting_mode_allowed_cards[STORAGE_MEETING_MODE_MAX_ALLOWED_CARDS][UID_MAX_LEN];
 static char g_storage_access_log_work_text[ACCESS_LOG_BUFFER_SIZE];
 static char g_storage_metrics_text[METRICS_LOG_BUFFER_SIZE];
+static char g_storage_meeting_schedule_text[MEETING_SCHEDULE_BUFFER_SIZE];
 static char g_storage_pending_photo_id[STORAGE_PHOTO_ID_MAX_LEN];
 static char g_storage_photo_work_id[STORAGE_PHOTO_ID_MAX_LEN];
 static size_t g_storage_persist_json_size = 0U;
-static size_t g_storage_persist_work_json_size = 0U;
 static size_t g_storage_access_log_work_text_size = 0U;
 static size_t g_storage_metrics_text_size = 0U;
 static unsigned int g_storage_access_log_pending_count = 0U;
 static unsigned int g_storage_meeting_mode_selected_profiles = 0U;
 static unsigned int g_storage_meeting_mode_allowed_count = 0U;
+static int g_storage_users_io_count = 0;
+static bool g_storage_recent_io_valid = false;
 static volatile ULONG g_storage_persist_status = STORAGE_PERSIST_STATUS_IDLE;
 volatile ULONG g_storage_debug_worker_runs = 0U;
 volatile ULONG g_storage_debug_last_stage = 0U;
@@ -103,18 +120,27 @@ typedef struct st_storage_photo_file_header
 } storage_photo_file_header_t;
 
 static void storage_thread_entry(ULONG initial_input);
-static void storage_refresh_persist_snapshot_locked(void);
 static void storage_refresh_metrics_snapshot(void);
 static void storage_ensure_loaded_locked(void);
-static bool storage_save_json_buffer(const char *json_buffer, size_t json_size);
+static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_user_count);
 static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_size);
 static bool storage_save_metrics_buffer(const char *log_buffer, size_t log_size);
+static bool storage_save_meeting_schedules_json(const storage_meeting_schedule_t *schedules, int schedule_count);
+static int storage_parse_meeting_schedules_json(const char *json_text,
+                                                storage_meeting_schedule_t *out_schedules,
+                                                int max_schedules);
 static bool storage_load_users_now(void);
+static bool storage_load_users_stream(void);
 static bool storage_load_access_log_now(void);
 static bool storage_load_metrics_now(void);
-static bool storage_parse_access_log_text(const char *log_buffer);
+static unsigned int storage_parse_access_log_text_into(const char *log_buffer,
+                                                       app_access_log_entry_t *entries,
+                                                       unsigned int max_entries,
+                                                       unsigned int *entry_count);
 static void storage_media_lock(void);
 static void storage_media_unlock(void);
+static void storage_io_lock(void);
+static void storage_io_unlock(void);
 static void storage_photo_filename(const char *photo_id, char *out, size_t out_size);
 static bool storage_save_photo_file(const char *photo_id);
 static bool storage_load_photo_file(const char *photo_id);
@@ -186,7 +212,7 @@ static bool storage_read_file_chunk(const char *filename,
         return false;
     }
 
-    if (0 == strcmp(filename, "users.json"))
+    if (0 == strcmp(filename, USERS_FILE_NAME))
     {
         file_ptr = &g_users_file;
     }
@@ -249,7 +275,7 @@ static bool storage_get_file_size(const char *filename, ULONG *out_size)
         return false;
     }
 
-    if (0 == strcmp(filename, "users.json"))
+    if (0 == strcmp(filename, USERS_FILE_NAME))
     {
         file_ptr = &g_users_file;
     }
@@ -321,6 +347,22 @@ static void storage_media_unlock(void)
     }
 }
 
+static void storage_io_lock(void)
+{
+    if (g_storage_io_mutex_ready)
+    {
+        tx_mutex_get(&g_storage_io_mutex, TX_WAIT_FOREVER);
+    }
+}
+
+static void storage_io_unlock(void)
+{
+    if (g_storage_io_mutex_ready)
+    {
+        tx_mutex_put(&g_storage_io_mutex);
+    }
+}
+
 static void storage_copy_text(char *dest, size_t dest_size, const char *src, size_t src_len)
 {
     if ((NULL == dest) || (0U == dest_size))
@@ -338,6 +380,33 @@ static void storage_copy_text(char *dest, size_t dest_size, const char *src, siz
     }
     memcpy(dest, src, src_len);
     dest[src_len] = '\0';
+}
+
+static bool storage_appendf(char *buffer, size_t buffer_size, size_t *offset, const char *format, ...)
+{
+    va_list args;
+    int written;
+
+    if ((NULL == buffer) || (NULL == offset) || (NULL == format) || (*offset >= buffer_size))
+    {
+        return false;
+    }
+
+    va_start(args, format);
+    written = vsnprintf(&buffer[*offset], buffer_size - *offset, format, args);
+    va_end(args);
+
+    if ((written < 0) || ((size_t) written >= (buffer_size - *offset)))
+    {
+        if (buffer_size > 0U)
+        {
+            buffer[buffer_size - 1U] = '\0';
+        }
+        return false;
+    }
+
+    *offset += (size_t) written;
+    return true;
 }
 
 static void storage_copy_clean_uid(char *dest, size_t dest_size, const char *src)
@@ -461,6 +530,43 @@ static unsigned int storage_format_access_log_entries(const app_access_log_entry
     }
 
     return used_count;
+}
+
+static void storage_requeue_access_log_entries_locked(const app_access_log_entry_t *entries, unsigned int entry_count)
+{
+    unsigned int count_to_restore = entry_count;
+    unsigned int pending_to_keep = g_storage_access_log_pending_count;
+
+    if ((NULL == entries) || (0U == entry_count))
+    {
+        return;
+    }
+
+    if (count_to_restore > ACCESS_LOG_PENDING_SIZE)
+    {
+        count_to_restore = ACCESS_LOG_PENDING_SIZE;
+    }
+
+    if (pending_to_keep > (ACCESS_LOG_PENDING_SIZE - count_to_restore))
+    {
+        unsigned int drop_count = pending_to_keep - (ACCESS_LOG_PENDING_SIZE - count_to_restore);
+
+        memmove(g_storage_access_log_pending,
+                &g_storage_access_log_pending[drop_count],
+                (pending_to_keep - drop_count) * sizeof(g_storage_access_log_pending[0]));
+        pending_to_keep -= drop_count;
+    }
+
+    if (pending_to_keep > 0U)
+    {
+        memmove(&g_storage_access_log_pending[count_to_restore],
+                g_storage_access_log_pending,
+                pending_to_keep * sizeof(g_storage_access_log_pending[0]));
+    }
+
+    memcpy(g_storage_access_log_pending, entries, count_to_restore * sizeof(g_storage_access_log_pending[0]));
+    g_storage_access_log_pending_count = count_to_restore + pending_to_keep;
+    g_storage_access_log_persist_requested = true;
 }
 
 static void storage_refresh_metrics_snapshot(void)
@@ -658,6 +764,100 @@ static bool storage_append_jsonf(char *json_buffer, size_t json_buffer_size, siz
     return true;
 }
 
+static bool storage_append_json_char(char *json_buffer, size_t json_buffer_size, size_t *offset, char ch)
+{
+    if ((NULL == json_buffer) || (NULL == offset) || ((*offset + 1U) >= json_buffer_size))
+    {
+        return false;
+    }
+
+    json_buffer[*offset] = ch;
+    (*offset)++;
+    json_buffer[*offset] = '\0';
+    return true;
+}
+
+static bool storage_append_json_escaped_string(char *json_buffer,
+                                               size_t json_buffer_size,
+                                               size_t *offset,
+                                               const char *value)
+{
+    const char *cursor = (NULL != value) ? value : "";
+
+    if (!storage_append_json_char(json_buffer, json_buffer_size, offset, '"'))
+    {
+        return false;
+    }
+
+    while ('\0' != *cursor)
+    {
+        unsigned char ch = (unsigned char) *cursor++;
+
+        if (('"' == ch) || ('\\' == ch))
+        {
+            if (!storage_append_json_char(json_buffer, json_buffer_size, offset, '\\') ||
+                !storage_append_json_char(json_buffer, json_buffer_size, offset, (char) ch))
+            {
+                return false;
+            }
+        }
+        else if ('\n' == ch)
+        {
+            if (!storage_append_jsonf(json_buffer, json_buffer_size, offset, "\\n"))
+            {
+                return false;
+            }
+        }
+        else if ('\r' == ch)
+        {
+            if (!storage_append_jsonf(json_buffer, json_buffer_size, offset, "\\r"))
+            {
+                return false;
+            }
+        }
+        else if ('\t' == ch)
+        {
+            if (!storage_append_jsonf(json_buffer, json_buffer_size, offset, "\\t"))
+            {
+                return false;
+            }
+        }
+        else if (ch < 0x20U)
+        {
+            if (!storage_append_json_char(json_buffer, json_buffer_size, offset, ' '))
+            {
+                return false;
+            }
+        }
+        else if (!storage_append_json_char(json_buffer, json_buffer_size, offset, (char) ch))
+        {
+            return false;
+        }
+    }
+
+    return storage_append_json_char(json_buffer, json_buffer_size, offset, '"');
+}
+
+static bool storage_append_json_string_field(char *json_buffer,
+                                             size_t json_buffer_size,
+                                             size_t *offset,
+                                             const char *key,
+                                             const char *value,
+                                             bool prepend_comma)
+{
+    if (!storage_append_jsonf(json_buffer,
+                              json_buffer_size,
+                              offset,
+                              "%s\"%s\":",
+                              prepend_comma ? "," : "",
+                              key))
+    {
+        return false;
+    }
+
+    return storage_append_json_escaped_string(json_buffer, json_buffer_size, offset, value);
+}
+
 static bool storage_append_user_json_locked(const user_t *profile,
                                             bool prepend_comma,
                                             char *json_buffer,
@@ -671,30 +871,35 @@ static bool storage_append_user_json_locked(const user_t *profile,
         return false;
     }
 
-    if (!storage_append_jsonf(json_buffer,
-                              json_buffer_size,
-                              offset,
-                              "%s{\"name\":\"%s\"",
-                              prepend_comma ? "," : "",
-                              profile->name))
+    if (!storage_append_jsonf(json_buffer, json_buffer_size, offset, "%s{", prepend_comma ? "," : ""))
+    {
+        return false;
+    }
+
+    if (!storage_append_json_string_field(json_buffer,
+                                          json_buffer_size,
+                                          offset,
+                                          "name",
+                                          profile->name,
+                                          false))
     {
         return false;
     }
 
     if (('\0' != profile->role[0]) &&
-        !storage_append_jsonf(json_buffer, json_buffer_size, offset, ",\"role\":\"%s\"", profile->role))
+        !storage_append_json_string_field(json_buffer, json_buffer_size, offset, "role", profile->role, true))
     {
         return false;
     }
 
     if (('\0' != profile->chapter[0]) &&
-        !storage_append_jsonf(json_buffer, json_buffer_size, offset, ",\"chapter\":\"%s\"", profile->chapter))
+        !storage_append_json_string_field(json_buffer, json_buffer_size, offset, "chapter", profile->chapter, true))
     {
         return false;
     }
 
     if (('\0' != profile->photo_id[0]) &&
-        !storage_append_jsonf(json_buffer, json_buffer_size, offset, ",\"photo_id\":\"%s\"", profile->photo_id))
+        !storage_append_json_string_field(json_buffer, json_buffer_size, offset, "photo_id", profile->photo_id, true))
     {
         return false;
     }
@@ -706,7 +911,7 @@ static bool storage_append_user_json_locked(const user_t *profile,
     }
 
     if (('\0' != profile->admin_pin[0]) &&
-        !storage_append_jsonf(json_buffer, json_buffer_size, offset, ",\"admin_pin\":\"%s\"", profile->admin_pin))
+        !storage_append_json_string_field(json_buffer, json_buffer_size, offset, "admin_pin", profile->admin_pin, true))
     {
         return false;
     }
@@ -714,24 +919,23 @@ static bool storage_append_user_json_locked(const user_t *profile,
     if (profile->card_count > 0U)
     {
         storage_profile_cards_to_csv(profile, cards_csv, sizeof(cards_csv));
-        if (!storage_append_jsonf(json_buffer,
-                                  json_buffer_size,
-                                  offset,
-                                  ",\"uid\":\"%s\",\"cards_csv\":\"%s\",\"cards\":[",
-                                  profile->cards[0],
-                                  cards_csv))
+        if (!storage_append_jsonf(json_buffer, json_buffer_size, offset, ",\"uid\":") ||
+            !storage_append_json_escaped_string(json_buffer, json_buffer_size, offset, profile->cards[0]) ||
+            !storage_append_jsonf(json_buffer, json_buffer_size, offset, ",\"cards_csv\":") ||
+            !storage_append_json_escaped_string(json_buffer, json_buffer_size, offset, cards_csv) ||
+            !storage_append_jsonf(json_buffer, json_buffer_size, offset, ",\"cards\":["))
         {
             return false;
         }
 
         for (unsigned int card_index = 0U; card_index < profile->card_count; card_index++)
         {
-            if (!storage_append_jsonf(json_buffer,
-                                      json_buffer_size,
-                                      offset,
-                                      "%s\"%s\"",
-                                      (card_index > 0U) ? "," : "",
-                                      profile->cards[card_index]))
+            if (((card_index > 0U) &&
+                 !storage_append_json_char(json_buffer, json_buffer_size, offset, ',')) ||
+                !storage_append_json_escaped_string(json_buffer,
+                                                    json_buffer_size,
+                                                    offset,
+                                                    profile->cards[card_index]))
             {
                 return false;
             }
@@ -762,6 +966,124 @@ static void storage_set_recent_user_locked(const user_t *profile)
 
     g_recent_user = *profile;
     g_recent_user_valid = true;
+}
+
+static void storage_refresh_recent_user_locked(void)
+{
+    if (!g_recent_user_valid)
+    {
+        return;
+    }
+
+    for (unsigned int recent_card_index = 0U; recent_card_index < g_recent_user.card_count; recent_card_index++)
+    {
+        const char *recent_card = g_recent_user.cards[recent_card_index];
+
+        if ('\0' == recent_card[0])
+        {
+            continue;
+        }
+
+        for (int user_index = 0; user_index < g_user_count; user_index++)
+        {
+            for (unsigned int card_index = 0U; card_index < g_users[user_index].card_count; card_index++)
+            {
+                if (0 == strcmp(g_users[user_index].cards[card_index], recent_card))
+                {
+                    storage_set_recent_user_locked(&g_users[user_index]);
+                    return;
+                }
+            }
+        }
+    }
+
+    storage_set_recent_user_locked(NULL);
+}
+
+static void storage_reset_users_io_snapshot(void)
+{
+    g_storage_users_io_count = 0;
+    g_storage_recent_io_valid = false;
+    memset(&g_storage_recent_io_snapshot, 0, sizeof(g_storage_recent_io_snapshot));
+}
+
+static void storage_capture_users_io_snapshot_locked(void)
+{
+    int count_to_copy = g_user_count;
+
+    if (count_to_copy < 0)
+    {
+        count_to_copy = 0;
+    }
+    if (count_to_copy > STORAGE_MAX_USERS)
+    {
+        count_to_copy = STORAGE_MAX_USERS;
+    }
+
+    storage_reset_users_io_snapshot();
+    if (count_to_copy > 0)
+    {
+        memcpy(g_storage_users_io_snapshot, g_users, (size_t) count_to_copy * sizeof(g_users[0]));
+    }
+
+    g_storage_users_io_count = count_to_copy;
+    if (g_recent_user_valid)
+    {
+        g_storage_recent_io_snapshot = g_recent_user;
+        g_storage_recent_io_valid = true;
+    }
+}
+
+static void storage_append_user_to_io_snapshot(const user_t *profile)
+{
+    if (NULL == profile)
+    {
+        return;
+    }
+
+    if (g_storage_users_io_count < STORAGE_MAX_USERS)
+    {
+        g_storage_users_io_snapshot[g_storage_users_io_count++] = *profile;
+        if (storage_profile_has_cards(profile))
+        {
+            g_storage_recent_io_snapshot = *profile;
+            g_storage_recent_io_valid = true;
+        }
+    }
+}
+
+static void storage_commit_users_io_snapshot_locked(void)
+{
+    int count_to_commit = g_storage_users_io_count;
+
+    if (count_to_commit < 0)
+    {
+        count_to_commit = 0;
+    }
+    if (count_to_commit > STORAGE_MAX_USERS)
+    {
+        count_to_commit = STORAGE_MAX_USERS;
+    }
+
+    memset(g_users, 0, sizeof(g_users));
+    if (count_to_commit > 0)
+    {
+        memcpy(g_users, g_storage_users_io_snapshot, (size_t) count_to_commit * sizeof(g_users[0]));
+    }
+    g_user_count = count_to_commit;
+
+    if (g_storage_recent_io_valid)
+    {
+        g_recent_user = g_storage_recent_io_snapshot;
+        g_recent_user_valid = true;
+    }
+    else
+    {
+        storage_set_recent_user_locked(NULL);
+    }
+
+    g_storage_loaded = true;
+    g_storage_users_load_failed = false;
 }
 
 static int storage_find_user_by_card_locked(const char *uid_str)
@@ -933,6 +1255,75 @@ static const char *storage_find_json_key(const char *object_start, const char *o
     return found + strlen(pattern);
 }
 
+static bool storage_copy_json_string_value(char *out,
+                                           size_t out_size,
+                                           const char *start,
+                                           const char *limit,
+                                           const char **out_end)
+{
+    size_t write_index = 0U;
+    const char *cursor = start;
+
+    if ((NULL == out) || (0U == out_size) || (NULL == start) || (NULL == limit) || (start > limit))
+    {
+        return false;
+    }
+
+    out[0] = '\0';
+    while (cursor < limit)
+    {
+        char ch = *cursor++;
+
+        if ('"' == ch)
+        {
+            out[write_index] = '\0';
+            if (NULL != out_end)
+            {
+                *out_end = cursor - 1;
+            }
+            return true;
+        }
+
+        if (('\\' == ch) && (cursor < limit))
+        {
+            char escaped = *cursor++;
+
+            switch (escaped)
+            {
+                case '"':
+                case '\\':
+                case '/':
+                    ch = escaped;
+                    break;
+
+                case 'n':
+                    ch = '\n';
+                    break;
+
+                case 'r':
+                    ch = '\r';
+                    break;
+
+                case 't':
+                    ch = '\t';
+                    break;
+
+                default:
+                    ch = escaped;
+                    break;
+            }
+        }
+
+        if (write_index + 1U < out_size)
+        {
+            out[write_index++] = ch;
+        }
+    }
+
+    out[0] = '\0';
+    return false;
+}
+
 static bool storage_extract_json_string(const char *object_start,
                                         const char *object_end,
                                         const char *key,
@@ -971,14 +1362,12 @@ static bool storage_extract_json_string(const char *object_start,
     }
 
     start++;
-    end = strchr(start, '"');
-    if ((NULL == end) || (end > object_end))
+    if (!storage_copy_json_string_value(out, out_size, start, object_end, &end))
     {
         out[0] = '\0';
         return false;
     }
 
-    storage_copy_text(out, out_size, start, (size_t) (end - start));
     return true;
 }
 
@@ -1079,24 +1468,34 @@ static void storage_extract_json_cards(const char *object_start, const char *obj
     }
 
     cursor++;
-    while (('\0' != *cursor) && (']' != *cursor) && (count < STORAGE_MAX_CARDS_PER_USER))
+    while ((cursor < object_end) && (count < STORAGE_MAX_CARDS_PER_USER))
     {
-        const char *start = strchr(cursor, '"');
+        char raw_card[UID_MAX_LEN];
         const char *end;
 
-        if ((NULL == start) || (start > object_end) || (']' == *start))
+        cursor = storage_skip_whitespace(cursor, object_end);
+        if ((NULL == cursor) || (cursor >= object_end) || (']' == *cursor))
         {
             break;
         }
 
-        end = strchr(start + 1, '"');
-        if ((NULL == end) || (end > object_end))
+        if (',' == *cursor)
+        {
+            cursor++;
+            continue;
+        }
+
+        if ('"' != *cursor)
         {
             break;
         }
 
-        storage_copy_text(profile->cards[count], sizeof(profile->cards[count]), start + 1, (size_t) (end - (start + 1)));
-        storage_copy_clean_uid(profile->cards[count], sizeof(profile->cards[count]), profile->cards[count]);
+        if (!storage_copy_json_string_value(raw_card, sizeof(raw_card), cursor + 1, object_end, &end))
+        {
+            break;
+        }
+
+        storage_copy_clean_uid(profile->cards[count], sizeof(profile->cards[count]), raw_card);
         if ('\0' != profile->cards[count][0])
         {
             count++;
@@ -1108,145 +1507,265 @@ static void storage_extract_json_cards(const char *object_start, const char *obj
     profile->card_count = count;
 }
 
-static bool storage_parse_users(const char *json_buffer)
+static bool storage_parse_user_object_locked(const char *object_start, const char *object_end, user_t *out_profile)
 {
-    const char *cursor = json_buffer;
+    user_t profile;
+    char legacy_uid[UID_MAX_LEN];
+    char cards_csv[UID_MAX_LEN * STORAGE_MAX_CARDS_PER_USER];
 
-    g_user_count = 0;
-    g_recent_user_valid = false;
-    memset(g_users, 0, sizeof(g_users));
-
-    if (NULL == json_buffer)
+    if ((NULL == object_start) || (NULL == object_end) || (NULL == out_profile) || (object_end <= object_start))
     {
         return false;
     }
 
-    while ((NULL != cursor) && ('\0' != *cursor) && (g_user_count < STORAGE_MAX_USERS))
+    storage_clear_profile(&profile);
+    memset(legacy_uid, 0, sizeof(legacy_uid));
+    memset(cards_csv, 0, sizeof(cards_csv));
+
+    if (!storage_extract_json_string(object_start, object_end, "name", profile.name, sizeof(profile.name)))
     {
-        const char *name_key = strstr(cursor, "\"name\"");
-        const char *object_start;
-        const char *object_end;
-        user_t profile;
-        char legacy_uid[UID_MAX_LEN];
-        char cards_csv[UID_MAX_LEN * STORAGE_MAX_CARDS_PER_USER];
+        return false;
+    }
 
-        if (NULL == name_key)
-        {
-            break;
-        }
+    (void) storage_extract_json_string(object_start, object_end, "uid", legacy_uid, sizeof(legacy_uid));
+    (void) storage_extract_json_string(object_start, object_end, "role", profile.role, sizeof(profile.role));
+    (void) storage_extract_json_string(object_start, object_end, "chapter", profile.chapter, sizeof(profile.chapter));
+    (void) storage_extract_json_string(object_start, object_end, "photo_id", profile.photo_id, sizeof(profile.photo_id));
+    profile.is_admin = storage_extract_json_bool(object_start, object_end, "is_admin", false);
+    (void) storage_extract_json_string(object_start, object_end, "admin_pin", profile.admin_pin, sizeof(profile.admin_pin));
+    storage_copy_admin_pin(profile.admin_pin, sizeof(profile.admin_pin), profile.admin_pin);
+    (void) storage_extract_json_string(object_start, object_end, "cards_csv", cards_csv, sizeof(cards_csv));
+    if ('\0' != cards_csv[0])
+    {
+        storage_extract_cards_csv(cards_csv, &profile);
+    }
+    else
+    {
+        storage_extract_json_cards(object_start, object_end, &profile);
+    }
 
-        object_start = name_key;
-        while ((object_start > json_buffer) && ('{' != *object_start))
-        {
-            object_start--;
-        }
-        if ('{' != *object_start)
-        {
-            cursor = name_key + 6;
-            continue;
-        }
+    if (!storage_profile_has_cards(&profile) && ('\0' != legacy_uid[0]))
+    {
+        storage_extract_legacy_uid_cards(legacy_uid, &profile);
+    }
 
-        object_end = strchr(object_start, '}');
-        if (NULL == object_end)
-        {
-            break;
-        }
+    if ('\0' == profile.name[0])
+    {
+        return false;
+    }
 
-        storage_clear_profile(&profile);
-        memset(legacy_uid, 0, sizeof(legacy_uid));
-        memset(cards_csv, 0, sizeof(cards_csv));
+    *out_profile = profile;
+    return true;
+}
 
-        if (!storage_extract_json_string(object_start, object_end, "name", profile.name, sizeof(profile.name)))
-        {
-            cursor = object_end + 1;
-            continue;
-        }
+static bool storage_write_users_json_fragment(const char *fragment, size_t fragment_size, size_t *json_size)
+{
+    UINT status;
 
-        (void) storage_extract_json_string(object_start, object_end, "uid", legacy_uid, sizeof(legacy_uid));
-        (void) storage_extract_json_string(object_start, object_end, "role", profile.role, sizeof(profile.role));
-        (void) storage_extract_json_string(object_start, object_end, "chapter", profile.chapter, sizeof(profile.chapter));
-        (void) storage_extract_json_string(object_start, object_end, "photo_id", profile.photo_id, sizeof(profile.photo_id));
-        profile.is_admin = storage_extract_json_bool(object_start, object_end, "is_admin", false);
-        (void) storage_extract_json_string(object_start, object_end, "admin_pin", profile.admin_pin, sizeof(profile.admin_pin));
-        storage_copy_admin_pin(profile.admin_pin, sizeof(profile.admin_pin), profile.admin_pin);
-        (void) storage_extract_json_string(object_start, object_end, "cards_csv", cards_csv, sizeof(cards_csv));
-        if ('\0' != cards_csv[0])
+    if ((NULL == fragment) || (0U == fragment_size) || (NULL == json_size))
+    {
+        return false;
+    }
+
+    status = fx_file_write(&g_users_file, (VOID *) fragment, (ULONG) fragment_size);
+    if (FX_SUCCESS == status)
+    {
+        *json_size += fragment_size;
+    }
+
+    return (FX_SUCCESS == status);
+}
+
+static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_user_count)
+{
+    UINT status;
+    bool file_opened = false;
+    bool ok = false;
+    bool prepend_comma = false;
+    size_t json_size = 0U;
+    int count_to_write = g_storage_users_io_count;
+    ULONG start_tick = tx_time_get();
+
+    if (count_to_write < 0)
+    {
+        count_to_write = 0;
+    }
+    if (count_to_write > STORAGE_MAX_USERS)
+    {
+        count_to_write = STORAGE_MAX_USERS;
+    }
+
+    if (NULL != out_json_size)
+    {
+        *out_json_size = 0U;
+    }
+    if (NULL != out_user_count)
+    {
+        *out_user_count = (ULONG) count_to_write;
+    }
+
+    g_storage_debug_last_stage = 10U;
+    g_storage_debug_last_saved_bytes = 0U;
+
+    storage_media_lock();
+    if (!storage_media_open())
+    {
+        storage_media_unlock();
+        return false;
+    }
+
+    (void) fx_file_delete(&g_fx_media0, USERS_TEMP_FILE_NAME);
+    status = fx_file_create(&g_fx_media0, USERS_TEMP_FILE_NAME);
+    if ((FX_SUCCESS != status) && (FX_ALREADY_CREATED != status))
+    {
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+        storage_media_unlock();
+        return false;
+    }
+
+    status = fx_file_open(&g_fx_media0, &g_users_file, USERS_TEMP_FILE_NAME, FX_OPEN_FOR_WRITE);
+    if (FX_SUCCESS != status)
+    {
+        (void) fx_file_delete(&g_fx_media0, USERS_TEMP_FILE_NAME);
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+        storage_media_unlock();
+        return false;
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        file_opened = true;
+        status = fx_file_truncate(&g_users_file, 0U);
+    }
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_seek(&g_users_file, 0U);
+    }
+    if (FX_SUCCESS == status)
+    {
+        ok = storage_write_users_json_fragment("[", 1U, &json_size);
+        status = ok ? FX_SUCCESS : FX_INVALID_NAME;
+    }
+
+    if ((FX_SUCCESS == status) && (0 == count_to_write) && g_storage_recent_io_valid)
+    {
+        size_t object_size = 0U;
+
+        if (storage_append_user_json_locked(&g_storage_recent_io_snapshot,
+                                            prepend_comma,
+                                            g_storage_users_json_object,
+                                            sizeof(g_storage_users_json_object),
+                                            &object_size))
         {
-            storage_extract_cards_csv(cards_csv, &profile);
+            ok = storage_write_users_json_fragment(g_storage_users_json_object, object_size, &json_size);
+            status = ok ? FX_SUCCESS : FX_INVALID_NAME;
+            prepend_comma = true;
         }
         else
         {
-            storage_extract_json_cards(object_start, object_end, &profile);
+            status = FX_INVALID_NAME;
+        }
+    }
+
+    for (int i = 0; (FX_SUCCESS == status) && (i < count_to_write); i++)
+    {
+        size_t object_size = 0U;
+
+        if (!storage_append_user_json_locked(&g_storage_users_io_snapshot[i],
+                                             prepend_comma,
+                                             g_storage_users_json_object,
+                                             sizeof(g_storage_users_json_object),
+                                             &object_size))
+        {
+            status = FX_INVALID_NAME;
+            break;
         }
 
-        if (!storage_profile_has_cards(&profile) && ('\0' != legacy_uid[0]))
-        {
-            storage_extract_legacy_uid_cards(legacy_uid, &profile);
-        }
+        ok = storage_write_users_json_fragment(g_storage_users_json_object, object_size, &json_size);
+        status = ok ? FX_SUCCESS : FX_INVALID_NAME;
+        prepend_comma = true;
+    }
 
-        if ('\0' != profile.name[0])
+    if (FX_SUCCESS == status)
+    {
+        ok = storage_write_users_json_fragment("]", 1U, &json_size);
+        status = ok ? FX_SUCCESS : FX_INVALID_NAME;
+    }
+
+    if (file_opened)
+    {
+        UINT close_status = fx_file_close(&g_users_file);
+        if (FX_SUCCESS == status)
         {
-            g_users[g_user_count++] = profile;
-            if (storage_profile_has_cards(&profile))
+            status = close_status;
+        }
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        status = fx_media_flush(&g_fx_media0);
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        bool old_file_renamed = false;
+        UINT rename_status;
+
+        (void) fx_file_delete(&g_fx_media0, USERS_BACKUP_FILE_NAME);
+        rename_status = fx_file_rename(&g_fx_media0, USERS_FILE_NAME, USERS_BACKUP_FILE_NAME);
+        if (FX_SUCCESS == rename_status)
+        {
+            old_file_renamed = true;
+        }
+        else
+        {
+            FX_FILE probe_file;
+            if (FX_SUCCESS == fx_file_open(&g_fx_media0, &probe_file, USERS_FILE_NAME, FX_OPEN_FOR_READ))
             {
-                storage_set_recent_user_locked(&profile);
+                (void) fx_file_close(&probe_file);
+                status = rename_status;
             }
         }
 
-        cursor = object_end + 1;
-    }
-
-    return true;
-}
-
-static bool storage_prepare_users_json_locked(char *json_buffer, size_t json_buffer_size, size_t *json_size)
-{
-    size_t offset = 0U;
-    int count_to_write = g_user_count;
-
-    if ((NULL == json_buffer) || (NULL == json_size) || (0U == json_buffer_size))
-    {
-        return false;
-    }
-
-    json_buffer[offset++] = '[';
-
-    if ((0 == count_to_write) && g_recent_user_valid)
-    {
-        if (!storage_append_user_json_locked(&g_recent_user, false, json_buffer, json_buffer_size, &offset))
+        if (FX_SUCCESS == status)
         {
-            return false;
+            status = fx_file_rename(&g_fx_media0, USERS_TEMP_FILE_NAME, USERS_FILE_NAME);
+            if ((FX_SUCCESS != status) && old_file_renamed)
+            {
+                (void) fx_file_rename(&g_fx_media0, USERS_BACKUP_FILE_NAME, USERS_FILE_NAME);
+            }
+        }
+
+        if (FX_SUCCESS == status)
+        {
+            (void) fx_file_delete(&g_fx_media0, USERS_BACKUP_FILE_NAME);
+            status = fx_media_flush(&g_fx_media0);
         }
     }
 
-    for (int i = 0; i < count_to_write; i++)
+    if (FX_SUCCESS == status)
     {
-        if (!storage_append_user_json_locked(&g_users[i],
-                                             (offset > 1U),
-                                             json_buffer,
-                                             json_buffer_size,
-                                             &offset))
-        {
-            return false;
-        }
+        status = fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+    }
+    else
+    {
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
     }
 
-    if (offset >= (json_buffer_size - 2U))
+    g_storage_debug_last_save_status = status;
+    g_storage_debug_last_stage = 15U;
+    g_storage_debug_last_saved_bytes = (ULONG) json_size;
+    if (NULL != out_json_size)
     {
-        return false;
+        *out_json_size = json_size;
     }
-
-    json_buffer[offset++] = ']';
-    json_buffer[offset] = '\0';
-    *json_size = offset;
-    return true;
-}
-
-static void storage_refresh_persist_snapshot_locked(void)
-{
-    memset(g_storage_persist_json, 0, sizeof(g_storage_persist_json));
-    g_storage_persist_json_size = 0U;
-    storage_prepare_users_json_locked(g_storage_persist_json, sizeof(g_storage_persist_json), &g_storage_persist_json_size);
+    storage_media_unlock();
+    app_metric_add_no_persist("Storage persist latency", "users.json", tx_time_get() - start_tick, (FX_SUCCESS == status));
+    return (FX_SUCCESS == status);
 }
 
 static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_size)
@@ -1450,20 +1969,446 @@ static bool storage_save_metrics_buffer(const char *log_buffer, size_t log_size)
     return (FX_SUCCESS == status);
 }
 
-static bool storage_parse_access_log_text(const char *log_buffer)
+static bool storage_format_meeting_schedules_json(const storage_meeting_schedule_t *schedules,
+                                                  int schedule_count,
+                                                  char *out,
+                                                  size_t out_size,
+                                                  size_t *out_len)
 {
-    static app_access_log_entry_t entries[ACCESS_LOG_SIZE];
-    int entry_count = 0;
-    const char *cursor = log_buffer;
+    size_t offset = 0U;
 
-    if (NULL == log_buffer)
+    if ((NULL == out) || (0U == out_size) || (NULL == out_len) ||
+        ((schedule_count > 0) && (NULL == schedules)))
     {
         return false;
     }
 
-    memset(entries, 0, sizeof(entries));
+    out[0] = '\0';
+    *out_len = 0U;
 
-    while (('\0' != *cursor) && (entry_count < ACCESS_LOG_SIZE))
+    if (!storage_appendf(out, out_size, &offset, "["))
+    {
+        return false;
+    }
+
+    for (int i = 0; i < schedule_count; i++)
+    {
+        unsigned int profile_count = schedules[i].profile_count;
+
+        if (profile_count > STORAGE_MAX_USERS)
+        {
+            profile_count = STORAGE_MAX_USERS;
+        }
+
+        if (!storage_appendf(out,
+                             out_size,
+                             &offset,
+                             "%s{\"id\":%lu,\"start_unix\":%lu,\"recurrence\":%u,\"weekdays_mask\":%u,\"profiles\":[",
+                             (i > 0) ? "," : "",
+                             (unsigned long) schedules[i].id,
+                             (unsigned long) schedules[i].start_unix,
+                             (unsigned int) schedules[i].recurrence,
+                             (unsigned int) schedules[i].weekdays_mask))
+        {
+            return false;
+        }
+
+        for (unsigned int profile_index = 0U; profile_index < profile_count; profile_index++)
+        {
+            if (!storage_appendf(out,
+                                 out_size,
+                                 &offset,
+                                 "%s%u",
+                                 (profile_index > 0U) ? "," : "",
+                                 (unsigned int) schedules[i].profile_indices[profile_index]))
+            {
+                return false;
+            }
+        }
+
+        if (!storage_appendf(out, out_size, &offset, "]}"))
+        {
+            return false;
+        }
+    }
+
+    if (!storage_appendf(out, out_size, &offset, "]"))
+    {
+        return false;
+    }
+
+    *out_len = offset;
+    return true;
+}
+
+static bool storage_save_meeting_schedules_json(const storage_meeting_schedule_t *schedules, int schedule_count)
+{
+    UINT status;
+    bool file_opened = false;
+    size_t json_size = 0U;
+    ULONG start_tick = tx_time_get();
+
+    if ((schedule_count < 0) || (schedule_count > STORAGE_MEETING_SCHEDULE_MAX_ITEMS) ||
+        !storage_format_meeting_schedules_json(schedules,
+                                               schedule_count,
+                                               g_storage_meeting_schedule_text,
+                                               sizeof(g_storage_meeting_schedule_text),
+                                               &json_size))
+    {
+        return false;
+    }
+
+    storage_media_lock();
+    if (!storage_media_open())
+    {
+        storage_media_unlock();
+        return false;
+    }
+
+    (void) fx_file_delete(&g_fx_media0, MEETING_SCHEDULE_TEMP_FILE_NAME);
+    status = fx_file_create(&g_fx_media0, MEETING_SCHEDULE_TEMP_FILE_NAME);
+    if ((FX_SUCCESS != status) && (FX_ALREADY_CREATED != status))
+    {
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+        storage_media_unlock();
+        app_metric_add_no_persist("Storage persist latency", "meeting.json", tx_time_get() - start_tick, false);
+        return false;
+    }
+
+    status = fx_file_open(&g_fx_media0, &g_meeting_schedule_file, MEETING_SCHEDULE_TEMP_FILE_NAME, FX_OPEN_FOR_WRITE);
+    if (FX_SUCCESS == status)
+    {
+        file_opened = true;
+        status = fx_file_truncate(&g_meeting_schedule_file, 0U);
+    }
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_seek(&g_meeting_schedule_file, 0U);
+    }
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_write(&g_meeting_schedule_file, (VOID *) g_storage_meeting_schedule_text, (ULONG) json_size);
+    }
+
+    if (file_opened)
+    {
+        UINT close_status = fx_file_close(&g_meeting_schedule_file);
+        if (FX_SUCCESS == status)
+        {
+            status = close_status;
+        }
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        status = fx_media_flush(&g_fx_media0);
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        bool old_file_renamed = false;
+        UINT rename_status;
+
+        (void) fx_file_delete(&g_fx_media0, MEETING_SCHEDULE_BACKUP_FILE_NAME);
+        rename_status = fx_file_rename(&g_fx_media0, MEETING_SCHEDULE_FILE_NAME, MEETING_SCHEDULE_BACKUP_FILE_NAME);
+        if (FX_SUCCESS == rename_status)
+        {
+            old_file_renamed = true;
+        }
+        else
+        {
+            FX_FILE probe_file;
+            if (FX_SUCCESS == fx_file_open(&g_fx_media0, &probe_file, MEETING_SCHEDULE_FILE_NAME, FX_OPEN_FOR_READ))
+            {
+                (void) fx_file_close(&probe_file);
+                status = rename_status;
+            }
+        }
+
+        if (FX_SUCCESS == status)
+        {
+            status = fx_file_rename(&g_fx_media0, MEETING_SCHEDULE_TEMP_FILE_NAME, MEETING_SCHEDULE_FILE_NAME);
+            if ((FX_SUCCESS != status) && old_file_renamed)
+            {
+                (void) fx_file_rename(&g_fx_media0, MEETING_SCHEDULE_BACKUP_FILE_NAME, MEETING_SCHEDULE_FILE_NAME);
+            }
+        }
+
+        if (FX_SUCCESS == status)
+        {
+            (void) fx_file_delete(&g_fx_media0, MEETING_SCHEDULE_BACKUP_FILE_NAME);
+            status = fx_media_flush(&g_fx_media0);
+        }
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        status = fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+    }
+    else
+    {
+        (void) fx_file_delete(&g_fx_media0, MEETING_SCHEDULE_TEMP_FILE_NAME);
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+    }
+
+    storage_media_unlock();
+    app_metric_add_no_persist("Storage persist latency", "meeting.json", tx_time_get() - start_tick, (FX_SUCCESS == status));
+    return (FX_SUCCESS == status);
+}
+
+static const char *storage_meeting_json_find_key(const char *object_start, const char *object_end, const char *key)
+{
+    char pattern[40];
+    const char *found;
+
+    if ((NULL == object_start) || (NULL == object_end) || (NULL == key))
+    {
+        return NULL;
+    }
+
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    found = strstr(object_start, pattern);
+    if ((NULL == found) || (found >= object_end))
+    {
+        return NULL;
+    }
+
+    return found + strlen(pattern);
+}
+
+static bool storage_meeting_json_get_ulong(const char *object_start,
+                                           const char *object_end,
+                                           const char *key,
+                                           ULONG *out_value)
+{
+    const char *found;
+    const char *colon;
+    const char *cursor;
+    char *end_ptr;
+    unsigned long value;
+
+    if ((NULL == object_start) || (NULL == object_end) || (NULL == key) || (NULL == out_value))
+    {
+        return false;
+    }
+
+    found = storage_meeting_json_find_key(object_start, object_end, key);
+    if (NULL == found)
+    {
+        return false;
+    }
+
+    colon = found;
+    while ((colon < object_end) && isspace((unsigned char) *colon))
+    {
+        colon++;
+    }
+    if ((colon >= object_end) || (':' != *colon))
+    {
+        return false;
+    }
+
+    cursor = colon + 1;
+    while ((cursor < object_end) && isspace((unsigned char) *cursor))
+    {
+        cursor++;
+    }
+    if ((cursor >= object_end) || ('-' == *cursor))
+    {
+        return false;
+    }
+
+    value = strtoul(cursor, &end_ptr, 10);
+    if ((end_ptr == cursor) || (end_ptr > object_end))
+    {
+        return false;
+    }
+
+    *out_value = (ULONG) value;
+    return true;
+}
+
+static bool storage_meeting_json_get_profiles(const char *object_start,
+                                              const char *object_end,
+                                              storage_meeting_schedule_t *schedule)
+{
+    const char *found;
+    const char *colon;
+    const char *cursor;
+    unsigned int profile_count = 0U;
+
+    if ((NULL == object_start) || (NULL == object_end) || (NULL == schedule))
+    {
+        return false;
+    }
+
+    found = storage_meeting_json_find_key(object_start, object_end, "profiles");
+    if (NULL == found)
+    {
+        return false;
+    }
+
+    colon = found;
+    while ((colon < object_end) && isspace((unsigned char) *colon))
+    {
+        colon++;
+    }
+    if ((colon >= object_end) || (':' != *colon))
+    {
+        return false;
+    }
+
+    cursor = colon + 1;
+    while ((cursor < object_end) && isspace((unsigned char) *cursor))
+    {
+        cursor++;
+    }
+    if ((cursor >= object_end) || ('[' != *cursor))
+    {
+        return false;
+    }
+
+    cursor++;
+    while (cursor < object_end)
+    {
+        char *end_ptr;
+        long value;
+
+        while ((cursor < object_end) && (isspace((unsigned char) *cursor) || (',' == *cursor)))
+        {
+            cursor++;
+        }
+
+        if ((cursor >= object_end) || (']' == *cursor))
+        {
+            break;
+        }
+        if ('-' == *cursor)
+        {
+            return false;
+        }
+
+        value = strtol(cursor, &end_ptr, 10);
+        if ((end_ptr == cursor) || (end_ptr > object_end) ||
+            (value < 0L) || (value >= (long) STORAGE_MAX_USERS) ||
+            (profile_count >= STORAGE_MAX_USERS))
+        {
+            return false;
+        }
+
+        schedule->profile_indices[profile_count++] = (uint8_t) value;
+        cursor = end_ptr;
+    }
+
+    schedule->profile_count = profile_count;
+    return (profile_count > 0U);
+}
+
+static const char *storage_meeting_json_object_end(const char *object_start, const char *limit)
+{
+    const char *cursor;
+
+    if ((NULL == object_start) || (NULL == limit) || (object_start >= limit) || ('{' != *object_start))
+    {
+        return NULL;
+    }
+
+    cursor = object_start + 1;
+    while (cursor < limit)
+    {
+        if ('}' == *cursor)
+        {
+            return cursor;
+        }
+        cursor++;
+    }
+
+    return NULL;
+}
+
+static int storage_parse_meeting_schedules_json(const char *json_text,
+                                                storage_meeting_schedule_t *out_schedules,
+                                                int max_schedules)
+{
+    const char *cursor;
+    const char *limit;
+    int count = 0;
+
+    if ((NULL == json_text) || (NULL == out_schedules) || (max_schedules <= 0))
+    {
+        return -1;
+    }
+
+    cursor = json_text;
+    limit = json_text + strlen(json_text);
+    while ((cursor < limit) && (count < max_schedules))
+    {
+        const char *object_start = strchr(cursor, '{');
+        const char *object_end;
+        storage_meeting_schedule_t schedule;
+
+        if ((NULL == object_start) || (object_start >= limit))
+        {
+            break;
+        }
+
+        object_end = storage_meeting_json_object_end(object_start, limit);
+        if (NULL == object_end)
+        {
+            return -1;
+        }
+
+        memset(&schedule, 0, sizeof(schedule));
+        if (storage_meeting_json_get_ulong(object_start, object_end, "id", &schedule.id) &&
+            storage_meeting_json_get_ulong(object_start, object_end, "start_unix", &schedule.start_unix) &&
+            storage_meeting_json_get_profiles(object_start, object_end, &schedule))
+        {
+            ULONG value = 0U;
+
+            if (storage_meeting_json_get_ulong(object_start, object_end, "recurrence", &value) &&
+                (value <= STORAGE_MEETING_RECURRENCE_WEEKLY))
+            {
+                schedule.recurrence = (uint8_t) value;
+            }
+
+            value = 0U;
+            if (storage_meeting_json_get_ulong(object_start, object_end, "weekdays_mask", &value))
+            {
+                schedule.weekdays_mask = (uint8_t) (value & STORAGE_MEETING_WEEKDAY_MASK_ALL);
+            }
+
+            if ((STORAGE_MEETING_RECURRENCE_WEEKLY == schedule.recurrence) &&
+                (0U == (schedule.weekdays_mask & STORAGE_MEETING_WEEKDAY_MASK_ALL)))
+            {
+                schedule.weekdays_mask = (uint8_t) (1U << (uint8_t) (((schedule.start_unix / 86400UL) + 4UL) % 7UL));
+            }
+
+            out_schedules[count++] = schedule;
+        }
+
+        cursor = object_end + 1;
+    }
+
+    return count;
+}
+
+static unsigned int storage_parse_access_log_text_into(const char *log_buffer,
+                                                       app_access_log_entry_t *entries,
+                                                       unsigned int max_entries,
+                                                       unsigned int *entry_count)
+{
+    const char *cursor = log_buffer;
+    unsigned int parsed_count = 0U;
+
+    if ((NULL == log_buffer) || (NULL == entries) || (NULL == entry_count) || (0U == max_entries))
+    {
+        return 0U;
+    }
+
+    while ('\0' != *cursor)
     {
         const char *line_end = strchr(cursor, '\n');
         char line[128];
@@ -1497,20 +2442,29 @@ static bool storage_parse_access_log_text(const char *log_buffer)
                 if ((NULL != end_ptr) &&
                     ('\0' == *end_ptr) &&
                     (type_value >= (long) EVENT_RFID_AUTH_OK) &&
-                    (type_value <= (long) EVENT_CARD_REGISTRATION_FAILED))
+                     (type_value <= (long) EVENT_CARD_REGISTRATION_FAILED))
                 {
-                    entries[entry_count].tick = 0U;
-                    entries[entry_count].unix_utc = (ULONG) unix_utc;
-                    entries[entry_count].type = (app_event_type_t) type_value;
-                    storage_copy_text(entries[entry_count].data,
-                                      sizeof(entries[entry_count].data),
+                    if (*entry_count >= max_entries)
+                    {
+                        memmove(entries,
+                                &entries[1],
+                                (max_entries - 1U) * sizeof(entries[0]));
+                        *entry_count = max_entries - 1U;
+                    }
+
+                    entries[*entry_count].tick = 0U;
+                    entries[*entry_count].unix_utc = (ULONG) unix_utc;
+                    entries[*entry_count].type = (app_event_type_t) type_value;
+                    storage_copy_text(entries[*entry_count].data,
+                                      sizeof(entries[*entry_count].data),
                                       second_sep + 1,
                                       strlen(second_sep + 1));
-                    storage_copy_text(entries[entry_count].user,
-                                      sizeof(entries[entry_count].user),
+                    storage_copy_text(entries[*entry_count].user,
+                                      sizeof(entries[*entry_count].user),
                                       third_sep + 1,
                                       strlen(third_sep + 1));
-                    entry_count++;
+                    (*entry_count)++;
+                    parsed_count++;
                 }
             }
         }
@@ -1518,15 +2472,15 @@ static bool storage_parse_access_log_text(const char *log_buffer)
         cursor = ('\0' != *line_end) ? (line_end + 1) : line_end;
     }
 
-    if (entry_count > 0)
-    {
-        app_access_log_restore(entries, entry_count);
-    }
-
-    return true;
+    return parsed_count;
 }
 
-static bool storage_load_access_log_tail_file(const char *filename, char *log_buffer, size_t log_buffer_size)
+static bool storage_load_access_log_tail_file(const char *filename,
+                                              char *log_buffer,
+                                              size_t log_buffer_size,
+                                              app_access_log_entry_t *entries,
+                                              unsigned int max_entries,
+                                              unsigned int *entry_count)
 {
     UINT status;
     ULONG actual_bytes = 0U;
@@ -1583,7 +2537,7 @@ static bool storage_load_access_log_tail_file(const char *filename, char *log_bu
         return false;
     }
 
-    return storage_parse_access_log_text(parse_cursor);
+    return (storage_parse_access_log_text_into(parse_cursor, entries, max_entries, entry_count) > 0U);
 }
 
 static bool storage_parse_metrics_text(const char *log_buffer)
@@ -1679,97 +2633,6 @@ static bool storage_parse_metrics_text(const char *log_buffer)
 /* =========================================================================
    GRAVACAO E LEITURA USANDO O FILEX
    ========================================================================= */
-static bool storage_save_json_buffer(const char *json_buffer, size_t json_size)
-{
-    UINT status;
-    ULONG start_tick = tx_time_get();
-
-    if ((NULL == json_buffer) || (0U == json_size))
-    {
-        return false;
-    }
-
-    g_storage_debug_last_stage = 10U;
-    g_storage_debug_last_saved_bytes = 0U;
-    storage_media_lock();
-    if (!storage_media_open())
-    {
-        storage_media_unlock();
-        return false;
-    }
-
-    status = fx_file_open(&g_fx_media0, &g_users_file, "users.json", FX_OPEN_FOR_WRITE);
-    if (FX_SUCCESS != status)
-    {
-        status = fx_file_create(&g_fx_media0, "users.json");
-        if ((FX_SUCCESS != status) && (FX_ALREADY_CREATED != status))
-        {
-            (void) fx_media_close(&g_fx_media0);
-            g_storage_media_ready = false;
-            storage_media_unlock();
-            return false;
-        }
-
-        status = fx_file_open(&g_fx_media0, &g_users_file, "users.json", FX_OPEN_FOR_WRITE);
-        if (FX_SUCCESS != status)
-        {
-            (void) fx_media_close(&g_fx_media0);
-            g_storage_media_ready = false;
-            storage_media_unlock();
-            return false;
-        }
-    }
-
-    status = fx_file_truncate(&g_users_file, 0U);
-    if (FX_SUCCESS == status)
-    {
-        status = fx_file_seek(&g_users_file, 0U);
-    }
-    if (FX_SUCCESS == status)
-    {
-        status = fx_file_write(&g_users_file, (VOID *) json_buffer, json_size);
-        if (FX_SUCCESS == status)
-        {
-            g_storage_debug_last_saved_bytes = (ULONG) json_size;
-        }
-    }
-    if (FX_SUCCESS == status)
-    {
-        status = fx_file_close(&g_users_file);
-    }
-    else
-    {
-        fx_file_close(&g_users_file);
-        storage_media_unlock();
-        return false;
-    }
-
-    if (FX_SUCCESS == status)
-    {
-        status = fx_media_flush(&g_fx_media0);
-    }
-
-    if (FX_SUCCESS == status)
-    {
-        status = fx_media_close(&g_fx_media0);
-        if (FX_SUCCESS == status)
-        {
-            g_storage_media_ready = false;
-        }
-    }
-    else
-    {
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
-    }
-
-    g_storage_debug_last_save_status = status;
-    g_storage_debug_last_stage = 15U;
-    storage_media_unlock();
-    app_metric_add_no_persist("Storage persist latency", "users.json", tx_time_get() - start_tick, (FX_SUCCESS == status));
-    return (FX_SUCCESS == status);
-}
-
 static bool storage_save_photo_file(const char *photo_id)
 {
     static uint16_t row_buffer[STORAGE_RUNTIME_PHOTO_MAX_DIM * STORAGE_PHOTO_COPY_ROWS];
@@ -1992,24 +2855,41 @@ static bool storage_load_photo_file(const char *photo_id)
     return (FX_SUCCESS == status);
 }
 
-static void storage_load_users_locked(void)
+static bool storage_load_users_file(const char *filename, bool commit_profiles)
 {
+    typedef enum
+    {
+        STORAGE_JSON_BEFORE_ARRAY = 0,
+        STORAGE_JSON_EXPECT_FIRST_VALUE_OR_END,
+        STORAGE_JSON_EXPECT_VALUE,
+        STORAGE_JSON_EXPECT_COMMA_OR_END,
+        STORAGE_JSON_AFTER_ARRAY
+    } storage_users_json_state_t;
+
     UINT status;
-    ULONG actual_bytes;
+    ULONG actual_bytes = 0U;
+    ULONG bytes_left = 0U;
+    ULONG total_read = 0U;
+    bool object_active = false;
+    bool in_string = false;
+    bool escaped = false;
+    bool file_opened = false;
+    bool saw_array_open = false;
+    bool saw_array_close = false;
+    bool object_overflow = false;
+    unsigned int brace_depth = 0U;
+    unsigned int parsed_profiles = 0U;
+    size_t object_offset = 0U;
+    storage_users_json_state_t json_state = STORAGE_JSON_BEFORE_ARRAY;
 
     g_storage_debug_last_stage = 20U;
     g_storage_debug_last_read_bytes = 0U;
 
-    if (g_storage_loaded)
-    {
-        g_storage_debug_last_stage = 21U;
-        return;
-    }
-
     if (!storage_media_access_allowed())
     {
         g_storage_debug_last_stage = 22U;
-        return;
+        g_storage_users_load_failed = true;
+        return false;
     }
 
     storage_media_lock();
@@ -2017,47 +2897,310 @@ static void storage_load_users_locked(void)
     {
         storage_media_unlock();
         g_storage_debug_last_stage = 23U;
-        return;
+        g_storage_users_load_failed = true;
+        return false;
     }
 
-    status = fx_file_open(&g_fx_media0, &g_users_file, "users.json", FX_OPEN_FOR_READ);
+    status = fx_file_open(&g_fx_media0, &g_users_file, (CHAR *) filename, FX_OPEN_FOR_READ);
     g_storage_debug_last_load_status = status;
     if (FX_SUCCESS == status)
     {
-        status = fx_file_read(&g_users_file, g_storage_load_json, JSON_BUFFER_SIZE - 1U, &actual_bytes);
-        if (FX_SUCCESS == status)
+        file_opened = true;
+        bytes_left = (ULONG) g_users_file.fx_file_current_file_size;
+        if (commit_profiles)
         {
-            g_storage_load_json[actual_bytes] = '\0';
-            g_storage_debug_last_read_bytes = actual_bytes;
-            (void) storage_parse_users(g_storage_load_json);
+            storage_reset_users_io_snapshot();
         }
+
+        while ((FX_SUCCESS == status) && (bytes_left > 0U))
+        {
+            ULONG request_size = bytes_left;
+
+            if (request_size > (ULONG) sizeof(g_storage_users_json_chunk))
+            {
+                request_size = (ULONG) sizeof(g_storage_users_json_chunk);
+            }
+
+            status = fx_file_read(&g_users_file, g_storage_users_json_chunk, request_size, &actual_bytes);
+            if (FX_SUCCESS != status)
+            {
+                break;
+            }
+            if (0U == actual_bytes)
+            {
+                status = FX_INVALID_NAME;
+                break;
+            }
+
+            for (ULONG byte_index = 0U; byte_index < actual_bytes; byte_index++)
+            {
+                char ch = g_storage_users_json_chunk[byte_index];
+                bool object_started = false;
+
+                if (!object_active)
+                {
+                    if (isspace((unsigned char) ch))
+                    {
+                        continue;
+                    }
+
+                    if (STORAGE_JSON_BEFORE_ARRAY == json_state)
+                    {
+                        if ('[' == ch)
+                        {
+                            saw_array_open = true;
+                            json_state = STORAGE_JSON_EXPECT_FIRST_VALUE_OR_END;
+                            continue;
+                        }
+
+                        status = FX_INVALID_NAME;
+                        break;
+                    }
+
+                    if (STORAGE_JSON_AFTER_ARRAY == json_state)
+                    {
+                        status = FX_INVALID_NAME;
+                        break;
+                    }
+
+                    if (STORAGE_JSON_EXPECT_COMMA_OR_END == json_state)
+                    {
+                        if (',' == ch)
+                        {
+                            json_state = STORAGE_JSON_EXPECT_VALUE;
+                            continue;
+                        }
+                        if (']' == ch)
+                        {
+                            saw_array_close = true;
+                            json_state = STORAGE_JSON_AFTER_ARRAY;
+                            continue;
+                        }
+
+                        status = FX_INVALID_NAME;
+                        break;
+                    }
+
+                    if ((STORAGE_JSON_EXPECT_FIRST_VALUE_OR_END == json_state) && (']' == ch))
+                    {
+                        saw_array_close = true;
+                        json_state = STORAGE_JSON_AFTER_ARRAY;
+                        continue;
+                    }
+
+                    if ((STORAGE_JSON_EXPECT_FIRST_VALUE_OR_END != json_state) &&
+                        (STORAGE_JSON_EXPECT_VALUE != json_state))
+                    {
+                        status = FX_INVALID_NAME;
+                        break;
+                    }
+
+                    if ('{' != ch)
+                    {
+                        status = FX_INVALID_NAME;
+                        break;
+                    }
+                    object_active = true;
+                    in_string = false;
+                    escaped = false;
+                    object_overflow = false;
+                    brace_depth = 1U;
+                    object_offset = 0U;
+                    object_started = true;
+                }
+
+                if (object_offset + 1U < sizeof(g_storage_users_json_object))
+                {
+                    g_storage_users_json_object[object_offset++] = ch;
+                }
+                else
+                {
+                    object_overflow = true;
+                }
+
+                if (in_string)
+                {
+                    if (escaped)
+                    {
+                        escaped = false;
+                    }
+                    else if ('\\' == ch)
+                    {
+                        escaped = true;
+                    }
+                    else if ('"' == ch)
+                    {
+                        in_string = false;
+                    }
+                    continue;
+                }
+
+                if ('"' == ch)
+                {
+                    in_string = true;
+                    continue;
+                }
+
+                if (('{' == ch) && !object_started)
+                {
+                    if (brace_depth < 0xFFFFU)
+                    {
+                        brace_depth++;
+                    }
+                }
+                else if ('}' == ch)
+                {
+                    if (brace_depth > 0U)
+                    {
+                        brace_depth--;
+                    }
+
+                    if (0U == brace_depth)
+                    {
+                        user_t profile;
+
+                        if (object_overflow)
+                        {
+                            status = FX_INVALID_NAME;
+                            break;
+                        }
+
+                        g_storage_users_json_object[object_offset] = '\0';
+                        if (storage_parse_user_object_locked(g_storage_users_json_object,
+                                                             &g_storage_users_json_object[object_offset - 1U],
+                                                             &profile))
+                        {
+                            parsed_profiles++;
+                            if (commit_profiles)
+                            {
+                                storage_append_user_to_io_snapshot(&profile);
+                            }
+                        }
+                        else
+                        {
+                            status = FX_INVALID_NAME;
+                            break;
+                        }
+
+                        object_active = false;
+                        object_offset = 0U;
+                        json_state = STORAGE_JSON_EXPECT_COMMA_OR_END;
+                    }
+                }
+            }
+
+            total_read += actual_bytes;
+            bytes_left -= actual_bytes;
+        }
+
+        if ((FX_SUCCESS == status) &&
+            (object_active || !saw_array_open || !saw_array_close ||
+             (STORAGE_JSON_AFTER_ARRAY != json_state)))
+        {
+            status = FX_INVALID_NAME;
+        }
+
         fx_file_close(&g_users_file);
         g_storage_debug_last_load_status = status;
-        status = fx_media_close(&g_fx_media0);
-        if (FX_SUCCESS == status)
         {
-            g_storage_media_ready = false;
+            UINT close_status = fx_media_close(&g_fx_media0);
+            if (FX_SUCCESS == status)
+            {
+                status = close_status;
+                g_storage_debug_last_load_status = status;
+            }
         }
+        g_storage_media_ready = false;
     }
     else
     {
-        g_user_count = 0;
-        g_recent_user_valid = false;
-        memset(g_users, 0, sizeof(g_users));
         (void) fx_media_close(&g_fx_media0);
         g_storage_media_ready = false;
     }
     storage_media_unlock();
 
-    g_storage_debug_last_user_count = (ULONG) g_user_count;
+    if ((FX_SUCCESS == status) && file_opened && commit_profiles)
+    {
+        storage_lock();
+        storage_commit_users_io_snapshot_locked();
+        storage_unlock();
+    }
+
+    g_storage_debug_last_user_count = commit_profiles ? (ULONG) g_storage_users_io_count : (ULONG) parsed_profiles;
+    g_storage_debug_last_read_bytes = total_read;
     g_storage_debug_last_stage = 25U;
-    g_storage_loaded = true;
+    if ((FX_SUCCESS == status) && file_opened)
+    {
+        g_storage_users_load_failed = false;
+    }
+    else if ((FX_SUCCESS != status) && file_opened)
+    {
+        g_storage_users_load_failed = true;
+    }
+    return (FX_SUCCESS == status);
+}
+
+static bool storage_load_users_stream(void)
+{
+    bool main_file_valid;
+    bool committed = false;
+
+    g_storage_users_load_failed = false;
+    main_file_valid = storage_load_users_file(USERS_FILE_NAME, false);
+    if (!main_file_valid &&
+        (22U != g_storage_debug_last_stage) &&
+        (23U != g_storage_debug_last_stage))
+    {
+        bool backup_file_valid = storage_load_users_file(USERS_BACKUP_FILE_NAME, false);
+
+        if (backup_file_valid)
+        {
+            committed = storage_load_users_file(USERS_BACKUP_FILE_NAME, true);
+        }
+    }
+    else if (main_file_valid)
+    {
+        committed = storage_load_users_file(USERS_FILE_NAME, true);
+    }
+
+    if (committed)
+    {
+        return true;
+    }
+
+    if ((22U == g_storage_debug_last_stage) || (23U == g_storage_debug_last_stage))
+    {
+        return false;
+    }
+
+    storage_lock();
+    if (!g_storage_loaded && !main_file_valid && !g_storage_users_load_failed)
+    {
+        g_user_count = 0;
+        g_recent_user_valid = false;
+        memset(g_users, 0, sizeof(g_users));
+        g_storage_loaded = true;
+    }
+    committed = g_storage_loaded;
+    storage_unlock();
+    return committed;
+}
+
+static void storage_load_users_locked(void)
+{
+    if (g_storage_loaded)
+    {
+        g_storage_debug_last_stage = 21U;
+        return;
+    }
+
+    storage_unlock();
+    (void) storage_load_users_now();
+    storage_lock();
 }
 
 static bool storage_load_users_now(void)
 {
-    UINT status;
-    ULONG actual_bytes = 0U;
     bool loaded = false;
     ULONG start_tick = tx_time_get();
 
@@ -2070,77 +3213,26 @@ static bool storage_load_users_now(void)
     }
     storage_unlock();
 
-    g_storage_debug_last_stage = 20U;
-    g_storage_debug_last_read_bytes = 0U;
-
-    if (!storage_media_access_allowed())
-    {
-        g_storage_debug_last_stage = 22U;
-        return false;
-    }
-
-    storage_media_lock();
-    if (!storage_media_open())
-    {
-        storage_media_unlock();
-        g_storage_debug_last_stage = 23U;
-        return false;
-    }
-
-    status = fx_file_open(&g_fx_media0, &g_users_file, "users.json", FX_OPEN_FOR_READ);
-    g_storage_debug_last_load_status = status;
-    if (FX_SUCCESS == status)
-    {
-        status = fx_file_read(&g_users_file, g_storage_load_json, JSON_BUFFER_SIZE - 1U, &actual_bytes);
-        if (FX_SUCCESS == status)
-        {
-            g_storage_load_json[actual_bytes] = '\0';
-            g_storage_debug_last_read_bytes = actual_bytes;
-        }
-        else
-        {
-            g_storage_load_json[0] = '\0';
-            actual_bytes = 0U;
-        }
-
-        fx_file_close(&g_users_file);
-    }
-    else
-    {
-        g_storage_load_json[0] = '\0';
-        actual_bytes = 0U;
-    }
-
-    if (FX_SUCCESS == fx_media_close(&g_fx_media0))
-    {
-        g_storage_media_ready = false;
-    }
-    storage_media_unlock();
-
+    storage_io_lock();
     storage_lock();
-    if (!g_storage_loaded)
+    if (g_storage_loaded)
     {
-        if ((FX_SUCCESS == status) && (actual_bytes > 0U))
-        {
-            (void) storage_parse_users(g_storage_load_json);
-        }
-        else
-        {
-            g_user_count = 0;
-            g_recent_user_valid = false;
-            memset(g_users, 0, sizeof(g_users));
-        }
-
-        g_storage_debug_last_load_status = status;
-        g_storage_debug_last_user_count = (ULONG) g_user_count;
-        g_storage_debug_last_stage = 25U;
-        g_storage_loaded = true;
+        g_storage_debug_last_stage = 21U;
+        loaded = true;
+        storage_unlock();
+        storage_io_unlock();
+        return true;
     }
-    loaded = g_storage_loaded;
     storage_unlock();
 
+    (void) storage_load_users_stream();
+    storage_lock();
+    loaded = g_storage_loaded;
+    storage_unlock();
+    storage_io_unlock();
+
     app_metric_add_no_persist("Storage load latency", "users.json", tx_time_get() - start_tick, loaded);
-    app_metric_add_no_persist("Reboot persistence", "apos reboot", tx_time_get() - start_tick, ((FX_SUCCESS == status) && (actual_bytes > 0U)));
+    app_metric_add_no_persist("Reboot persistence", "apos reboot", tx_time_get() - start_tick, (g_storage_debug_last_read_bytes > 0U));
     return loaded;
 }
 
@@ -2148,6 +3240,8 @@ static bool storage_load_access_log_now(void)
 {
     bool loaded_any = false;
     static char log_buffer[ACCESS_LOG_BUFFER_SIZE];
+    static app_access_log_entry_t entries[ACCESS_LOG_SIZE];
+    unsigned int entry_count = 0U;
     ULONG start_tick = tx_time_get();
 
     storage_lock();
@@ -2170,15 +3264,31 @@ static bool storage_load_access_log_now(void)
         return false;
     }
 
+    memset(entries, 0, sizeof(entries));
     log_buffer[0] = '\0';
-    loaded_any = storage_load_access_log_tail_file(ACCESS_LOG_ARCHIVE_FILE_NAME, log_buffer, sizeof(log_buffer)) || loaded_any;
-    loaded_any = storage_load_access_log_tail_file(ACCESS_LOG_FILE_NAME, log_buffer, sizeof(log_buffer)) || loaded_any;
+    loaded_any = storage_load_access_log_tail_file(ACCESS_LOG_ARCHIVE_FILE_NAME,
+                                                   log_buffer,
+                                                   sizeof(log_buffer),
+                                                   entries,
+                                                   ACCESS_LOG_SIZE,
+                                                   &entry_count) || loaded_any;
+    loaded_any = storage_load_access_log_tail_file(ACCESS_LOG_FILE_NAME,
+                                                   log_buffer,
+                                                   sizeof(log_buffer),
+                                                   entries,
+                                                   ACCESS_LOG_SIZE,
+                                                   &entry_count) || loaded_any;
 
     if (FX_SUCCESS == fx_media_close(&g_fx_media0))
     {
         g_storage_media_ready = false;
     }
     storage_media_unlock();
+
+    if (entry_count > 0U)
+    {
+        app_access_log_restore(entries, (int) entry_count);
+    }
 
     storage_lock();
     g_storage_access_log_loaded = true;
@@ -2320,6 +3430,14 @@ void storage_init(void)
         }
     }
 
+    if (!g_storage_io_mutex_ready)
+    {
+        if (TX_SUCCESS == tx_mutex_create(&g_storage_io_mutex, "storage_io_mutex", TX_NO_INHERIT))
+        {
+            g_storage_io_mutex_ready = true;
+        }
+    }
+
     if (!g_storage_thread_ready)
     {
         if (TX_SUCCESS == tx_semaphore_create(&g_storage_persist_semaphore, "storage_persist", 0U))
@@ -2391,34 +3509,46 @@ static void storage_thread_entry(ULONG initial_input)
             }
             else if (g_storage_persist_requested)
             {
+                bool needs_load = false;
+
                 g_storage_debug_last_stage = 1U;
                 g_storage_persist_requested = false;
-                if ((0 == g_user_count) && !g_recent_user_valid)
-                {
-                    storage_load_users_locked();
-                }
-                persist_size = g_storage_persist_json_size;
-                if (persist_size > sizeof(g_storage_persist_work_json))
-                {
-                    persist_size = sizeof(g_storage_persist_work_json);
-                }
-                if (persist_size > 0U)
-                {
-                    memcpy(g_storage_persist_work_json, g_storage_persist_json, persist_size);
-                    g_storage_persist_work_json_size = persist_size;
-                }
-                else
-                {
-                    g_storage_persist_work_json[0] = '\0';
-                    g_storage_persist_work_json_size = 0U;
-                }
-                user_count_snapshot = (ULONG) g_user_count;
+                needs_load = !g_storage_loaded;
                 storage_unlock();
 
-                if (g_storage_persist_work_json_size > 0U)
+                if (needs_load)
                 {
-                    ok = storage_save_json_buffer(g_storage_persist_work_json, g_storage_persist_work_json_size);
+                    ok = storage_load_users_now();
+                    storage_lock();
+                    if (!ok || !g_storage_loaded || g_storage_users_load_failed)
+                    {
+                        storage_unlock();
+                        g_storage_persist_status = STORAGE_PERSIST_STATUS_FAILED;
+                        g_storage_debug_last_save_status = FX_INVALID_NAME;
+                        continue;
+                    }
+                    storage_unlock();
                 }
+
+                storage_io_lock();
+                storage_lock();
+                if (g_storage_users_load_failed)
+                {
+                    storage_unlock();
+                    storage_io_unlock();
+                    g_storage_persist_status = STORAGE_PERSIST_STATUS_FAILED;
+                    g_storage_debug_last_save_status = FX_INVALID_NAME;
+                    continue;
+                }
+                storage_capture_users_io_snapshot_locked();
+                storage_unlock();
+
+                ok = storage_save_users_json_snapshot(&persist_size, &user_count_snapshot);
+                storage_io_unlock();
+
+                storage_lock();
+                g_storage_persist_json_size = persist_size;
+                storage_unlock();
                 g_storage_persist_status = ok ? STORAGE_PERSIST_STATUS_SUCCESS : STORAGE_PERSIST_STATUS_FAILED;
                 g_storage_debug_last_user_count = user_count_snapshot;
                 continue;
@@ -2426,27 +3556,26 @@ static void storage_thread_entry(ULONG initial_input)
             else if (g_storage_access_log_persist_requested)
             {
                 g_storage_debug_last_stage = 16U;
-                g_storage_access_log_persist_requested = false;
-                access_log_size = 0U;
-                access_log_count = storage_format_access_log_entries(g_storage_access_log_pending,
-                                                                    g_storage_access_log_pending_count,
-                                                                    g_storage_access_log_work_text,
-                                                                    sizeof(g_storage_access_log_work_text),
-                                                                    &access_log_size);
-                g_storage_access_log_work_text_size = access_log_size;
-                storage_unlock();
-
-                while ((access_log_count > 0U) && (g_storage_access_log_work_text_size > 0U))
+                while (g_storage_access_log_persist_requested)
                 {
-                    ok = storage_save_access_log_buffer(g_storage_access_log_work_text,
-                                                        g_storage_access_log_work_text_size);
+                    g_storage_access_log_persist_requested = false;
+                    access_log_size = 0U;
+                    access_log_count = storage_format_access_log_entries(g_storage_access_log_pending,
+                                                                        g_storage_access_log_pending_count,
+                                                                        g_storage_access_log_work_text,
+                                                                        sizeof(g_storage_access_log_work_text),
+                                                                        &access_log_size);
+                    g_storage_access_log_work_text_size = access_log_size;
 
-                    storage_lock();
-                    if (!ok)
+                    if ((0U == access_log_count) || (0U == g_storage_access_log_work_text_size))
                     {
                         storage_unlock();
                         break;
                     }
+
+                    memcpy(g_storage_access_log_work_entries,
+                           g_storage_access_log_pending,
+                           access_log_count * sizeof(g_storage_access_log_work_entries[0]));
 
                     if (g_storage_access_log_pending_count > access_log_count)
                     {
@@ -2455,15 +3584,27 @@ static void storage_thread_entry(ULONG initial_input)
                                 (g_storage_access_log_pending_count - access_log_count) * sizeof(g_storage_access_log_pending[0]));
                     }
                     g_storage_access_log_pending_count -= access_log_count;
-
-                    access_log_size = 0U;
-                    access_log_count = storage_format_access_log_entries(g_storage_access_log_pending,
-                                                                        g_storage_access_log_pending_count,
-                                                                        g_storage_access_log_work_text,
-                                                                        sizeof(g_storage_access_log_work_text),
-                                                                        &access_log_size);
-                    g_storage_access_log_work_text_size = access_log_size;
+                    if (g_storage_access_log_pending_count > 0U)
+                    {
+                        g_storage_access_log_persist_requested = true;
+                    }
                     storage_unlock();
+
+                    ok = storage_save_access_log_buffer(g_storage_access_log_work_text,
+                                                        g_storage_access_log_work_text_size);
+
+                    storage_lock();
+                    if (!ok)
+                    {
+                        storage_requeue_access_log_entries_locked(g_storage_access_log_work_entries, access_log_count);
+                        storage_unlock();
+                        break;
+                    }
+                    if (!g_storage_access_log_persist_requested)
+                    {
+                        storage_unlock();
+                        break;
+                    }
                 }
                 continue;
             }
@@ -2809,6 +3950,10 @@ bool storage_profile_upsert(const storage_user_profile_t *profile, int edit_inde
     {
         storage_set_recent_user_locked(&g_users[target_index]);
     }
+    else
+    {
+        storage_refresh_recent_user_locked();
+    }
     storage_mark_runtime_state_loaded();
     storage_unlock();
     return true;
@@ -2901,6 +4046,7 @@ bool storage_meeting_mode_start(const int *profile_indices,
 {
     unsigned int selected_profiles = 0U;
     unsigned int allowed_cards = 0U;
+    unsigned int valid_cards = 0U;
     bool seen_profiles[STORAGE_MAX_USERS];
 
     memset(seen_profiles, 0, sizeof(seen_profiles));
@@ -2908,7 +4054,6 @@ bool storage_meeting_mode_start(const int *profile_indices,
     storage_init();
     storage_lock();
     storage_ensure_loaded_locked();
-    storage_meeting_mode_clear_locked();
 
     if ((NULL != profile_indices) && (profile_count > 0))
     {
@@ -2933,34 +4078,84 @@ bool storage_meeting_mode_start(const int *profile_indices,
             for (unsigned int card_index = 0U; card_index < profile->card_count; card_index++)
             {
                 char cleaned_uid[UID_MAX_LEN];
-                bool duplicate_card = false;
 
                 storage_copy_clean_uid(cleaned_uid, sizeof(cleaned_uid), profile->cards[card_index]);
-                if ('\0' == cleaned_uid[0])
+                if ('\0' != cleaned_uid[0])
                 {
-                    continue;
+                    valid_cards++;
                 }
-
-                for (unsigned int existing = 0U; existing < allowed_cards; existing++)
-                {
-                    if (0 == strcmp(g_storage_meeting_mode_allowed_cards[existing], cleaned_uid))
-                    {
-                        duplicate_card = true;
-                        break;
-                    }
-                }
-
-                if (duplicate_card || (allowed_cards >= STORAGE_MEETING_MODE_MAX_ALLOWED_CARDS))
-                {
-                    continue;
-                }
-
-                storage_copy_text(g_storage_meeting_mode_allowed_cards[allowed_cards],
-                                  sizeof(g_storage_meeting_mode_allowed_cards[allowed_cards]),
-                                  cleaned_uid,
-                                  strlen(cleaned_uid));
-                allowed_cards++;
             }
+        }
+    }
+
+    if ((0U == selected_profiles) || (0U == valid_cards))
+    {
+        if (NULL != out_selected_profiles)
+        {
+            *out_selected_profiles = 0U;
+        }
+        if (NULL != out_allowed_cards)
+        {
+            *out_allowed_cards = 0U;
+        }
+
+        storage_unlock();
+        return false;
+    }
+
+    storage_meeting_mode_clear_locked();
+    memset(seen_profiles, 0, sizeof(seen_profiles));
+    selected_profiles = 0U;
+    allowed_cards = 0U;
+
+    for (int i = 0; i < profile_count; i++)
+    {
+        int index = profile_indices[i];
+        const user_t *profile;
+
+        if ((index < 0) || (index >= g_user_count) || seen_profiles[index])
+        {
+            continue;
+        }
+
+        profile = &g_users[index];
+        seen_profiles[index] = true;
+        if (!storage_profile_has_cards(profile))
+        {
+            continue;
+        }
+
+        selected_profiles++;
+        for (unsigned int card_index = 0U; card_index < profile->card_count; card_index++)
+        {
+            char cleaned_uid[UID_MAX_LEN];
+            bool duplicate_card = false;
+
+            storage_copy_clean_uid(cleaned_uid, sizeof(cleaned_uid), profile->cards[card_index]);
+            if ('\0' == cleaned_uid[0])
+            {
+                continue;
+            }
+
+            for (unsigned int existing = 0U; existing < allowed_cards; existing++)
+            {
+                if (0 == strcmp(g_storage_meeting_mode_allowed_cards[existing], cleaned_uid))
+                {
+                    duplicate_card = true;
+                    break;
+                }
+            }
+
+            if (duplicate_card || (allowed_cards >= STORAGE_MEETING_MODE_MAX_ALLOWED_CARDS))
+            {
+                continue;
+            }
+
+            storage_copy_text(g_storage_meeting_mode_allowed_cards[allowed_cards],
+                              sizeof(g_storage_meeting_mode_allowed_cards[allowed_cards]),
+                              cleaned_uid,
+                              strlen(cleaned_uid));
+            allowed_cards++;
         }
     }
 
@@ -3037,6 +4232,110 @@ bool storage_meeting_mode_profile_selected(const storage_user_profile_t *profile
     return selected;
 }
 
+int storage_meeting_schedule_load(storage_meeting_schedule_t *out_schedules, int max_schedules)
+{
+    UINT status;
+    ULONG actual_bytes = 0U;
+    int parsed_count = 0;
+    bool file_opened = false;
+    ULONG start_tick = tx_time_get();
+
+    if ((NULL == out_schedules) || (max_schedules <= 0))
+    {
+        return -1;
+    }
+
+    storage_init();
+    if (!storage_media_access_allowed())
+    {
+        return -1;
+    }
+
+    storage_io_lock();
+    storage_media_lock();
+    if (!storage_media_open())
+    {
+        storage_media_unlock();
+        storage_io_unlock();
+        return -1;
+    }
+
+    status = fx_file_open(&g_fx_media0, &g_meeting_schedule_file, MEETING_SCHEDULE_FILE_NAME, FX_OPEN_FOR_READ);
+    if (FX_SUCCESS == status)
+    {
+        file_opened = true;
+        if (g_meeting_schedule_file.fx_file_current_file_size >= sizeof(g_storage_meeting_schedule_text))
+        {
+            status = FX_BUFFER_ERROR;
+        }
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_read(&g_meeting_schedule_file,
+                              g_storage_meeting_schedule_text,
+                              sizeof(g_storage_meeting_schedule_text) - 1U,
+                              &actual_bytes);
+        if (actual_bytes < sizeof(g_storage_meeting_schedule_text))
+        {
+            g_storage_meeting_schedule_text[actual_bytes] = '\0';
+        }
+        else
+        {
+            g_storage_meeting_schedule_text[sizeof(g_storage_meeting_schedule_text) - 1U] = '\0';
+        }
+    }
+
+    if (file_opened)
+    {
+        (void) fx_file_close(&g_meeting_schedule_file);
+    }
+    (void) fx_media_close(&g_fx_media0);
+    g_storage_media_ready = false;
+    storage_media_unlock();
+
+    if (FX_SUCCESS == status)
+    {
+        parsed_count = storage_parse_meeting_schedules_json(g_storage_meeting_schedule_text,
+                                                            out_schedules,
+                                                            max_schedules);
+    }
+    else if (!file_opened)
+    {
+        parsed_count = 0;
+    }
+    else
+    {
+        parsed_count = -1;
+    }
+
+    storage_io_unlock();
+    app_metric_add_no_persist("Storage load latency", "meeting.json", tx_time_get() - start_tick, (parsed_count >= 0));
+    return parsed_count;
+}
+
+bool storage_meeting_schedule_save(const storage_meeting_schedule_t *schedules, int schedule_count)
+{
+    bool ok;
+
+    if ((schedule_count < 0) || (schedule_count > STORAGE_MEETING_SCHEDULE_MAX_ITEMS) ||
+        ((schedule_count > 0) && (NULL == schedules)))
+    {
+        return false;
+    }
+
+    storage_init();
+    if (!storage_media_access_allowed())
+    {
+        return false;
+    }
+
+    storage_io_lock();
+    ok = storage_save_meeting_schedules_json(schedules, schedule_count);
+    storage_io_unlock();
+    return ok;
+}
+
 bool storage_admin_pin_valid(const char *pin)
 {
     bool ok = false;
@@ -3065,11 +4364,45 @@ bool storage_admin_pin_valid(const char *pin)
     return ok;
 }
 
+bool storage_admin_pin_configured(void)
+{
+    bool configured = false;
+
+    storage_init();
+    storage_lock();
+    storage_ensure_loaded_locked();
+
+    if (g_storage_users_load_failed)
+    {
+        storage_unlock();
+        return true;
+    }
+
+    for (int i = 0; i < g_user_count; i++)
+    {
+        if (g_users[i].is_admin && ('\0' != g_users[i].admin_pin[0]))
+        {
+            configured = true;
+            break;
+        }
+    }
+
+    storage_unlock();
+    return configured;
+}
+
 bool storage_remove_uid(const char *uid_str)
 {
     bool ok = false;
+    char cleaned_uid[UID_MAX_LEN];
 
     if ((NULL == uid_str) || ('\0' == uid_str[0]))
+    {
+        return false;
+    }
+
+    storage_copy_clean_uid(cleaned_uid, sizeof(cleaned_uid), uid_str);
+    if ('\0' == cleaned_uid[0])
     {
         return false;
     }
@@ -3082,7 +4415,7 @@ bool storage_remove_uid(const char *uid_str)
     {
         for (unsigned int card_index = 0U; card_index < g_users[i].card_count; card_index++)
         {
-            if (0 == strcmp(g_users[i].cards[card_index], uid_str))
+            if (0 == strcmp(g_users[i].cards[card_index], cleaned_uid))
             {
                 for (unsigned int move_index = card_index; (move_index + 1U) < g_users[i].card_count; move_index++)
                 {
@@ -3098,24 +4431,7 @@ bool storage_remove_uid(const char *uid_str)
                     g_users[i].cards[g_users[i].card_count][0] = '\0';
                 }
 
-                if (g_recent_user_valid)
-                {
-                    bool recent_still_valid = false;
-
-                    for (unsigned int recent_card_index = 0U; recent_card_index < g_recent_user.card_count; recent_card_index++)
-                    {
-                        if ('\0' != g_recent_user.cards[recent_card_index][0])
-                        {
-                            recent_still_valid = true;
-                            break;
-                        }
-                    }
-
-                    if (!recent_still_valid)
-                    {
-                        storage_set_recent_user_locked(NULL);
-                    }
-                }
+                storage_refresh_recent_user_locked();
 
                 storage_mark_runtime_state_loaded();
                 ok = true;
@@ -3138,14 +4454,6 @@ bool storage_persist_now(void)
     }
 
     storage_lock();
-    storage_refresh_persist_snapshot_locked();
-
-    if (0U == g_storage_persist_json_size)
-    {
-        storage_unlock();
-        return false;
-    }
-
     g_storage_persist_requested = true;
     g_storage_persist_status = STORAGE_PERSIST_STATUS_PENDING;
     storage_unlock();
@@ -3284,7 +4592,7 @@ bool storage_export_users_json_info(ULONG *out_size)
         return false;
     }
 
-    return storage_get_file_size("users.json", out_size);
+    return storage_get_file_size(USERS_FILE_NAME, out_size);
 }
 
 bool storage_export_users_json(char *out, size_t out_size, size_t *out_len)
@@ -3302,7 +4610,7 @@ bool storage_export_users_json(char *out, size_t out_size, size_t *out_len)
         return false;
     }
 
-    if (!storage_read_file_chunk("users.json", 0U, out, out_size - 1U, &actual_read))
+    if (!storage_read_file_chunk(USERS_FILE_NAME, 0U, out, out_size - 1U, &actual_read))
     {
         out[0] = '\0';
         return false;
@@ -3332,7 +4640,7 @@ bool storage_export_users_json_read(ULONG offset, void *out, size_t out_size, si
         return false;
     }
 
-    if (!storage_read_file_chunk("users.json", offset, out, out_size, &actual_read))
+    if (!storage_read_file_chunk(USERS_FILE_NAME, offset, out, out_size, &actual_read))
     {
         return false;
     }

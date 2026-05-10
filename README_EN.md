@@ -2,7 +2,7 @@
 
 Main project documentation for `IoTRamoRenesas`.
 
-Last review of this documentation: `2026-03-20`
+Last review of this documentation: `2026-05-09`
 
 ## 1. Overview
 
@@ -30,6 +30,7 @@ Working today:
 - access log persisted in QSPI
 - DHCP to obtain IP automatically
 - clock synchronization via NTP
+- token-protected HTTP API for remote door opening
 
 Important points about the current state:
 
@@ -38,7 +39,7 @@ Important points about the current state:
 - PIN `1234` remains enabled as the default fallback
 - door flow records opening only, not closing
 - screen dims visual brightness to about `30%` after `60s` of inactivity
-- onboard LEDs exposed by BSP boot in OFF state
+- door and light relays are explicitly configured as GPIO at boot
 
 ## 3. Hardware and peripherals
 
@@ -89,26 +90,19 @@ Touch:
 
 Current mapping in [`src/gpio.c`](./src/gpio.c):
 
-- door relay: `P006`
-- light relay: `P005`
+- door relay: `D6 -> P613`
+- light relay: `D5 -> P608`
 - door button: `P008`
+- external door button: `D4 -> P112`
 - light button: `P009`
 
 Behavior:
 
-- door opens with a timed `5s` pulse
+- door opens with a timed `2s` pulse
 - automatic closing does not generate a log event
+- the `D4` button acts as an additional external door trigger while the UI is idle
 - local buttons can also trigger UI events
-
-### 3.5 Onboard LEDs
-
-The kit BSP officially exposes 3 LEDs in [`synergy/board/s7g2_sk/bsp_leds.c`](./synergy/board/s7g2_sk/bsp_leds.c):
-
-- `LED1_GREEN`
-- `LED2_RED`
-- `LED3_YELLOW`
-
-In [`src/gpio.c`](./src/gpio.c), all these LEDs are turned off at boot via `R_BSP_LedsGet()`.
+- relay pins are configured manually in `gpio_init()`, instead of relying on `pin_data.c`
 
 ## 4. Repository structure
 
@@ -178,7 +172,6 @@ Support files:
   - door relay
   - light relay
   - physical buttons
-  - onboard LED shutdown
 
 ## 5.2 Application threads
 
@@ -314,6 +307,7 @@ Action routes:
 - `/import_profiles`
 - `/portaon`
 - `/lampadatoggle`
+- `POST /api/door/open`
 - `/upload_photo_begin`
 - `/upload_photo_chunk`
 - `/upload_photo_commit`
@@ -336,8 +330,107 @@ Current parameters:
 Implemented in [`src/net.c`](./src/net.c) with:
 
 - validation against persisted administrator profiles
-- `WEB_ADMIN_PIN` fallback
+- `WEB_ADMIN_PIN` fallback only while no administrator PIN is configured in persisted profiles and the user list loaded without error
 - session timeout in `WEB_ADMIN_SESSION_TICKS`
+
+## 7.5 HTTP API for door opening
+
+There is a dedicated route for external integrations:
+
+- `POST /api/door/open`
+
+Authentication accepts either of these headers:
+
+- `X-API-KEY: <key>`
+- `Authorization: Bearer <key>`
+
+The key currently in use is the `API_KEY` constant defined in [`src/main.c`](./src/main.c). Before using this in production, the default value should be replaced with a private key of your own.
+
+JavaScript example:
+
+```js
+await fetch("http://192.168.11.2/api/door/open", {
+  method: "POST",
+  headers: {
+    "X-API-KEY": "<your-device-key>"
+  }
+});
+```
+
+Success response:
+
+```json
+{"ok":true,"message":"Door open command sent."}
+```
+
+## 7.6 HTTP API for meeting mode scheduling
+
+Meeting mode can also be scheduled through the API. These routes use the same authentication as remote door opening:
+
+- `POST /api/meeting/schedule`
+- `POST /api/meeting/cancel`
+- `GET /api/meeting/status`
+
+The schedule endpoint accepts JSON or `application/x-www-form-urlencoded` forms. To schedule by relative delay, send `delay_seconds` and the `profile_indices` list with the authorized profile indexes:
+
+```js
+await fetch("http://192.168.11.2/api/meeting/schedule", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-API-KEY": "<your-device-key>"
+  },
+  body: JSON.stringify({
+    delay_seconds: 300,
+    profile_indices: [0, 4, 12]
+  })
+});
+```
+
+For an absolute time, use `start_unix`. In this case, the schedule depends on NTP being synchronized before the target time arrives:
+
+```json
+{"start_unix":1893456000,"profile_indices":[0,4,12]}
+```
+
+For daily recurrence, add `recurrence: "daily"`:
+
+```json
+{"start_unix":1893456000,"profile_indices":[0,4,12],"recurrence":"daily"}
+```
+
+For weekly recurrence, add `recurrence: "weekly"` and, optionally, `weekdays`. Weekdays use `0=Sunday`, `1=Monday`, ..., `6=Saturday`:
+
+```json
+{"start_unix":1893456000,"profile_indices":[0,4,12],"recurrence":"weekly","weekdays":[1,3,5]}
+```
+
+If `recurrence` is `"weekly"` and `weekdays` is omitted, the firmware automatically uses the weekday from `start_unix`.
+
+Each schedule call returns an `id`. This `id` can be used to cancel only one pending meeting:
+
+```js
+await fetch("http://192.168.11.2/api/meeting/cancel", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-API-KEY": "<your-device-key>"
+  },
+  body: JSON.stringify({ id: 3 })
+});
+```
+
+If `POST /api/meeting/cancel` is called without an `id`, all pending schedules are removed.
+
+Important rules:
+
+- each selected profile must exist and must have at least one registered card
+- `delay_seconds` accepts up to 24 hours
+- `delay_seconds` requires synchronized NTP because the firmware converts the delay to `start_unix` before saving
+- up to 8 pending schedules can be saved at the same time
+- pending schedules are persisted in QSPI in the `meeting.json` file
+- recurring schedules keep the same `id` and update the next `start_unix` after each execution
+- at the scheduled time, the firmware calls the same `storage_meeting_mode_start(...)` logic used by the web page
 
 ## 8. User data model
 
@@ -378,8 +471,10 @@ Because of this:
 Relevant constants in [`src/storage.c`](./src/storage.c):
 
 - `STORAGE_MEDIA_SAFE_DELAY_TICKS = 2s`
-- `JSON_BUFFER_SIZE = 4096`
+- `USERS_JSON_CHUNK_SIZE = 512`
+- `USERS_JSON_OBJECT_SIZE = 1024`
 - `ACCESS_LOG_BUFFER_SIZE = 4096`
+- `ACCESS_LOG_ROTATE_SIZE = 64 KB`
 
 ## 9.2 Persisted files
 
@@ -387,11 +482,14 @@ Main files:
 
 - `users.json`
 - `access.log`
+- `meeting.json`
 - `photo_XXXXXXXX.bin`
 
 ### `users.json`
 
 Stores persisted profiles.
+
+The file is written in small fragments, one profile at a time, so persistence no longer depends on a single 8 KB JSON buffer. Writes use `users.tmp` and `users.bak` to avoid destroying the last valid file if a save fails midway. During boot, the parser also processes profile objects in chunks while keeping the operational `STORAGE_MAX_USERS` limit.
 
 Current approximate format:
 
@@ -429,6 +527,39 @@ Each line is serialized as:
 unix_utc|event_type|data|user
 ```
 
+Notes:
+
+- writing is incremental, using append
+- the active file rotates by size and uses `access.bak` as the rollover file
+- boot reloads the persisted log tail by reading `access.bak` before `access.log`, preserving the order of the newest events
+
+### `meeting.json`
+
+Stores the pending meeting mode schedule queue.
+
+Current approximate format:
+
+```json
+[
+  {
+    "id": 1,
+    "start_unix": 1893456000,
+    "recurrence": 2,
+    "weekdays_mask": 42,
+    "profiles": [0, 4, 12]
+  }
+]
+```
+
+Notes:
+
+- writes use `meeting.tmp` and `meeting.bak` to avoid losing the previous file during a failed save
+- the operational limit is `STORAGE_MEETING_SCHEDULE_MAX_ITEMS`, currently `8`
+- `recurrence` uses `0=single`, `1=daily`, and `2=weekly`
+- `weekdays_mask` uses bits from Sunday to Saturday; for example, `42` means Monday, Wednesday, and Friday
+- single schedules are removed from the queue when their start time arrives
+- recurring schedules stay in the queue and advance to the next future occurrence
+
 ### `photo_XXXXXXXX.bin`
 
 Each persisted photo uses a file name derived from `photo_id`.
@@ -453,6 +584,7 @@ Main APIs in [`src/storage.h`](./src/storage.h):
 
 - `storage_persist_now()`
 - `storage_persist_wait()`
+- `storage_access_log_enqueue()`
 - `storage_access_log_persist_now()`
 - `storage_photo_persist_now()`
 - `storage_photo_ensure_loaded()`
@@ -630,8 +762,9 @@ Web page:
 
 Persistence:
 
-- saved as `access.log` in QSPI
-- reloaded during boot with safe delay
+- saved as `access.log` in QSPI with incremental append
+- rotates to `access.bak` when the active file reaches the configured limit
+- reloaded during boot with safe delay, reading the tail of the persisted files
 
 ## 14. Network
 
@@ -796,4 +929,3 @@ For additional context:
 - [`NETWORK_NOTES_EN.md`](./NETWORK_NOTES_EN.md): network stack investigation history
 
 This `README_EN.md` should be treated as the main and most complete project documentation.
-![IEEE Comptuer Society Universidade Federal de Juiz de Fora Student Branch Chapter logo in white](!./other/images/ieeecsufjfw.png

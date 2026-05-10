@@ -11,6 +11,11 @@
 #define STORAGE_ADMIN_PIN_LEN         4
 #define STORAGE_ADMIN_PIN_MAX_LEN    (STORAGE_ADMIN_PIN_LEN + 1)
 #define STORAGE_RUNTIME_PHOTO_MAX_DIM 160
+#define STORAGE_MEETING_SCHEDULE_MAX_ITEMS 8
+#define STORAGE_MEETING_RECURRENCE_NONE   0U
+#define STORAGE_MEETING_RECURRENCE_DAILY  1U
+#define STORAGE_MEETING_RECURRENCE_WEEKLY 2U
+#define STORAGE_MEETING_WEEKDAY_MASK_ALL  0x7FU
 
 typedef struct
 {
@@ -31,6 +36,16 @@ typedef struct
     ULONG payload_size;
     ULONG total_size;
 } storage_photo_export_info_t;
+
+typedef struct
+{
+    ULONG id;
+    ULONG start_unix;
+    unsigned int profile_count;
+    uint8_t profile_indices[STORAGE_MAX_USERS];
+    uint8_t recurrence;
+    uint8_t weekdays_mask;
+} storage_meeting_schedule_t;
 
 typedef enum
 {
@@ -61,7 +76,10 @@ bool storage_meeting_mode_is_active(void);
 unsigned int storage_meeting_mode_selected_profile_count(void);
 unsigned int storage_meeting_mode_allowed_card_count(void);
 bool storage_meeting_mode_profile_selected(const storage_user_profile_t *profile);
+int storage_meeting_schedule_load(storage_meeting_schedule_t *out_schedules, int max_schedules);
+bool storage_meeting_schedule_save(const storage_meeting_schedule_t *schedules, int schedule_count);
 bool storage_admin_pin_valid(const char *pin);
+bool storage_admin_pin_configured(void);
 bool storage_persist_now(void);
 bool storage_persist_wait(ULONG timeout_ticks);
 unsigned int storage_persist_status(void);

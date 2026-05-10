@@ -1,0 +1,303 @@
+{
+  "source": {
+    "project_id": "appramoieeeufjf",
+    "collection": "users",
+    "storage_bucket": "appramoieeeufjf.firebasestorage.app"
+  },
+  "count": 19,
+  "profiles": [
+    {
+      "firebase_uid": "1tb42tGF1bdKx8wuNxHCLKJqAi93",
+      "name": "Thalita Mello e Silva",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "PES",
+      "photo_id": "profile_images/1tb42tGF1bdKx8wuNxHCLKJqAi93.jpg",
+      "cards": [],
+      "chapter_roles": {
+        "PES": "Membro"
+      },
+      "profile_picture_url": "https://firebasestorage.googleapis.com:443/v0/b/appramoieeeufjf.firebasestorage.app/o/profile_images%2F1tb42tGF1bdKx8wuNxHCLKJqAi93.jpg?alt=media&token=c61d40c8-a3d0-4779-a9b9-2ea19dac165a",
+      "phone_number": "+5532988750611",
+      "email": "thalita.mello@estudante.ufjf.br"
+    },
+    {
+      "firebase_uid": "2muixNKBMINsUMVrDe4tqzXoSbB3",
+      "name": "Arthur Araújo Martins",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "PES",
+      "photo_id": "profile_pictures/2muixNKBMINsUMVrDe4tqzXoSbB3",
+      "cards": [],
+      "chapter_roles": {
+        "PES": "Membro"
+      },
+      "profile_picture_url": "https://firebasestorage.googleapis.com/v0/b/appramoieeeufjf.firebasestorage.app/o/profile_pictures%2F2muixNKBMINsUMVrDe4tqzXoSbB3?alt=media&token=788f4989-f2e3-4a0a-918f-bece231dd900",
+      "phone_number": "+5532998220638",
+      "email": ""
+    },
+    {
+      "firebase_uid": "4TC0HWqe8Re9LmKOHG9DZj5taIs2",
+      "name": "Teste da Silva",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "RAS",
+      "photo_id": "",
+      "cards": [],
+      "chapter_roles": {
+        "RAS": "Membro"
+      },
+      "profile_picture_url": "",
+      "phone_number": "teste",
+      "email": "teste@teste.com"
+    },
+    {
+      "firebase_uid": "8x1T14YacsVy2Wl4P9jpB4fK9Yl1",
+      "name": "Pedro de Oliveira Fuzimoto",
+      "uid": "",
+      "role": "Vice-Presidente",
+      "chapter": "Diretoria",
+      "photo_id": "profile_images/8x1T14YacsVy2Wl4P9jpB4fK9Yl1.jpg",
+      "cards": [],
+      "chapter_roles": {
+        "Diretoria": "Vice-Presidente"
+      },
+      "profile_picture_url": "https://firebasestorage.googleapis.com:443/v0/b/appramoieeeufjf.firebasestorage.app/o/profile_images%2F8x1T14YacsVy2Wl4P9jpB4fK9Yl1.jpg?alt=media&token=f5304eb9-16cb-4158-99b7-7eb323c7d159",
+      "phone_number": "+5521994446200",
+      "email": "pedrofuzimoto@ieee.org"
+    },
+    {
+      "firebase_uid": "A4M0G15rrCPvXDHMoLJHEmGCPmc2",
+      "name": "Eduardo Motta Zilli",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "IAS",
+      "photo_id": "",
+      "cards": [],
+      "chapter_roles": {
+        "IAS": "Membro"
+      },
+      "profile_picture_url": "",
+      "phone_number": "+5535998431342",
+      "email": "edumzilli@gmail.com"
+    },
+    {
+      "firebase_uid": "DKWTZInAbURI5inRiMe50dfJ4et2",
+      "name": "Mariana Guimarães Machado",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "IAS",
+      "photo_id": "",
+      "cards": [],
+      "chapter_roles": {
+        "IAS": "Membro"
+      },
+      "profile_picture_url": "",
+      "phone_number": "+5522981361665",
+      "email": "guimaraesmachadomariana@gmail.com"
+    },
+    {
+      "firebase_uid": "HEarkqkLwEcAlEaFr7dIVKssnXs1",
+      "name": "Nicolas Augusto de Oliveira Ávila",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "PES",
+      "photo_id": "profile_images/HEarkqkLwEcAlEaFr7dIVKssnXs1.jpg",
+      "cards": [],
+      "chapter_roles": {
+        "PES": "Membro"
+      },
+      "profile_picture_url": "https://firebasestorage.googleapis.com:443/v0/b/appramoieeeufjf.firebasestorage.app/o/profile_images%2FHEarkqkLwEcAlEaFr7dIVKssnXs1.jpg?alt=media&token=0d81ed5a-d961-4f49-a1b7-3fbf514b371f",
+      "phone_number": "+5532991997835",
+      "email": "nicolasavila802@gmail.com"
+    },
+    {
+      "firebase_uid": "IiO7NzdSHXPVuBLZXGVFZdCCJd53",
+      "name": "Alexandre Haruiti Anzai",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "PES",
+      "photo_id": "",
+      "cards": [],
+      "chapter_roles": {
+        "PES": "Membro"
+      },
+      "profile_picture_url": "",
+      "phone_number": "+5519996386878",
+      "email": "alexandre.anzai@ieee.org"
+    },
+    {
+      "firebase_uid": "KRkbCPFuMyZHRS4FLO0G3txDJOI3",
+      "name": "Mariana Velasco Ruback",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "WIE",
+      "photo_id": "",
+      "cards": [],
+      "chapter_roles": {
+        "WIE": "Membro"
+      },
+      "profile_picture_url": "",
+      "phone_number": "+5532984007818",
+      "email": ""
+    },
+    {
+      "firebase_uid": "OlP079mFC5djskvnl5CQiubzz9w1",
+      "name": "Bruno Fernandes França",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "PES",
+      "photo_id": "profile_pictures/OlP079mFC5djskvnl5CQiubzz9w1",
+      "cards": [],
+      "chapter_roles": {
+        "PES": "Membro"
+      },
+      "profile_picture_url": "",
+      "phone_number": "+5522981339077",
+      "email": ""
+    },
+    {
+      "firebase_uid": "P3bD1PAx2AYDxi16orrecD8waZh2",
+      "name": "Letícia Martins",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "EdSoc",
+      "photo_id": "profile_pictures/P3bD1PAx2AYDxi16orrecD8waZh2",
+      "cards": [],
+      "chapter_roles": {
+        "EdSoc": "Membro",
+        "WIE": "Membro"
+      },
+      "profile_picture_url": "https://firebasestorage.googleapis.com/v0/b/appramoieeeufjf.firebasestorage.app/o/profile_pictures%2FP3bD1PAx2AYDxi16orrecD8waZh2?alt=media&token=a0e623bc-2d19-4699-929f-6872c9609250",
+      "phone_number": "",
+      "email": ""
+    },
+    {
+      "firebase_uid": "T3GgaBjEiaYmYzDqfdS7EZdDxwq2",
+      "name": "Endhel Andrade",
+      "uid": "",
+      "role": "Webmaster",
+      "chapter": "Diretoria",
+      "photo_id": "profile_pictures/T3GgaBjEiaYmYzDqfdS7EZdDxwq2",
+      "cards": [],
+      "chapter_roles": {
+        "PES": "Membro",
+        "EdSoc": "Membro",
+        "Diretoria": "Webmaster"
+      },
+      "profile_picture_url": "",
+      "phone_number": "+5532984239563",
+      "email": ""
+    },
+    {
+      "firebase_uid": "WDvzJqYvCvObJvBPgoqkkfx3NuB3",
+      "name": "Fabrício Prata Rodrigues",
+      "uid": "",
+      "role": "Tesoureiro",
+      "chapter": "Diretoria",
+      "photo_id": "profile_pictures/WDvzJqYvCvObJvBPgoqkkfx3NuB3",
+      "cards": [],
+      "chapter_roles": {
+        "IAS": "Membro",
+        "EdSoc": "Presidente",
+        "Diretoria": "Tesoureiro"
+      },
+      "profile_picture_url": "https://firebasestorage.googleapis.com/v0/b/appramoieeeufjf.firebasestorage.app/o/profile_pictures%2FWDvzJqYvCvObJvBPgoqkkfx3NuB3?alt=media&token=83dab1f0-59c8-4413-bb2a-4a46c7f2568b",
+      "phone_number": "+5532988155185",
+      "email": ""
+    },
+    {
+      "firebase_uid": "dfH1CdOjZ1XBqDZHwMRlhroMsFv2",
+      "name": "Rafael Lago Nick",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "IAS",
+      "photo_id": "profile_pictures/dfH1CdOjZ1XBqDZHwMRlhroMsFv2",
+      "cards": [],
+      "chapter_roles": {
+        "IAS": "Membro"
+      },
+      "profile_picture_url": "https://firebasestorage.googleapis.com/v0/b/appramoieeeufjf.firebasestorage.app/o/profile_pictures%2FdfH1CdOjZ1XBqDZHwMRlhroMsFv2?alt=media&token=c88da301-cd29-43e0-954e-55487b253b7f",
+      "phone_number": "+5531991344209",
+      "email": ""
+    },
+    {
+      "firebase_uid": "eCuV4uTqoohOqjaZJ6bUHY7qTCH2",
+      "name": "Camila Porto Belli Castanha",
+      "uid": "",
+      "role": "Presidente",
+      "chapter": "Diretoria",
+      "photo_id": "profile_pictures/eCuV4uTqoohOqjaZJ6bUHY7qTCH2",
+      "cards": [],
+      "chapter_roles": {
+        "Diretoria": "Presidente",
+        "WIE": "Presidente"
+      },
+      "profile_picture_url": "https://firebasestorage.googleapis.com/v0/b/appramoieeeufjf.firebasestorage.app/o/profile_pictures%2FeCuV4uTqoohOqjaZJ6bUHY7qTCH2?alt=media&token=2f12035e-3fff-4d51-a9b3-ee1c4e01499d",
+      "phone_number": "+5532988992101",
+      "email": ""
+    },
+    {
+      "firebase_uid": "gLyhGjTQgJZTZQwaNoVfkILrPVI2",
+      "name": "João Paulo Nazareth da Silva",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "PES",
+      "photo_id": "",
+      "cards": [],
+      "chapter_roles": {
+        "PES": "Membro"
+      },
+      "profile_picture_url": "",
+      "phone_number": "+5532988456380",
+      "email": "joaonazareth.pessoal@gmail.com"
+    },
+    {
+      "firebase_uid": "kcIyNRLhnOO0CTkW05gq6cHZ3n42",
+      "name": "Olívio Inácio",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "PES",
+      "photo_id": "",
+      "cards": [],
+      "chapter_roles": {
+        "PES": "Membro",
+        "SIGHT": "Membro"
+      },
+      "profile_picture_url": "",
+      "phone_number": "+5532998335908",
+      "email": ""
+    },
+    {
+      "firebase_uid": "qOCNi3v4cIZVwYYYKKPkPORGJqV2",
+      "name": "Leonela Medeiros de Souza e Faria",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "EdSoc",
+      "photo_id": "",
+      "cards": [],
+      "chapter_roles": {
+        "EdSoc": "Membro",
+        "RAS": "Presidente"
+      },
+      "profile_picture_url": "",
+      "phone_number": "+5532988942541",
+      "email": "leonelafaria05@gmail.com"
+    },
+    {
+      "firebase_uid": "zEMpIU5hSLa7jQJTRr3j0ZqlMKJ2",
+      "name": "Rafael Ferreira Campos",
+      "uid": "",
+      "role": "Membro",
+      "chapter": "IAS",
+      "photo_id": "",
+      "cards": [],
+      "chapter_roles": {
+        "IAS": "Membro"
+      },
+      "profile_picture_url": "",
+      "phone_number": "+5532988939403",
+      "email": "campos.rafael@estudante.ufjf.br"
+    }
+  ]
+}
