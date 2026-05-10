@@ -106,6 +106,7 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define PROFILES_PAGE_SIZE          8
 #define STORAGE_EXPORT_PAGE_SIZE    5
 #define ACCESS_LOG_PAGE_SIZE       10
+#define MEETING_MODE_PAGE_SIZE      4
 #define METRICS_PAGE_SIZE           4
 #define PHOTO_OPTIONS_BUFFER_SIZE 2048
 #define PROFILE_OPTIONS_BUFFER_SIZE 4096
@@ -162,6 +163,8 @@ static int g_net_pending_upload_width = (int) UPLOAD_IMAGE_DIM;
 static int g_net_pending_upload_height = (int) UPLOAD_IMAGE_DIM;
 static uint32_t g_net_pending_upload_tile_mask = 0U;
 static char g_net_pending_upload_photo_id[STORAGE_PHOTO_ID_MAX_LEN];
+static bool g_net_meeting_draft_initialized = false;
+static bool g_net_meeting_draft_selected[STORAGE_MAX_USERS];
 static app_metric_entry_t g_net_metric_snapshot[APP_METRIC_LOG_SIZE];
 static net_metric_group_t g_net_metric_groups[METRIC_GROUP_MAX];
 static ULONG g_net_metric_durations[APP_METRIC_LOG_SIZE];
@@ -172,6 +175,7 @@ static UINT send_html_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, co
 static UINT send_plain_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *text);
 static UINT send_javascript_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *script);
 static UINT send_buffer_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const void *data, size_t data_len, const char *content_type);
+static UINT send_buffer_status_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *status_code, const void *data, size_t data_len, const char *content_type);
 static UINT send_stream_response_header(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, ULONG data_len, const char *content_type);
 static UINT send_plain_response_fresh(NX_HTTP_SERVER *server, const char *text);
 static UINT send_plain_status_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *status_code, const char *text);
@@ -179,6 +183,9 @@ static UINT send_callback_response(NX_HTTP_SERVER *server, const char *status_co
 static UINT send_redirect(NX_HTTP_SERVER *server, const char *location);
 static UINT light_redirect_with_flash(NX_HTTP_SERVER *server_ptr, const char *location, const char *message);
 static int net_format_metric_csv_line(char *out, size_t out_size, const app_metric_entry_t *entry);
+static bool extract_header_from_packet(NX_PACKET *packet_ptr, const char *header_name, char *out, size_t out_size);
+static bool net_api_request_is_authorized(NX_PACKET *packet_ptr);
+static UINT handle_api_door_open(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr);
 
 static void net_set_flash_message(const char *message)
 {
@@ -1171,57 +1178,6 @@ static bool profile_from_query(const char *query, storage_user_profile_t *profil
     return ('\0' != profile->name[0]);
 }
 
-static int parse_profile_index_csv(const char *csv, int *out_indices, int max_indices)
-{
-    const char *cursor = csv;
-    int count = 0;
-
-    if ((NULL == csv) || (NULL == out_indices) || (max_indices <= 0))
-    {
-        return 0;
-    }
-
-    while ('\0' != *cursor)
-    {
-        char *end_ptr = NULL;
-        long value;
-
-        while (('\0' != *cursor) &&
-               (isspace((unsigned char) *cursor) || (',' == *cursor) || (';' == *cursor)))
-        {
-            cursor++;
-        }
-
-        if ('\0' == *cursor)
-        {
-            break;
-        }
-
-        value = strtol(cursor, &end_ptr, 10);
-        if ((NULL == end_ptr) || (end_ptr == cursor))
-        {
-            while (('\0' != *cursor) && (',' != *cursor) && (';' != *cursor))
-            {
-                cursor++;
-            }
-            continue;
-        }
-
-        if (count < max_indices)
-        {
-            out_indices[count++] = (int) value;
-        }
-
-        cursor = end_ptr;
-        while (('\0' != *cursor) && (',' != *cursor) && (';' != *cursor))
-        {
-            cursor++;
-        }
-    }
-
-    return count;
-}
-
 static bool import_extract_json_string(const char *object_start,
                                        const char *object_end,
                                        const char *key,
@@ -1987,6 +1943,57 @@ static UINT send_buffer_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, 
     return NX_HTTP_CALLBACK_COMPLETED;
 }
 
+static UINT send_buffer_status_response(NX_HTTP_SERVER *server,
+                                        NX_PACKET *packet_ptr,
+                                        const char *status_code,
+                                        const void *data,
+                                        size_t data_len,
+                                        const char *content_type)
+{
+    UINT status;
+
+    if ((NULL == server) || (NULL == packet_ptr) || (NULL == status_code) || (NULL == data) || (NULL == content_type))
+    {
+        g_net_debug_last_response_status = NX_PTR_ERROR;
+        return NX_PTR_ERROR;
+    }
+
+    status = nx_http_server_callback_generate_response_header(server,
+                                                              &packet_ptr,
+                                                              (CHAR *) status_code,
+                                                              data_len,
+                                                              (CHAR *) content_type,
+                                                              NULL);
+    if (NX_SUCCESS != status)
+    {
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    status = nx_packet_data_append(packet_ptr,
+                                   (VOID *) data,
+                                   data_len,
+                                   server->nx_http_server_packet_pool_ptr,
+                                   NET_HTTP_PACKET_WAIT_TICKS);
+    if (NX_SUCCESS != status)
+    {
+        nx_packet_release(packet_ptr);
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    status = nx_http_server_callback_packet_send(server, packet_ptr);
+    if (NX_SUCCESS != status)
+    {
+        nx_packet_release(packet_ptr);
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    g_net_debug_last_response_status = NX_HTTP_CALLBACK_COMPLETED;
+    return NX_HTTP_CALLBACK_COMPLETED;
+}
+
 static UINT send_stream_response_header(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, ULONG data_len, const char *content_type)
 {
     UINT status;
@@ -2617,6 +2624,192 @@ static void extract_body_from_packet(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
     extract_body_from_packet_fallback(packet_ptr, body_out, body_size);
 }
 
+static bool net_ascii_span_equals_ignore_case(const char *left, const char *right, size_t len)
+{
+    size_t i;
+
+    if ((NULL == left) || (NULL == right))
+    {
+        return false;
+    }
+
+    for (i = 0U; i < len; i++)
+    {
+        if (tolower((unsigned char) left[i]) != tolower((unsigned char) right[i]))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static const char *net_find_crlf(const char *cursor, const char *end)
+{
+    const char *p;
+
+    if ((NULL == cursor) || (NULL == end) || (cursor >= end))
+    {
+        return NULL;
+    }
+
+    for (p = cursor; (p + 1) < end; p++)
+    {
+        if ((p[0] == '\r') && (p[1] == '\n'))
+        {
+            return p;
+        }
+    }
+
+    return NULL;
+}
+
+static bool extract_header_from_packet(NX_PACKET *packet_ptr, const char *header_name, char *out, size_t out_size)
+{
+    const char *req;
+    const char *req_end;
+    const char *cursor;
+    const char *line_end;
+    size_t header_name_len;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return false;
+    }
+
+    out[0] = '\0';
+
+    if ((NULL == packet_ptr) || (NULL == packet_ptr->nx_packet_prepend_ptr) || (NULL == header_name))
+    {
+        return false;
+    }
+
+    req = (const char *) packet_ptr->nx_packet_prepend_ptr;
+    req_end = (const char *) packet_ptr->nx_packet_append_ptr;
+    if ((NULL == req_end) || (req >= req_end))
+    {
+        return false;
+    }
+
+    line_end = net_find_crlf(req, req_end);
+    if (NULL == line_end)
+    {
+        return false;
+    }
+
+    header_name_len = strlen(header_name);
+    cursor = line_end + 2;
+
+    while (cursor < req_end)
+    {
+        const char *colon = NULL;
+        const char *value_start;
+        const char *value_end;
+        const char *p;
+        size_t value_len;
+
+        line_end = net_find_crlf(cursor, req_end);
+        if (NULL == line_end)
+        {
+            break;
+        }
+
+        if (line_end == cursor)
+        {
+            break;
+        }
+
+        for (p = cursor; p < line_end; p++)
+        {
+            if (':' == *p)
+            {
+                colon = p;
+                break;
+            }
+        }
+
+        if ((NULL != colon) &&
+            (((size_t) (colon - cursor)) == header_name_len) &&
+            net_ascii_span_equals_ignore_case(cursor, header_name, header_name_len))
+        {
+            value_start = colon + 1;
+            while ((value_start < line_end) && isspace((unsigned char) *value_start))
+            {
+                value_start++;
+            }
+
+            value_end = line_end;
+            while ((value_end > value_start) && isspace((unsigned char) value_end[-1]))
+            {
+                value_end--;
+            }
+
+            value_len = (size_t) (value_end - value_start);
+            if (value_len >= out_size)
+            {
+                value_len = out_size - 1U;
+            }
+
+            memcpy(out, value_start, value_len);
+            out[value_len] = '\0';
+            return true;
+        }
+
+        cursor = line_end + 2;
+    }
+
+    return false;
+}
+
+static bool net_authorization_matches_api_key(const char *authorization_value)
+{
+    static const char bearer_prefix[] = "Bearer ";
+    const char *token;
+    size_t prefix_len = sizeof(bearer_prefix) - 1U;
+
+    if (NULL == authorization_value)
+    {
+        return false;
+    }
+
+    if (!net_ascii_span_equals_ignore_case(authorization_value, bearer_prefix, prefix_len))
+    {
+        return false;
+    }
+
+    token = authorization_value + prefix_len;
+    while (' ' == *token)
+    {
+        token++;
+    }
+
+    return (0 == strcmp(token, API_KEY));
+}
+
+static bool net_api_request_is_authorized(NX_PACKET *packet_ptr)
+{
+    char api_key_value[96];
+    char authorization_value[128];
+
+    if (extract_header_from_packet(packet_ptr, "X-API-KEY", api_key_value, sizeof(api_key_value)))
+    {
+        if (0 == strcmp(api_key_value, API_KEY))
+        {
+            return true;
+        }
+    }
+
+    if (extract_header_from_packet(packet_ptr, "Authorization", authorization_value, sizeof(authorization_value)))
+    {
+        if (net_authorization_matches_api_key(authorization_value))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static UINT handle_remove_user(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *query)
 {
     int index = query_get_int(query, "index", -1);
@@ -2691,6 +2884,64 @@ static bool net_appendf(char *buffer, size_t buffer_size, size_t *offset, const 
 
     *offset += (size_t) written;
     return true;
+}
+
+static void net_meeting_mode_draft_reset(void)
+{
+    memset(g_net_meeting_draft_selected, 0, sizeof(g_net_meeting_draft_selected));
+    g_net_meeting_draft_initialized = true;
+}
+
+static void net_meeting_mode_draft_sync_from_active(void)
+{
+    int user_count;
+
+    if (g_net_meeting_draft_initialized)
+    {
+        return;
+    }
+
+    net_meeting_mode_draft_reset();
+    user_count = storage_user_count();
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if (storage_profile_get(i, &profile) && storage_meeting_mode_profile_selected(&profile))
+        {
+            g_net_meeting_draft_selected[i] = true;
+        }
+    }
+}
+
+static unsigned int net_meeting_mode_draft_profile_count(void)
+{
+    unsigned int count = 0U;
+    int user_count = storage_user_count();
+
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if (g_net_meeting_draft_selected[i] &&
+            storage_profile_get(i, &profile) &&
+            (profile.card_count > 0U))
+        {
+            count++;
+        }
+    }
+
+    return count;
 }
 
 static void extract_query_from_resource(const char *resource, char *query_out, size_t query_size)
@@ -3915,60 +4166,135 @@ static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr,
     return send_html_response(server_ptr, packet_ptr, html);
 }
 
-static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
+static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
+                                           NX_PACKET *packet_ptr,
+                                           const char *message,
+                                           int page)
 {
+    const char *message_to_render = message;
     size_t offset = 0U;
     int user_count;
     int selectable_count = 0;
+    int selectable_total = 0;
+    int page_start;
+    int page_end;
+    int rendered_count = 0;
     bool active;
     unsigned int selected_profiles;
     unsigned int allowed_cards;
+    unsigned int draft_selected_profiles;
+    char prev_button[96];
+    char next_button[96];
 
     if (!net_admin_is_authenticated())
     {
         return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para configurar o modo reuniao.</div>");
     }
 
+    if ((NULL == message_to_render) && ('\0' != g_net_flash_message[0]))
+    {
+        message_to_render = g_net_flash_message;
+        g_net_flash_message[0] = '\0';
+    }
+
     active = storage_meeting_mode_is_active();
     selected_profiles = storage_meeting_mode_selected_profile_count();
     allowed_cards = storage_meeting_mode_allowed_card_count();
+    net_meeting_mode_draft_sync_from_active();
+    draft_selected_profiles = net_meeting_mode_draft_profile_count();
     user_count = storage_user_count();
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    if (page < 0)
+    {
+        page = 0;
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if (storage_profile_get(i, &profile) && (profile.card_count > 0U))
+        {
+            selectable_total++;
+        }
+    }
+
+    page_start = page * MEETING_MODE_PAGE_SIZE;
+    if (page_start >= selectable_total)
+    {
+        page = 0;
+        page_start = 0;
+    }
+    page_end = page_start + MEETING_MODE_PAGE_SIZE;
+    if (page_end > selectable_total)
+    {
+        page_end = selectable_total;
+    }
+
+    if (page > 0)
+    {
+        snprintf(prev_button,
+                 sizeof(prev_button),
+                 "<a class='small secondary' href='/meeting_mode/%d'>Anterior</a>",
+                 page - 1);
+    }
+    else
+    {
+        prev_button[0] = '\0';
+    }
+
+    if (page_end < selectable_total)
+    {
+        snprintf(next_button,
+                 sizeof(next_button),
+                 "<a class='small' href='/meeting_mode/%d'>Proxima</a>",
+                 page + 1);
+    }
+    else
+    {
+        next_button[0] = '\0';
+    }
 
     g_net_metric_buffer[0] = '\0';
     if (!net_appendf(g_net_metric_buffer,
                      sizeof(g_net_metric_buffer),
                      &offset,
+                     "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                     "<style>"
+                     "body{font-family:Arial,sans-serif;background:#f5f7fb;color:#18212d;margin:0;padding:18px;}"
+                     ".wrap{max-width:980px;margin:0 auto;}"
+                     ".card{background:#fff;border-radius:16px;padding:18px;margin-bottom:16px;box-shadow:0 8px 26px rgba(0,0,0,.08);}"
+                     ".actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;}"
+                     ".small,.btn{display:inline-block;text-decoration:none;border:none;border-radius:10px;padding:12px 16px;background:#0b6ef3;color:#fff;cursor:pointer;}"
+                     ".secondary{background:#6b7a90;}.danger{background:#d64545;}.muted{color:#607086;font-size:14px;}.warn{color:#b26a00;}.ok{color:#137333;}"
+                     ".table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}table{width:100%%;border-collapse:collapse;}th,td{padding:10px;border-bottom:1px solid #e7ebf2;text-align:left;vertical-align:top;}"
+                     "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.actions{flex-direction:column;align-items:stretch;gap:8px;}.small,.btn{display:block;width:100%%;box-sizing:border-box;text-align:center;}.table-wrap{margin:0 -4px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}th,td{padding:8px;font-size:13px;white-space:nowrap;}}"
+                     "</style></head><body><div class='wrap'><div class='card'>"
+                     "<h1>Modo reuniao</h1>"
+                     "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/admin_profiles'>Perfis</a><a class='small secondary' href='/logout'>Sair</a></div>"
+                     "%s"
                      "<p class='%s'><strong>Modo reuniao %s.</strong></p>"
-                     "<p class='muted'>Quando ativo, apenas os perfis selecionados nesta pagina liberam a entrada por RFID.</p>"
-                     "<p class='muted'>Botoes locais e o comando manual da porta continuam disponiveis como override administrativo.</p>"
-                     "<p class='muted'>Perfis liberados agora: <strong>%u</strong> | Cartoes liberados: <strong>%u</strong></p>",
+                     "<p class='muted'>Perfis liberados agora: <strong>%u</strong> | Cartoes liberados: <strong>%u</strong></p>"
+                     "<p class='muted'>Selecao preparada para iniciar: <strong>%u</strong> perfil(is).</p>"
+                     "<p class='muted'>Mostrando %d a %d de %d perfis com cartao RFID.</p>"
+                     "%s"
+                     "<div class='table-wrap'><table><tr><th>Nome</th><th>Cargo</th><th>Capitulo</th><th>Cartoes</th><th>Acao</th></tr>",
+                     (NULL != message_to_render) ? message_to_render : "",
                      active ? "ok" : "warn",
                      active ? "ativo" : "desativado",
                      selected_profiles,
-                     allowed_cards))
+                     allowed_cards,
+                     draft_selected_profiles,
+                     (selectable_total > 0) ? (page_start + 1) : 0,
+                     page_end,
+                     selectable_total,
+                     active ? "<div class='actions'><a class='small danger' href='/meeting_mode_stop'>Encerrar modo reuniao</a></div>" : ""))
     {
-        return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
-    }
-
-    if (active)
-    {
-        if (!net_appendf(g_net_metric_buffer,
-                         sizeof(g_net_metric_buffer),
-                         &offset,
-                         "<div class='actions'><a class='small danger' href='/meeting_mode_stop'>Encerrar modo reuniao</a></div>"))
-        {
-            return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
-        }
-    }
-
-    if (!net_appendf(g_net_metric_buffer,
-                     sizeof(g_net_metric_buffer),
-                     &offset,
-                     "<form action='/meeting_mode_start' method='post' onsubmit='return syncMeetingModeSelection();'>"
-                     "<input type='hidden' name='selected' id='meeting_mode_selected' value=''>"
-                     "<div style='max-height:360px;overflow:auto;border:1px solid #e7ebf2;border-radius:12px;padding:12px;background:#f8fbff;'>"))
-    {
-        return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
     }
 
     for (int i = 0; i < user_count; i++)
@@ -3977,86 +4303,127 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr, NX_PACKET
         char name_html[NAME_MAX_LEN * 6];
         char role_html[STORAGE_ROLE_MAX_LEN * 6];
         char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6];
-        char cards_csv[FORM_CARDS_BUFFER_SIZE];
-        const char *checked = "";
+        const char *toggle_class;
+        const char *toggle_label;
 
         if (!storage_profile_get(i, &profile) || (0U == profile.card_count))
         {
             continue;
         }
 
+        if ((selectable_count < page_start) || (selectable_count >= page_end))
+        {
+            selectable_count++;
+            continue;
+        }
+
         selectable_count++;
-        checked = storage_meeting_mode_profile_selected(&profile) ? " checked" : "";
-        profile_cards_to_csv(&profile, cards_csv, sizeof(cards_csv));
+        rendered_count++;
         net_html_escape(profile.name, name_html, sizeof(name_html));
         net_html_escape(('\0' != profile.role[0]) ? profile.role : "-", role_html, sizeof(role_html));
         net_html_escape(('\0' != profile.chapter[0]) ? profile.chapter : "-", chapter_html, sizeof(chapter_html));
+        toggle_class = g_net_meeting_draft_selected[i] ? "small secondary" : "small";
+        toggle_label = g_net_meeting_draft_selected[i] ? "Remover" : "Selecionar";
 
         if (!net_appendf(g_net_metric_buffer,
                          sizeof(g_net_metric_buffer),
                          &offset,
-                         "<label style='display:flex;align-items:flex-start;gap:10px;padding:10px 4px;border-bottom:1px solid #eef2f7;'>"
-                         "<input type='checkbox' class='meeting-member' value='%d'%s style='width:auto;margin:3px 0 0 0;'>"
-                         "<span><strong>%s</strong><br><span class='muted'>%s | %s | %s</span></span>"
-                         "</label>",
-                         i,
-                         checked,
+                         "<tr><td>%s</td><td>%s</td><td>%s</td><td>%u</td><td><a class='%s' href='/meeting_mode_toggle?index=%d&page=%d'>%s</a></td></tr>",
                          name_html,
                          role_html,
                          chapter_html,
-                         ('\0' != cards_csv[0]) ? cards_csv : "-"))
+                         profile.card_count,
+                         toggle_class,
+                         i,
+                         page,
+                         toggle_label))
         {
-            break;
+            return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
         }
     }
 
-    if (0 == selectable_count)
+    if (0 == selectable_total)
     {
-        (void) net_appendf(g_net_metric_buffer,
-                           sizeof(g_net_metric_buffer),
-                           &offset,
-                           "<p class='warn'>Nenhum perfil com cartao RFID vinculado esta disponivel para o modo reuniao.</p>");
+        if (!net_appendf(g_net_metric_buffer,
+                         sizeof(g_net_metric_buffer),
+                         &offset,
+                         "<tr><td colspan='5'>Nenhum perfil com cartao RFID vinculado esta disponivel.</td></tr>"))
+        {
+            return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
+        }
+    }
+    else if (0 == rendered_count)
+    {
+        if (!net_appendf(g_net_metric_buffer,
+                         sizeof(g_net_metric_buffer),
+                         &offset,
+                         "<tr><td colspan='5'>Nao ha perfis nesta pagina. Volte para a primeira pagina.</td></tr>"))
+        {
+            return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
+        }
     }
 
     if (!net_appendf(g_net_metric_buffer,
                      sizeof(g_net_metric_buffer),
                      &offset,
-                     "</div>"
-                     "<p class='muted'>Perfis sem cartao nao aparecem nessa selecao. Marque os membros permitidos e clique em iniciar.</p>"
-                     "<div class='actions'><button class='btn' type='submit'>Iniciar modo reuniao</button><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
+                     "</table></div>"
+                     "<form action='/meeting_mode_start' method='post'>"
+                     "<div class='actions'>%s%s<a class='small secondary' href='/meeting_mode_clear?page=%d'>Limpar selecao</a><button class='btn' type='submit'>Iniciar modo reuniao</button><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
                      "</form>"
-                     "<script>"
-                     "function syncMeetingModeSelection(){"
-                     "var values=[];"
-                     "var checks=document.querySelectorAll('.meeting-member');"
-                     "for(var i=0;i<checks.length;i++){if(checks[i].checked){values.push(checks[i].value);}}"
-                     "document.getElementById('meeting_mode_selected').value=values.join(',');"
-                     "return true;"
-                     "}"
-                     "</script>"))
+                     "</div></div></body></html>",
+                     prev_button,
+                     next_button,
+                     page))
     {
-        return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
     }
 
-    return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", g_net_metric_buffer, message);
+    return send_html_response(server_ptr, packet_ptr, g_net_metric_buffer);
 }
 
 static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const char *form_data)
 {
-    char selected_text[512];
     int selected_indices[STORAGE_MAX_USERS];
     int selected_count;
     unsigned int selected_profiles = 0U;
     unsigned int allowed_cards = 0U;
+    int user_count;
+
+    SSP_PARAMETER_NOT_USED(form_data);
 
     if (!net_admin_is_authenticated())
     {
         return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para iniciar o modo reuniao.</div>");
     }
 
-    selected_text[0] = '\0';
-    (void) query_get_value_raw(form_data, "selected", selected_text, sizeof(selected_text));
-    selected_count = parse_profile_index_csv(selected_text, selected_indices, STORAGE_MAX_USERS);
+    net_meeting_mode_draft_sync_from_active();
+    selected_count = 0;
+    user_count = storage_user_count();
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if (!g_net_meeting_draft_selected[i])
+        {
+            continue;
+        }
+
+        if (!storage_profile_get(i, &profile) || (0U == profile.card_count))
+        {
+            continue;
+        }
+
+        if (selected_count < STORAGE_MAX_USERS)
+        {
+            selected_indices[selected_count++] = i;
+        }
+    }
+
     if (selected_count <= 0)
     {
         return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Selecione ao menos um perfil com cartao para iniciar a reuniao.</div>");
@@ -4070,6 +4437,7 @@ static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const ch
     {
         char message[192];
 
+        g_net_meeting_draft_initialized = false;
         snprintf(message,
                  sizeof(message),
                  "<div class='card ok'>Modo reuniao ativado com %u perfil(is) e %u cartao(oes) liberado(s). Apenas os membros selecionados entram por RFID.</div>",
@@ -4077,6 +4445,56 @@ static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const ch
                  allowed_cards);
         return light_redirect_with_flash(server_ptr, "/meeting_mode", message);
     }
+}
+
+static UINT handle_light_meeting_mode_toggle(NX_HTTP_SERVER *server_ptr, const char *query)
+{
+    storage_user_profile_t profile;
+    char location[32];
+    int index = query_get_int(query, "index", -1);
+    int page = query_get_int(query, "page", 0);
+
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para editar a selecao do modo reuniao.</div>");
+    }
+
+    if (page < 0)
+    {
+        page = 0;
+    }
+
+    snprintf(location, sizeof(location), "/meeting_mode/%d", page);
+    if ((index < 0) || (index >= STORAGE_MAX_USERS) ||
+        !storage_profile_get(index, &profile) ||
+        (0U == profile.card_count))
+    {
+        return light_redirect_with_flash(server_ptr, location, "<div class='card warn'>Selecione um perfil valido com cartao RFID.</div>");
+    }
+
+    net_meeting_mode_draft_sync_from_active();
+    g_net_meeting_draft_selected[index] = !g_net_meeting_draft_selected[index];
+    return light_redirect_with_flash(server_ptr, location, "<div class='card ok'>Selecao do modo reuniao atualizada.</div>");
+}
+
+static UINT handle_light_meeting_mode_clear(NX_HTTP_SERVER *server_ptr, const char *query)
+{
+    char location[32];
+    int page = query_get_int(query, "page", 0);
+
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para limpar a selecao do modo reuniao.</div>");
+    }
+
+    if (page < 0)
+    {
+        page = 0;
+    }
+
+    net_meeting_mode_draft_reset();
+    snprintf(location, sizeof(location), "/meeting_mode/%d", page);
+    return light_redirect_with_flash(server_ptr, location, "<div class='card ok'>Selecao do modo reuniao limpa.</div>");
 }
 
 static UINT handle_light_meeting_mode_stop(NX_HTTP_SERVER *server_ptr)
@@ -4087,6 +4505,7 @@ static UINT handle_light_meeting_mode_stop(NX_HTTP_SERVER *server_ptr)
     }
 
     storage_meeting_mode_stop();
+    g_net_meeting_draft_initialized = false;
     return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card ok'>Modo reuniao encerrado. O acesso voltou ao comportamento normal.</div>");
 }
 
@@ -4342,6 +4761,30 @@ static UINT handle_light_import_profiles(NX_HTTP_SERVER *server_ptr, const char 
     return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card ok'>Importação agendada. Recarregue a página em alguns instantes para ver o resultado.</div>");
 }
 
+static UINT handle_api_door_open(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
+{
+    static const char ok_json[] = "{\"ok\":true,\"message\":\"Door open command sent.\"}";
+    static const char unauthorized_json[] = "{\"ok\":false,\"error\":\"unauthorized\"}";
+
+    if (!net_api_request_is_authorized(packet_ptr))
+    {
+        return send_buffer_status_response(server_ptr,
+                                           packet_ptr,
+                                           NX_HTTP_STATUS_UNAUTHORIZED,
+                                           unauthorized_json,
+                                           sizeof(unauthorized_json) - 1U,
+                                           "application/json");
+    }
+
+    app_post_event(EVENT_DOOR_OPEN, "API");
+    return send_buffer_status_response(server_ptr,
+                                       packet_ptr,
+                                       NX_HTTP_STATUS_OK,
+                                       ok_json,
+                                       sizeof(ok_json) - 1U,
+                                       "application/json");
+}
+
 UINT authentication_check(NX_HTTP_SERVER *server_ptr,
                           UINT request_type,
                           CHAR *resource,
@@ -4493,7 +4936,22 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         }
         if (0 == strcmp(path, "/meeting_mode"))
         {
-            return render_light_meeting_mode_page(server_ptr, packet_ptr, NULL);
+            return render_light_meeting_mode_page(server_ptr, packet_ptr, NULL, query_get_int(query, "page", 0));
+        }
+        if (0 == strncmp(path, "/meeting_mode/", strlen("/meeting_mode/")))
+        {
+            return render_light_meeting_mode_page(server_ptr,
+                                                  packet_ptr,
+                                                  NULL,
+                                                  net_path_get_index_after_prefix(path, "/meeting_mode/", 0));
+        }
+        if (0 == strcmp(path, "/meeting_mode_toggle"))
+        {
+            return handle_light_meeting_mode_toggle(server_ptr, query);
+        }
+        if (0 == strcmp(path, "/meeting_mode_clear"))
+        {
+            return handle_light_meeting_mode_clear(server_ptr, query);
         }
         if (0 == strcmp(path, "/meeting_mode_stop"))
         {
@@ -4595,6 +5053,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
     if (NX_HTTP_SERVER_POST_REQUEST == request_type)
     {
         g_net_debug_http_stage = 4U;
+        if (0 == strcmp(path, "/api/door/open"))
+        {
+            return handle_api_door_open(server_ptr, packet_ptr);
+        }
         if (0 == strcmp(path, "/login"))
         {
             return handle_light_login(server_ptr, body);

@@ -1,0 +1,14 @@
+{
+  "name": "node-door-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Relay HTTP em Node.js para abrir a porta pela API do firmware.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -2,7 +2,7 @@
 
 Documentacao principal do projeto `IoTRamoRenesas`.
 
-Ultima revisao desta documentacao: `2026-04-07`
+Ultima revisao desta documentacao: `2026-05-09`
 
 ## 1. Visao geral
 
@@ -30,6 +30,7 @@ Funciona hoje:
 - log de acesso persistido na QSPI
 - DHCP para obter IP automaticamente
 - sincronizacao de relogio por NTP
+- API HTTP protegida por token para abertura remota da porta
 
 Pontos importantes do estado atual:
 
@@ -92,12 +93,14 @@ Mapeamento atual em [`src/gpio.c`](./src/gpio.c):
 - rele da porta: `D6 -> P613`
 - rele da luz: `D5 -> P608`
 - botao da porta: `P008`
+- botao externo da porta: `D4 -> P112`
 - botao da luz: `P009`
 
 Comportamento:
 
 - a porta abre por pulso temporizado de `2s`
 - o fechamento automatico nao gera evento de log
+- o botao em `D4` atua como disparo externo adicional da porta em modo ocioso
 - os botoes locais tambem podem disparar eventos de UI
 - os pinos dos reles sao configurados manualmente em `gpio_init()`, pois nao dependem do `pin_data.c`
 
@@ -304,6 +307,7 @@ Rotas de acao:
 - `/import_profiles`
 - `/portaon`
 - `/lampadatoggle`
+- `POST /api/door/open`
 - `/upload_photo_begin`
 - `/upload_photo_chunk`
 - `/upload_photo_commit`
@@ -328,6 +332,36 @@ Implementado em [`src/net.c`](./src/net.c) com:
 - validacao por perfis administradores persistidos
 - fallback `WEB_ADMIN_PIN`
 - timeout de sessao em `WEB_ADMIN_SESSION_TICKS`
+
+## 7.5 API HTTP para abertura da porta
+
+Existe uma rota dedicada para integracoes externas:
+
+- `POST /api/door/open`
+
+Autenticacao aceita um destes headers:
+
+- `X-API-KEY: <chave>`
+- `Authorization: Bearer <chave>`
+
+A chave usada hoje e a constante `API_KEY`, definida em [`src/main.c`](./src/main.c). Antes de usar em producao, o ideal e trocar o valor padrao por uma chave propria.
+
+Exemplo em JavaScript:
+
+```js
+await fetch("http://192.168.11.2/api/door/open", {
+  method: "POST",
+  headers: {
+    "X-API-KEY": "SuperStrongKey123!"
+  }
+});
+```
+
+Resposta de sucesso:
+
+```json
+{"ok":true,"message":"Door open command sent."}
+```
 
 ## 8. Modelo de dados de usuario
 

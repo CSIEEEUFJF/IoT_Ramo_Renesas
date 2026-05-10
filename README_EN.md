@@ -2,7 +2,7 @@
 
 Main project documentation for `IoTRamoRenesas`.
 
-Last review of this documentation: `2026-04-07`
+Last review of this documentation: `2026-05-09`
 
 ## 1. Overview
 
@@ -30,6 +30,7 @@ Working today:
 - access log persisted in QSPI
 - DHCP to obtain IP automatically
 - clock synchronization via NTP
+- token-protected HTTP API for remote door opening
 
 Important points about the current state:
 
@@ -92,12 +93,14 @@ Current mapping in [`src/gpio.c`](./src/gpio.c):
 - door relay: `D6 -> P613`
 - light relay: `D5 -> P608`
 - door button: `P008`
+- external door button: `D4 -> P112`
 - light button: `P009`
 
 Behavior:
 
 - door opens with a timed `2s` pulse
 - automatic closing does not generate a log event
+- the `D4` button acts as an additional external door trigger while the UI is idle
 - local buttons can also trigger UI events
 - relay pins are configured manually in `gpio_init()`, instead of relying on `pin_data.c`
 
@@ -304,6 +307,7 @@ Action routes:
 - `/import_profiles`
 - `/portaon`
 - `/lampadatoggle`
+- `POST /api/door/open`
 - `/upload_photo_begin`
 - `/upload_photo_chunk`
 - `/upload_photo_commit`
@@ -328,6 +332,36 @@ Implemented in [`src/net.c`](./src/net.c) with:
 - validation against persisted administrator profiles
 - `WEB_ADMIN_PIN` fallback
 - session timeout in `WEB_ADMIN_SESSION_TICKS`
+
+## 7.5 HTTP API for door opening
+
+There is a dedicated route for external integrations:
+
+- `POST /api/door/open`
+
+Authentication accepts either of these headers:
+
+- `X-API-KEY: <key>`
+- `Authorization: Bearer <key>`
+
+The key currently in use is the `API_KEY` constant defined in [`src/main.c`](./src/main.c). Before using this in production, the default value should be replaced with a private key of your own.
+
+JavaScript example:
+
+```js
+await fetch("http://192.168.11.2/api/door/open", {
+  method: "POST",
+  headers: {
+    "X-API-KEY": "SuperStrongKey123!"
+  }
+});
+```
+
+Success response:
+
+```json
+{"ok":true,"message":"Door open command sent."}
+```
 
 ## 8. User data model
 
