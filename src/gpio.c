@@ -12,6 +12,8 @@
 #define BTN_POLL_MS         50
 #define BTN_ADMIN_HOLD_TICKS ((TX_TIMER_TICKS_PER_SECOND * 3U) / 2U)
 
+static volatile ULONG g_door_open_command_seq = 0U;
+
 void gpio_init(void)
 {
     /* Estes pinos nao sao inicializados pelo pin_data gerado, entao forçamos o modo GPIO. */
@@ -33,6 +35,10 @@ void gpio_init(void)
 void gpio_set_door(bool open)
 {
     g_ioport.p_api->pinWrite(PIN_RELAY_DOOR, open ? IOPORT_LEVEL_LOW : IOPORT_LEVEL_HIGH);
+    if (open)
+    {
+        g_door_open_command_seq++;
+    }
 }
 
 void gpio_set_light(bool on)
@@ -53,6 +59,7 @@ void thread_gpio_entry(ULONG arg)
     ULONG combo_start_tick = 0U;
 
     ULONG door_open_tick = 0;
+    ULONG last_door_open_command_seq = 0U;
     bool is_door_pulsing = false;
     const ULONG DOOR_PULSE_TICKS = (DOOR_OPEN_TIME_MS * TX_TIMER_TICKS_PER_SECOND) / 1000;
 
@@ -175,7 +182,7 @@ void thread_gpio_entry(ULONG arg)
             }
         }
 
-        if ((APP_UI_MODE_IDLE == ui_mode) && last_btn_door_ext_pressed && !btn_door_ext_pressed)
+        if (!last_btn_door_ext_pressed && btn_door_ext_pressed)
         {
             app_post_event(EVENT_DOOR_OPEN, "BOTAO_D4");
         }
@@ -188,9 +195,10 @@ void thread_gpio_entry(ULONG arg)
         bool current_door = g_app_state.door_open;
         app_state_unlock();
 
-        if (current_door && !is_door_pulsing) {
+        if (current_door && (last_door_open_command_seq != g_door_open_command_seq)) {
             is_door_pulsing = true;
             door_open_tick = tx_time_get();
+            last_door_open_command_seq = g_door_open_command_seq;
         } else if (current_door && is_door_pulsing) {
             if ((tx_time_get() - door_open_tick) >= DOOR_PULSE_TICKS) {
                 app_post_event(EVENT_DOOR_CLOSE, NULL);

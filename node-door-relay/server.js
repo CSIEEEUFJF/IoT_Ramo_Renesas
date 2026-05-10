@@ -34,52 +34,119 @@ function loadDotEnv(filePath = path.join(__dirname, ".env")) {
 }
 
 function loadConfig(env = process.env) {
+  const deviceUrl = parseDeviceUrl(env.DEVICE_URL || "");
   const config = {
-    port: parseInteger(env.PORT, 8080),
-    deviceUrl: env.DEVICE_URL || "",
+    port: parseIntegerInRange(env.PORT, 8080, 1, 65535, "PORT"),
+    host: env.HOST || "127.0.0.1",
+    deviceUrl: deviceUrl.toString(),
     deviceApiKey: env.DEVICE_API_KEY || "",
     relayToken: env.RELAY_TOKEN || "",
-    allowOrigin: env.ALLOW_ORIGIN || "*",
-    requestTimeoutMs: parseInteger(env.REQUEST_TIMEOUT_MS, 5000)
+    allowOrigins: parseAllowOrigins(env.ALLOW_ORIGIN || ""),
+    requestTimeoutMs: parseIntegerInRange(env.REQUEST_TIMEOUT_MS, 5000, 500, 30000, "REQUEST_TIMEOUT_MS"),
+    openCooldownMs: parseIntegerInRange(env.OPEN_COOLDOWN_MS, 2000, 0, 60000, "OPEN_COOLDOWN_MS"),
+    exposeUpstreamBody: env.EXPOSE_UPSTREAM_BODY === "1"
   };
-
-  if (!config.deviceUrl) {
-    throw new Error("DEVICE_URL nao definido.");
-  }
 
   if (!config.deviceApiKey) {
     throw new Error("DEVICE_API_KEY nao definido.");
+  }
+  if (isPlaceholderSecret(config.deviceApiKey)) {
+    throw new Error("DEVICE_API_KEY ainda esta com valor de exemplo.");
   }
 
   if (!config.relayToken) {
     throw new Error("RELAY_TOKEN nao definido.");
   }
+  if (isPlaceholderSecret(config.relayToken)) {
+    throw new Error("RELAY_TOKEN ainda esta com valor de exemplo.");
+  }
 
   return config;
 }
 
-function parseInteger(value, fallbackValue) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return fallbackValue;
+function isPlaceholderSecret(value) {
+  const placeholders = new Set([
+    "troque-pela-api-key-da-placa",
+    "gere-um-token-longo-e-aleatorio",
+    "troque-esta-chave"
+  ]);
+
+  return placeholders.has(value);
+}
+
+function normalizeRuntimeConfig(config) {
+  return {
+    ...config,
+    host: config.host || "127.0.0.1",
+    allowOrigins: Array.isArray(config.allowOrigins) ? config.allowOrigins : [],
+    requestTimeoutMs: Number.isFinite(config.requestTimeoutMs) ? config.requestTimeoutMs : 5000,
+    openCooldownMs: Number.isFinite(config.openCooldownMs) ? config.openCooldownMs : 2000,
+    exposeUpstreamBody: config.exposeUpstreamBody === true
+  };
+}
+
+function parseDeviceUrl(value) {
+  if (!value) {
+    throw new Error("DEVICE_URL nao definido.");
+  }
+
+  const parsed = new URL(value);
+  if ((parsed.protocol !== "http:") && (parsed.protocol !== "https:")) {
+    throw new Error("DEVICE_URL deve usar http ou https.");
   }
 
   return parsed;
 }
 
-function setCorsHeaders(response, allowOrigin) {
-  response.setHeader("Access-Control-Allow-Origin", allowOrigin);
-  response.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Relay-Token, Authorization");
+function parseAllowOrigins(value) {
+  return value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 }
 
-function writeJson(response, statusCode, payload, allowOrigin) {
+function parseIntegerInRange(value, fallbackValue, minValue, maxValue, name) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return fallbackValue;
+  }
+
+  if ((parsed < minValue) || (parsed > maxValue)) {
+    throw new Error(`${name} deve ficar entre ${minValue} e ${maxValue}.`);
+  }
+
+  return parsed;
+}
+
+function originIsAllowed(origin, allowOrigins) {
+  if (!origin || allowOrigins.length === 0) {
+    return false;
+  }
+
+  return allowOrigins.includes("*") || allowOrigins.includes(origin);
+}
+
+function setCorsHeaders(request, response, config) {
+  const origin = request.headers.origin;
+
+  if (!originIsAllowed(origin, config.allowOrigins)) {
+    return false;
+  }
+
+  response.setHeader("Access-Control-Allow-Origin", config.allowOrigins.includes("*") ? "*" : origin);
+  response.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Relay-Token, Authorization");
+  response.setHeader("Vary", "Origin");
+  return true;
+}
+
+function writeJson(request, response, statusCode, payload, config) {
   const body = JSON.stringify(payload);
 
   response.statusCode = statusCode;
   response.setHeader("Content-Type", "application/json; charset=utf-8");
   response.setHeader("Content-Length", Buffer.byteLength(body));
-  setCorsHeaders(response, allowOrigin);
+  setCorsHeaders(request, response, config);
   response.end(body);
 }
 
@@ -101,12 +168,19 @@ function requestIsAuthorized(request, relayToken) {
   return false;
 }
 
-function drainRequest(request) {
-  return new Promise((resolve, reject) => {
-    request.on("error", reject);
-    request.on("end", resolve);
-    request.resume();
-  });
+function requestHasEmptyBody(request) {
+  const contentLength = request.headers["content-length"];
+  const transferEncoding = request.headers["transfer-encoding"];
+
+  if (typeof transferEncoding === "string" && transferEncoding.length > 0) {
+    return false;
+  }
+
+  if (typeof contentLength === "undefined") {
+    return true;
+  }
+
+  return Number.parseInt(contentLength, 10) === 0;
 }
 
 function forwardDoorOpen(config) {
@@ -153,61 +227,104 @@ function forwardDoorOpen(config) {
 }
 
 function createServer(config) {
+  const runtimeConfig = normalizeRuntimeConfig(config);
+  let lastDoorOpenAt = 0;
+  let doorOpenInFlight = false;
+
   return http.createServer(async (request, response) => {
-    const requestUrl = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+    let requestUrl;
+
+    try {
+      requestUrl = new URL(request.url || "/", "http://localhost");
+    } catch (error) {
+      writeJson(request, response, 400, { ok: false, error: "invalid_request" }, runtimeConfig);
+      return;
+    }
 
     if (request.method === "OPTIONS") {
+      if ((requestUrl.pathname !== "/door/open") || !setCorsHeaders(request, response, runtimeConfig)) {
+        writeJson(request, response, 403, { ok: false, error: "origin_not_allowed" }, runtimeConfig);
+        return;
+      }
+
       response.statusCode = 204;
-      setCorsHeaders(response, config.allowOrigin);
       response.end();
       return;
     }
 
     if ((request.method === "GET") && (requestUrl.pathname === "/health")) {
-      writeJson(response, 200, { ok: true, service: "node-door-relay" }, config.allowOrigin);
+      writeJson(request, response, 200, { ok: true, service: "node-door-relay" }, runtimeConfig);
       return;
     }
 
     if ((request.method === "POST") && (requestUrl.pathname === "/door/open")) {
-      try {
-        await drainRequest(request);
-      } catch (error) {
-        writeJson(response, 400, { ok: false, error: "invalid_request", detail: error.message }, config.allowOrigin);
+      if (!requestIsAuthorized(request, runtimeConfig.relayToken)) {
+        writeJson(request, response, 401, { ok: false, error: "unauthorized" }, runtimeConfig);
         return;
       }
 
-      if (!requestIsAuthorized(request, config.relayToken)) {
-        writeJson(response, 401, { ok: false, error: "unauthorized" }, config.allowOrigin);
+      if (!requestHasEmptyBody(request)) {
+        request.resume();
+        writeJson(request, response, 413, { ok: false, error: "body_not_allowed" }, runtimeConfig);
         return;
       }
 
+      if (doorOpenInFlight) {
+        writeJson(request, response, 429, { ok: false, error: "open_in_progress" }, runtimeConfig);
+        return;
+      }
+
+      if ((runtimeConfig.openCooldownMs > 0) && ((Date.now() - lastDoorOpenAt) < runtimeConfig.openCooldownMs)) {
+        writeJson(request, response, 429, { ok: false, error: "cooldown_active" }, runtimeConfig);
+        return;
+      }
+
+      doorOpenInFlight = true;
       try {
-        const upstream = await forwardDoorOpen(config);
+        const upstream = await forwardDoorOpen(runtimeConfig);
         const success = upstream.statusCode >= 200 && upstream.statusCode < 300;
         const payload = {
           ok: success,
-          upstreamStatus: upstream.statusCode,
-          upstreamBody: upstream.body
+          upstreamStatus: upstream.statusCode
         };
 
-        writeJson(response, success ? 200 : 502, payload, config.allowOrigin);
+        if (success) {
+          lastDoorOpenAt = Date.now();
+        }
+
+        if (runtimeConfig.exposeUpstreamBody) {
+          payload.upstreamBody = upstream.body;
+        }
+
+        writeJson(request, response, success ? 200 : 502, payload, runtimeConfig);
       } catch (error) {
-        writeJson(response, 502, { ok: false, error: "relay_failed", detail: error.message }, config.allowOrigin);
+        console.warn(`[node-door-relay] falha ao chamar a placa: ${error.message}`);
+        writeJson(request, response, 502, { ok: false, error: "relay_failed" }, runtimeConfig);
+      } finally {
+        doorOpenInFlight = false;
       }
 
       return;
     }
 
-    writeJson(response, 404, { ok: false, error: "not_found" }, config.allowOrigin);
+    writeJson(request, response, 404, { ok: false, error: "not_found" }, runtimeConfig);
   });
 }
 
 function startServer(config) {
-  const server = createServer(config);
+  const runtimeConfig = normalizeRuntimeConfig(config);
+  const server = createServer(runtimeConfig);
 
-  server.listen(config.port, () => {
-    console.log(`[node-door-relay] ouvindo em http://0.0.0.0:${config.port}`);
-    console.log(`[node-door-relay] encaminhando para ${config.deviceUrl}`);
+  server.requestTimeout = runtimeConfig.requestTimeoutMs + 1000;
+  server.headersTimeout = 5000;
+  server.keepAliveTimeout = 5000;
+
+  server.listen(runtimeConfig.port, runtimeConfig.host, () => {
+    const address = server.address();
+    const actualPort = (address && typeof address === "object") ? address.port : runtimeConfig.port;
+
+    console.log(`[node-door-relay] ouvindo em http://${runtimeConfig.host}:${actualPort}`);
+    console.log(`[node-door-relay] encaminhando para ${runtimeConfig.deviceUrl}`);
   });
 
   return server;
@@ -215,7 +332,11 @@ function startServer(config) {
 
 if (require.main === module) {
   try {
-    startServer(loadConfig());
+    const server = startServer(loadConfig());
+    server.on("error", (error) => {
+      console.error(`[node-door-relay] erro do servidor: ${error.message}`);
+      process.exitCode = 1;
+    });
   } catch (error) {
     console.error(`[node-door-relay] falha ao iniciar: ${error.message}`);
     process.exitCode = 1;
