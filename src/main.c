@@ -77,7 +77,8 @@ volatile app_state_t g_app_state = {
 };
 
 TX_QUEUE g_event_queue;
-static uint8_t event_queue_buf[EVENT_QUEUE_SIZE * sizeof(app_event_t)];
+#define EVENT_QUEUE_MESSAGE_WORDS ((sizeof(app_event_t) + sizeof(ULONG) - 1U) / sizeof(ULONG))
+static ULONG event_queue_buf[EVENT_QUEUE_SIZE * EVENT_QUEUE_MESSAGE_WORDS] BSP_ALIGN_VARIABLE(8);
 volatile UINT g_app_debug_event_queue_status = TX_SUCCESS;
 volatile ULONG g_app_debug_event_queue_fail_count = 0U;
 
@@ -487,7 +488,7 @@ void hal_entry(void)
     tx_mutex_create(&g_state_mutex, "state_mutex", TX_NO_INHERIT);
 
     tx_queue_create(&g_event_queue, "event_queue",
-                    sizeof(app_event_t) / sizeof(uint32_t),
+                    EVENT_QUEUE_MESSAGE_WORDS,
                     event_queue_buf, sizeof(event_queue_buf));
 
     tx_thread_create(&thread_ui, "ui", thread_ui_entry, 0,
@@ -548,11 +549,13 @@ void app_post_event(app_event_type_t type, const char * data)
     switch (type)
     {
         case EVENT_DOOR_OPEN:
+            app_metric_begin_door((NULL != data) && ('\0' != data[0]) ? data : "manual");
             app_set_door(true);
             break;
 
         case EVENT_DOOR_CLOSE:
             app_set_door(false);
+            app_metric_finish_door(true);
             break;
 
         case EVENT_LIGHT_ON:

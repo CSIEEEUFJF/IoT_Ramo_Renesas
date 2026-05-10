@@ -1,10 +1,8 @@
 # Projeto e Implementação de uma Plataforma Embarcada de Controle de Acesso com Ethernet baseada em Microcontrolador Renesas Synergy
 
-English version available at [`README_EN.md`](README_EN.md)
-
 Documentacao principal do projeto `IoTRamoRenesas`.
 
-Ultima revisao desta documentacao: `2026-03-20`
+Ultima revisao desta documentacao: `2026-05-09`
 
 ## 1. Visao geral
 
@@ -32,6 +30,7 @@ Funciona hoje:
 - log de acesso persistido na QSPI
 - DHCP para obter IP automaticamente
 - sincronizacao de relogio por NTP
+- API HTTP protegida por token para abertura remota da porta
 
 Pontos importantes do estado atual:
 
@@ -40,7 +39,7 @@ Pontos importantes do estado atual:
 - o PIN `1234` continua ativo como fallback padrao
 - o fluxo de porta registra somente abertura, nao fechamento
 - a tela reduz o brilho visual para cerca de `30%` apos `60s` de inatividade
-- os LEDs onboard expostos pelo BSP sobem apagados
+- os reles de porta e luz sao configurados explicitamente como GPIO no boot
 
 ## 3. Hardware e perifericos
 
@@ -91,26 +90,19 @@ Touch:
 
 Mapeamento atual em [`src/gpio.c`](./src/gpio.c):
 
-- rele da porta: `P006`
-- rele da luz: `P005`
+- rele da porta: `D6 -> P613`
+- rele da luz: `D5 -> P608`
 - botao da porta: `P008`
+- botao externo da porta: `D4 -> P112`
 - botao da luz: `P009`
 
 Comportamento:
 
-- a porta abre por pulso temporizado de `5s`
+- a porta abre por pulso temporizado de `2s`
 - o fechamento automatico nao gera evento de log
+- o botao em `D4` atua como disparo externo adicional da porta em modo ocioso
 - os botoes locais tambem podem disparar eventos de UI
-
-### 3.5 LEDs onboard
-
-O BSP do kit expoe oficialmente 3 LEDs em [`synergy/board/s7g2_sk/bsp_leds.c`](./synergy/board/s7g2_sk/bsp_leds.c):
-
-- `LED1_GREEN`
-- `LED2_RED`
-- `LED3_YELLOW`
-
-Em [`src/gpio.c`](./src/gpio.c), todos esses LEDs sao desligados no boot via `R_BSP_LedsGet()`.
+- os pinos dos reles sao configurados manualmente em `gpio_init()`, pois nao dependem do `pin_data.c`
 
 ## 4. Estrutura do repositorio
 
@@ -180,7 +172,6 @@ Arquivos de apoio:
   - rele da porta
   - rele da luz
   - botoes fisicos
-  - desligamento dos LEDs onboard
 
 ## 5.2 Threads da aplicacao
 
@@ -316,6 +307,7 @@ Rotas de acao:
 - `/import_profiles`
 - `/portaon`
 - `/lampadatoggle`
+- `POST /api/door/open`
 - `/upload_photo_begin`
 - `/upload_photo_chunk`
 - `/upload_photo_commit`
@@ -338,8 +330,107 @@ Parametros atuais:
 Implementado em [`src/net.c`](./src/net.c) com:
 
 - validacao por perfis administradores persistidos
-- fallback `WEB_ADMIN_PIN`
+- fallback `WEB_ADMIN_PIN` somente enquanto nenhum PIN de administrador estiver configurado nos perfis e a lista de usuários tiver sido carregada sem erro
 - timeout de sessao em `WEB_ADMIN_SESSION_TICKS`
+
+## 7.5 API HTTP para abertura da porta
+
+Existe uma rota dedicada para integracoes externas:
+
+- `POST /api/door/open`
+
+Autenticacao aceita um destes headers:
+
+- `X-API-KEY: <chave>`
+- `Authorization: Bearer <chave>`
+
+A chave usada hoje e a constante `API_KEY`, definida em [`src/main.c`](./src/main.c). Antes de usar em producao, o ideal e trocar o valor padrao por uma chave propria.
+
+Exemplo em JavaScript:
+
+```js
+await fetch("http://192.168.11.2/api/door/open", {
+  method: "POST",
+  headers: {
+    "X-API-KEY": "<sua-chave-da-placa>"
+  }
+});
+```
+
+Resposta de sucesso:
+
+```json
+{"ok":true,"message":"Door open command sent."}
+```
+
+## 7.6 API HTTP para agendamento do modo reunião
+
+O modo reunião também pode ser agendado por API. As rotas usam a mesma autenticação da abertura remota da porta:
+
+- `POST /api/meeting/schedule`
+- `POST /api/meeting/cancel`
+- `GET /api/meeting/status`
+
+O agendamento aceita JSON ou formulário `application/x-www-form-urlencoded`. Para iniciar por atraso relativo, envie `delay_seconds` e a lista `profile_indices` com os índices dos perfis autorizados:
+
+```js
+await fetch("http://192.168.11.2/api/meeting/schedule", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-API-KEY": "<sua-chave-da-placa>"
+  },
+  body: JSON.stringify({
+    delay_seconds: 300,
+    profile_indices: [0, 4, 12]
+  })
+});
+```
+
+Para horário absoluto, use `start_unix`. Nesse caso, o agendamento depende do NTP estar sincronizado antes do horário chegar:
+
+```json
+{"start_unix":1893456000,"profile_indices":[0,4,12]}
+```
+
+Para recorrência diária, adicione `recurrence: "daily"`:
+
+```json
+{"start_unix":1893456000,"profile_indices":[0,4,12],"recurrence":"daily"}
+```
+
+Para recorrência semanal, adicione `recurrence: "weekly"` e, opcionalmente, `weekdays`. Os dias usam `0=domingo`, `1=segunda`, ..., `6=sábado`:
+
+```json
+{"start_unix":1893456000,"profile_indices":[0,4,12],"recurrence":"weekly","weekdays":[1,3,5]}
+```
+
+Se `recurrence` for `"weekly"` e `weekdays` não for enviado, o firmware usa automaticamente o dia da semana de `start_unix`.
+
+Cada chamada de agendamento retorna um `id`. Esse `id` pode ser usado para cancelar apenas uma reunião pendente:
+
+```js
+await fetch("http://192.168.11.2/api/meeting/cancel", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-API-KEY": "<sua-chave-da-placa>"
+  },
+  body: JSON.stringify({ id: 3 })
+});
+```
+
+Se `POST /api/meeting/cancel` for chamado sem `id`, todos os agendamentos pendentes são removidos.
+
+Regras importantes:
+
+- cada perfil selecionado precisa existir e ter ao menos um cartão cadastrado
+- `delay_seconds` aceita até 24 horas
+- `delay_seconds` precisa de NTP sincronizado, pois o firmware converte o atraso para `start_unix` antes de salvar
+- até 8 agendamentos pendentes podem ficar salvos ao mesmo tempo
+- os agendamentos pendentes são persistidos em QSPI no arquivo `meeting.json`
+- agendamentos recorrentes mantêm o mesmo `id` e atualizam o próximo `start_unix` após cada execução
+- no horário marcado, o firmware chama a mesma lógica de `storage_meeting_mode_start(...)` usada pela página web
 
 ## 8. Modelo de dados de usuario
 
@@ -380,8 +471,10 @@ Por isso:
 Constantes relevantes em [`src/storage.c`](./src/storage.c):
 
 - `STORAGE_MEDIA_SAFE_DELAY_TICKS = 2s`
-- `JSON_BUFFER_SIZE = 4096`
+- `USERS_JSON_CHUNK_SIZE = 512`
+- `USERS_JSON_OBJECT_SIZE = 1024`
 - `ACCESS_LOG_BUFFER_SIZE = 4096`
+- `ACCESS_LOG_ROTATE_SIZE = 64 KB`
 
 ## 9.2 Arquivos persistidos
 
@@ -389,11 +482,14 @@ Arquivos principais:
 
 - `users.json`
 - `access.log`
+- `meeting.json`
 - `photo_XXXXXXXX.bin`
 
 ### `users.json`
 
 Guarda os perfis persistidos.
+
+O arquivo e gravado em partes pequenas, perfil por perfil, para nao depender de um buffer unico de 8 KB. A gravacao usa `users.tmp` e `users.bak` para evitar que uma falha no meio da escrita destrua o ultimo arquivo valido. Na leitura do boot, o parser tambem processa objetos em blocos e mantem o limite operacional de `STORAGE_MAX_USERS`.
 
 Formato atual aproximado:
 
@@ -431,6 +527,39 @@ Cada linha e serializada como:
 unix_utc|tipo_evento|dado|usuario
 ```
 
+Observacoes:
+
+- a gravacao e incremental, em append
+- o arquivo ativo gira por tamanho e usa `access.bak` como arquivo de rotacao
+- o boot recarrega o final do log persistido, lendo `access.bak` antes de `access.log` para preservar a ordem dos eventos mais recentes
+
+### `meeting.json`
+
+Guarda a fila de agendamentos pendentes do modo reunião.
+
+Formato atual aproximado:
+
+```json
+[
+  {
+    "id": 1,
+    "start_unix": 1893456000,
+    "recurrence": 2,
+    "weekdays_mask": 42,
+    "profiles": [0, 4, 12]
+  }
+]
+```
+
+Observacoes:
+
+- a gravacao usa `meeting.tmp` e `meeting.bak` para evitar perda do arquivo anterior durante uma falha
+- o limite operacional e `STORAGE_MEETING_SCHEDULE_MAX_ITEMS`, atualmente `8`
+- `recurrence` usa `0=unico`, `1=diario` e `2=semanal`
+- `weekdays_mask` usa bits de domingo a sabado; por exemplo, `42` representa segunda, quarta e sexta
+- agendamentos unicos sao removidos da fila quando chegam ao horario de inicio
+- agendamentos recorrentes permanecem na fila e avancam para a proxima ocorrencia futura
+
 ### `photo_XXXXXXXX.bin`
 
 Cada foto persistida usa um nome derivado do `photo_id`.
@@ -455,6 +584,7 @@ APIs principais em [`src/storage.h`](./src/storage.h):
 
 - `storage_persist_now()`
 - `storage_persist_wait()`
+- `storage_access_log_enqueue()`
 - `storage_access_log_persist_now()`
 - `storage_photo_persist_now()`
 - `storage_photo_ensure_loaded()`
@@ -632,8 +762,9 @@ Pagina web:
 
 Persistencia:
 
-- salva em `access.log` na QSPI
-- recarrega no boot com atraso seguro
+- salva em `access.log` na QSPI com append incremental
+- gira para `access.bak` quando o arquivo ativo atinge o limite configurado
+- recarrega no boot com atraso seguro, lendo o final dos arquivos persistidos
 
 ## 14. Rede
 
@@ -798,5 +929,3 @@ Para contexto adicional:
 - [`NETWORK_NOTES.md`](./NETWORK_NOTES.md): historico da investigacao da pilha de rede
 
 Este `README.md` deve ser tratado como a documentacao principal e mais completa do projeto.
-
-![IEEE Computer Society Universidade Federal de Juiz de Fora Student Branch Chapter logo in white](./other/images/ieeecsufjfw.png)

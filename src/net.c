@@ -106,11 +106,15 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define PROFILES_PAGE_SIZE          8
 #define STORAGE_EXPORT_PAGE_SIZE    5
 #define ACCESS_LOG_PAGE_SIZE       10
+#define MEETING_MODE_PAGE_SIZE      4
 #define METRICS_PAGE_SIZE           4
 #define PHOTO_OPTIONS_BUFFER_SIZE 2048
 #define PROFILE_OPTIONS_BUFFER_SIZE 4096
 #define METRIC_BUFFER_SIZE 8192
 #define METRIC_GROUP_MAX 24
+#define NET_API_JSON_BUFFER_SIZE 1536
+#define NET_MEETING_SCHEDULE_STATUS_LEN 32
+#define NET_MEETING_SCHEDULE_MAX_DELAY_SECONDS (24UL * 60UL * 60UL)
 #define UPLOAD_IMAGE_DIM        160U
 #define UPLOAD_TILE_DIM         40U
 #define UPLOAD_TILE_COUNT_X     (UPLOAD_IMAGE_DIM / UPLOAD_TILE_DIM)
@@ -129,8 +133,11 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define NET_NTP_QUERY_TIMEOUT_TICKS (3U * TX_TIMER_TICKS_PER_SECOND)
 #define NET_NTP_RETRY_INTERVAL_TICKS (60U * TX_TIMER_TICKS_PER_SECOND)
 #define NET_NTP_RESYNC_INTERVAL_TICKS (6U * 60U * 60U * TX_TIMER_TICKS_PER_SECOND)
+#define NET_API_DOOR_COOLDOWN_TICKS (2U * TX_TIMER_TICKS_PER_SECOND)
 #define WEB_ADMIN_PIN           "1234"
 #define WEB_ADMIN_SESSION_TICKS (10U * 60U * TX_TIMER_TICKS_PER_SECOND)
+#define WEB_ADMIN_LOGIN_MAX_FAILURES 5U
+#define WEB_ADMIN_LOGIN_BLOCK_TICKS  (60U * TX_TIMER_TICKS_PER_SECOND)
 
 typedef struct st_net_metric_group
 {
@@ -145,6 +152,11 @@ typedef struct st_net_metric_group
 
 static char g_net_flash_message[512] = {0};
 static ULONG g_net_admin_session_deadline = 0U;
+static ULONG g_net_admin_session_ip = 0U;
+static ULONG g_net_current_request_ip = 0U;
+static ULONG g_net_admin_login_block_until = 0U;
+static ULONG g_net_api_door_next_allowed_tick = 0U;
+static unsigned int g_net_admin_login_failures = 0U;
 static bool g_net_action_mutex_ready = false;
 static TX_MUTEX g_net_action_mutex;
 static bool g_net_http_mutex_ready = false;
@@ -162,16 +174,29 @@ static int g_net_pending_upload_width = (int) UPLOAD_IMAGE_DIM;
 static int g_net_pending_upload_height = (int) UPLOAD_IMAGE_DIM;
 static uint32_t g_net_pending_upload_tile_mask = 0U;
 static char g_net_pending_upload_photo_id[STORAGE_PHOTO_ID_MAX_LEN];
+static bool g_net_meeting_draft_initialized = false;
+static bool g_net_meeting_draft_selected[STORAGE_MAX_USERS];
+static bool g_net_meeting_schedules_loaded = false;
+static storage_meeting_schedule_t g_net_meeting_schedules[STORAGE_MEETING_SCHEDULE_MAX_ITEMS];
+static int g_net_meeting_schedule_count = 0;
+static ULONG g_net_meeting_schedule_next_id = 1U;
+static ULONG g_net_meeting_schedule_last_id = 0U;
+static ULONG g_net_meeting_schedule_last_start_utc = 0U;
+static unsigned int g_net_meeting_schedule_last_selected = 0U;
+static unsigned int g_net_meeting_schedule_last_allowed = 0U;
+static char g_net_meeting_schedule_last_status[NET_MEETING_SCHEDULE_STATUS_LEN] = "idle";
 static app_metric_entry_t g_net_metric_snapshot[APP_METRIC_LOG_SIZE];
 static net_metric_group_t g_net_metric_groups[METRIC_GROUP_MAX];
 static ULONG g_net_metric_durations[APP_METRIC_LOG_SIZE];
 static char g_net_metric_buffer[METRIC_BUFFER_SIZE];
 static uint8_t g_net_download_chunk[NET_DOWNLOAD_CHUNK_SIZE];
+static char g_net_api_json[NET_API_JSON_BUFFER_SIZE];
 
 static UINT send_html_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *html);
 static UINT send_plain_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *text);
 static UINT send_javascript_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *script);
 static UINT send_buffer_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const void *data, size_t data_len, const char *content_type);
+static UINT send_buffer_status_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *status_code, const void *data, size_t data_len, const char *content_type);
 static UINT send_stream_response_header(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, ULONG data_len, const char *content_type);
 static UINT send_plain_response_fresh(NX_HTTP_SERVER *server, const char *text);
 static UINT send_plain_status_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, const char *status_code, const char *text);
@@ -179,6 +204,14 @@ static UINT send_callback_response(NX_HTTP_SERVER *server, const char *status_co
 static UINT send_redirect(NX_HTTP_SERVER *server, const char *location);
 static UINT light_redirect_with_flash(NX_HTTP_SERVER *server_ptr, const char *location, const char *message);
 static int net_format_metric_csv_line(char *out, size_t out_size, const app_metric_entry_t *entry);
+static bool net_request_source_ip(NX_PACKET *packet_ptr, ULONG *out_ip);
+static bool extract_header_from_packet(NX_PACKET *packet_ptr, const char *header_name, char *out, size_t out_size);
+static bool net_api_request_is_authorized(NX_PACKET *packet_ptr);
+static UINT handle_api_door_open(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr);
+static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body);
+static UINT handle_api_meeting_cancel(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body, const char *query);
+static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr);
+static void net_process_meeting_schedule(void);
 
 static void net_set_flash_message(const char *message)
 {
@@ -248,19 +281,58 @@ static void net_http_unlock(void)
     }
 }
 
+static bool net_request_source_ip(NX_PACKET *packet_ptr, ULONG *out_ip)
+{
+    NX_IPV4_HEADER *ip_header;
+
+    if (NULL != out_ip)
+    {
+        *out_ip = 0U;
+    }
+
+    if ((NULL == packet_ptr) ||
+        (NULL == out_ip) ||
+        (NX_IP_VERSION_V4 != packet_ptr->nx_packet_ip_version) ||
+        (NULL == packet_ptr->nx_packet_ip_header))
+    {
+        return false;
+    }
+
+    ip_header = (NX_IPV4_HEADER *) packet_ptr->nx_packet_ip_header;
+    *out_ip = ip_header->nx_ip_header_source_ip;
+    return (0U != *out_ip);
+}
+
 static bool net_admin_is_authenticated(void)
 {
-    return (tx_time_get() < g_net_admin_session_deadline);
+    if (tx_time_get() >= g_net_admin_session_deadline)
+    {
+        return false;
+    }
+
+    if (0U == g_net_admin_session_ip)
+    {
+        return false;
+    }
+
+    if (0U == g_net_current_request_ip)
+    {
+        return false;
+    }
+
+    return (g_net_current_request_ip == g_net_admin_session_ip);
 }
 
 static void net_admin_begin_session(void)
 {
     g_net_admin_session_deadline = tx_time_get() + WEB_ADMIN_SESSION_TICKS;
+    g_net_admin_session_ip = g_net_current_request_ip;
 }
 
 static void net_admin_end_session(void)
 {
     g_net_admin_session_deadline = 0U;
+    g_net_admin_session_ip = 0U;
 }
 
 static const char *net_metric_http_case_for_path(const char *path)
@@ -1073,6 +1145,133 @@ static const char *json_find_key(const char *object_start, const char *object_en
     return NULL;
 }
 
+static bool json_copy_string_value(char *out,
+                                   size_t out_size,
+                                   const char *start,
+                                   const char *limit,
+                                   const char **out_end)
+{
+    size_t write_index = 0U;
+    const char *cursor = start;
+
+    if ((NULL == out) || (0U == out_size) || (NULL == start) || (NULL == limit) || (start > limit))
+    {
+        return false;
+    }
+
+    out[0] = '\0';
+    while (cursor < limit)
+    {
+        char ch = *cursor++;
+
+        if ('"' == ch)
+        {
+            out[write_index] = '\0';
+            if (NULL != out_end)
+            {
+                *out_end = cursor - 1;
+            }
+            return true;
+        }
+
+        if (('\\' == ch) && (cursor < limit))
+        {
+            char escaped = *cursor++;
+
+            switch (escaped)
+            {
+                case '"':
+                case '\\':
+                case '/':
+                    ch = escaped;
+                    break;
+
+                case 'n':
+                    ch = '\n';
+                    break;
+
+                case 'r':
+                    ch = '\r';
+                    break;
+
+                case 't':
+                    ch = '\t';
+                    break;
+
+                default:
+                    ch = escaped;
+                    break;
+            }
+        }
+
+        if (write_index + 1U < out_size)
+        {
+            out[write_index++] = ch;
+        }
+    }
+
+    out[0] = '\0';
+    return false;
+}
+
+static const char *json_find_object_end(const char *object_start, const char *limit)
+{
+    const char *cursor = object_start;
+    unsigned int brace_depth = 0U;
+    bool in_string = false;
+    bool escaped = false;
+
+    if ((NULL == object_start) || (NULL == limit) || (object_start >= limit) || ('{' != *object_start))
+    {
+        return NULL;
+    }
+
+    while (cursor < limit)
+    {
+        char ch = *cursor++;
+
+        if (in_string)
+        {
+            if (escaped)
+            {
+                escaped = false;
+            }
+            else if ('\\' == ch)
+            {
+                escaped = true;
+            }
+            else if ('"' == ch)
+            {
+                in_string = false;
+            }
+            continue;
+        }
+
+        if ('"' == ch)
+        {
+            in_string = true;
+        }
+        else if ('{' == ch)
+        {
+            brace_depth++;
+        }
+        else if ('}' == ch)
+        {
+            if (0U == brace_depth)
+            {
+                return NULL;
+            }
+            brace_depth--;
+            if (0U == brace_depth)
+            {
+                return cursor - 1;
+            }
+        }
+    }
+
+    return NULL;
+}
+
 static void profile_cards_to_csv(const storage_user_profile_t *profile, char *out, size_t out_size)
 {
     size_t offset = 0U;
@@ -1171,57 +1370,6 @@ static bool profile_from_query(const char *query, storage_user_profile_t *profil
     return ('\0' != profile->name[0]);
 }
 
-static int parse_profile_index_csv(const char *csv, int *out_indices, int max_indices)
-{
-    const char *cursor = csv;
-    int count = 0;
-
-    if ((NULL == csv) || (NULL == out_indices) || (max_indices <= 0))
-    {
-        return 0;
-    }
-
-    while ('\0' != *cursor)
-    {
-        char *end_ptr = NULL;
-        long value;
-
-        while (('\0' != *cursor) &&
-               (isspace((unsigned char) *cursor) || (',' == *cursor) || (';' == *cursor)))
-        {
-            cursor++;
-        }
-
-        if ('\0' == *cursor)
-        {
-            break;
-        }
-
-        value = strtol(cursor, &end_ptr, 10);
-        if ((NULL == end_ptr) || (end_ptr == cursor))
-        {
-            while (('\0' != *cursor) && (',' != *cursor) && (';' != *cursor))
-            {
-                cursor++;
-            }
-            continue;
-        }
-
-        if (count < max_indices)
-        {
-            out_indices[count++] = (int) value;
-        }
-
-        cursor = end_ptr;
-        while (('\0' != *cursor) && (',' != *cursor) && (';' != *cursor))
-        {
-            cursor++;
-        }
-    }
-
-    return count;
-}
-
 static bool import_extract_json_string(const char *object_start,
                                        const char *object_end,
                                        const char *key,
@@ -1260,21 +1408,10 @@ static bool import_extract_json_string(const char *object_start,
     }
 
     start++;
-    end = strchr(start, '"');
-    if ((NULL == end) || (end > object_end))
+    if (!json_copy_string_value(out, out_size, start, object_end, &end))
     {
         out[0] = '\0';
         return false;
-    }
-
-    {
-        size_t copy_len = (size_t) (end - start);
-        if (copy_len >= out_size)
-        {
-            copy_len = out_size - 1U;
-        }
-        memcpy(out, start, copy_len);
-        out[copy_len] = '\0';
     }
 
     return true;
@@ -1383,31 +1520,43 @@ static void import_extract_json_cards(const char *object_start,
     }
 
     cursor++;
-    while (('\0' != *cursor) && (']' != *cursor) && (profile->card_count < STORAGE_MAX_CARDS_PER_USER))
+    while ((cursor < object_end) && (profile->card_count < STORAGE_MAX_CARDS_PER_USER))
     {
-        const char *start = strchr(cursor, '"');
+        char raw_card[UID_MAX_LEN];
         const char *end;
-        size_t copy_len;
 
-        if ((NULL == start) || (start > object_end) || (']' == *start))
+        cursor = json_skip_whitespace(cursor, object_end);
+        if ((NULL == cursor) || (cursor >= object_end) || (']' == *cursor))
         {
             break;
         }
 
-        end = strchr(start + 1, '"');
-        if ((NULL == end) || (end > object_end))
+        if (',' == *cursor)
+        {
+            cursor++;
+            continue;
+        }
+
+        if ('"' != *cursor)
         {
             break;
         }
 
-        copy_len = (size_t) (end - (start + 1));
-        if (copy_len >= sizeof(profile->cards[profile->card_count]))
+        if (!json_copy_string_value(raw_card, sizeof(raw_card), cursor + 1, object_end, &end))
         {
-            copy_len = sizeof(profile->cards[profile->card_count]) - 1U;
+            break;
         }
 
-        memcpy(profile->cards[profile->card_count], start + 1, copy_len);
-        profile->cards[profile->card_count][copy_len] = '\0';
+        {
+            size_t copy_len = strlen(raw_card);
+
+            if (copy_len >= sizeof(profile->cards[profile->card_count]))
+            {
+                copy_len = sizeof(profile->cards[profile->card_count]) - 1U;
+            }
+            memcpy(profile->cards[profile->card_count], raw_card, copy_len);
+            profile->cards[profile->card_count][copy_len] = '\0';
+        }
 
         if ('\0' != profile->cards[profile->card_count][0])
         {
@@ -1457,6 +1606,7 @@ static int import_find_existing_profile_index(const storage_user_profile_t *prof
 static int import_profiles_from_json(const char *json_text)
 {
     const char *cursor = json_text;
+    const char *json_end;
     int imported = 0;
 
     if ((NULL == json_text) || ('\0' == json_text[0]))
@@ -1464,7 +1614,8 @@ static int import_profiles_from_json(const char *json_text)
         return 0;
     }
 
-    while ((NULL != cursor) && ('\0' != *cursor))
+    json_end = json_text + strlen(json_text);
+    while ((NULL != cursor) && (cursor < json_end) && ('\0' != *cursor))
     {
         const char *name_key = strstr(cursor, "\"name\"");
         const char *object_start;
@@ -1487,7 +1638,7 @@ static int import_profiles_from_json(const char *json_text)
             break;
         }
 
-        object_end = strchr(name_key, '}');
+        object_end = json_find_object_end(object_start, json_end);
         if (NULL == object_end)
         {
             break;
@@ -1560,6 +1711,9 @@ static UINT handle_light_upload_begin(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
 
     if (!net_admin_is_authenticated())
     {
+        net_action_lock();
+        net_reset_upload_session();
+        net_action_unlock();
         return send_plain_status_response(server_ptr, packet_ptr, NX_HTTP_STATUS_UNAUTHORIZED, "ERR_AUTH");
     }
 
@@ -1613,6 +1767,9 @@ static UINT handle_light_upload_chunk(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
 
     if (!net_admin_is_authenticated())
     {
+        net_action_lock();
+        net_reset_upload_session();
+        net_action_unlock();
         return send_plain_status_response(server_ptr, packet_ptr, NX_HTTP_STATUS_UNAUTHORIZED, "ERR_AUTH");
     }
 
@@ -1684,6 +1841,9 @@ static UINT handle_light_upload_commit(NX_HTTP_SERVER *server_ptr, NX_PACKET *pa
 
     if (!net_admin_is_authenticated())
     {
+        net_action_lock();
+        net_reset_upload_session();
+        net_action_unlock();
         return send_plain_status_response(server_ptr, packet_ptr, NX_HTTP_STATUS_UNAUTHORIZED, "ERR_AUTH");
     }
 
@@ -1954,6 +2114,57 @@ static UINT send_buffer_response(NX_HTTP_SERVER *server, NX_PACKET *packet_ptr, 
     status = nx_http_server_callback_generate_response_header(server,
                                                               &packet_ptr,
                                                               NX_HTTP_STATUS_OK,
+                                                              data_len,
+                                                              (CHAR *) content_type,
+                                                              NULL);
+    if (NX_SUCCESS != status)
+    {
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    status = nx_packet_data_append(packet_ptr,
+                                   (VOID *) data,
+                                   data_len,
+                                   server->nx_http_server_packet_pool_ptr,
+                                   NET_HTTP_PACKET_WAIT_TICKS);
+    if (NX_SUCCESS != status)
+    {
+        nx_packet_release(packet_ptr);
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    status = nx_http_server_callback_packet_send(server, packet_ptr);
+    if (NX_SUCCESS != status)
+    {
+        nx_packet_release(packet_ptr);
+        g_net_debug_last_response_status = status;
+        return status;
+    }
+
+    g_net_debug_last_response_status = NX_HTTP_CALLBACK_COMPLETED;
+    return NX_HTTP_CALLBACK_COMPLETED;
+}
+
+static UINT send_buffer_status_response(NX_HTTP_SERVER *server,
+                                        NX_PACKET *packet_ptr,
+                                        const char *status_code,
+                                        const void *data,
+                                        size_t data_len,
+                                        const char *content_type)
+{
+    UINT status;
+
+    if ((NULL == server) || (NULL == packet_ptr) || (NULL == status_code) || (NULL == data) || (NULL == content_type))
+    {
+        g_net_debug_last_response_status = NX_PTR_ERROR;
+        return NX_PTR_ERROR;
+    }
+
+    status = nx_http_server_callback_generate_response_header(server,
+                                                              &packet_ptr,
+                                                              (CHAR *) status_code,
                                                               data_len,
                                                               (CHAR *) content_type,
                                                               NULL);
@@ -2463,6 +2674,13 @@ static UINT handle_attach_photo(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_pt
     bool persist_requested = false;
     SSP_PARAMETER_NOT_USED(packet_ptr);
 
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr,
+                                         "/login",
+                                         "<div class='card warn'>Autentique-se para anexar fotos aos perfis.</div>");
+    }
+
     if ((profile_index < 0) || !storage_profile_get(profile_index, &profile))
     {
         return light_redirect_with_flash(server_ptr,
@@ -2522,7 +2740,7 @@ static UINT handle_import_profiles(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet
     return send_redirect(server_ptr, "/");
 }
 
-static void extract_body_from_packet_fallback(NX_PACKET *packet_ptr, char *body_out, size_t body_size)
+static bool extract_body_from_packet_fallback(NX_PACKET *packet_ptr, char *body_out, size_t body_size)
 {
     char *req;
     char *req_end;
@@ -2532,7 +2750,7 @@ static void extract_body_from_packet_fallback(NX_PACKET *packet_ptr, char *body_
     body_out[0] = '\0';
     if ((NULL == packet_ptr) || (NULL == packet_ptr->nx_packet_prepend_ptr) || (0U == body_size))
     {
-        return;
+        return false;
     }
 
     req = (char *) packet_ptr->nx_packet_prepend_ptr;
@@ -2540,26 +2758,27 @@ static void extract_body_from_packet_fallback(NX_PACKET *packet_ptr, char *body_
     body_start = strstr(req, "\r\n\r\n");
     if ((NULL == body_start) || (body_start > req_end))
     {
-        return;
+        return true;
     }
 
     body_start += 4;
     if (body_start > req_end)
     {
-        return;
+        return true;
     }
 
     len = (size_t) (req_end - body_start);
     if (len >= body_size)
     {
-        len = body_size - 1U;
+        return false;
     }
 
     memcpy(body_out, body_start, len);
     body_out[len] = '\0';
+    return true;
 }
 
-static void extract_body_from_packet(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, char *body_out, size_t body_size)
+static bool extract_body_from_packet(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, char *body_out, size_t body_size)
 {
     ULONG content_length = 0U;
     ULONG byte_offset = 0U;
@@ -2568,19 +2787,24 @@ static void extract_body_from_packet(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
 
     if ((NULL == body_out) || (0U == body_size))
     {
-        return;
+        return false;
     }
 
     body_out[0] = '\0';
 
     if ((NULL == server_ptr) || (NULL == packet_ptr))
     {
-        return;
+        return false;
     }
 
     status = nx_http_server_content_length_get_extended(packet_ptr, &content_length);
     if ((NX_SUCCESS == status) && (content_length > 0U))
     {
+        if (content_length >= (ULONG) body_size)
+        {
+            return false;
+        }
+
         while ((byte_offset < content_length) && ((total_read + 1U) < body_size))
         {
             UINT actual_size = 0U;
@@ -2600,7 +2824,7 @@ static void extract_body_from_packet(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
                                                          &actual_size);
             if ((NX_SUCCESS != status) || (0U == actual_size))
             {
-                break;
+                return false;
             }
 
             total_read += (size_t) actual_size;
@@ -2608,13 +2832,196 @@ static void extract_body_from_packet(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
         }
 
         body_out[total_read] = '\0';
-        if (total_read > 0U)
+        return (byte_offset == content_length);
+    }
+
+    return extract_body_from_packet_fallback(packet_ptr, body_out, body_size);
+}
+
+static bool net_ascii_span_equals_ignore_case(const char *left, const char *right, size_t len)
+{
+    size_t i;
+
+    if ((NULL == left) || (NULL == right))
+    {
+        return false;
+    }
+
+    for (i = 0U; i < len; i++)
+    {
+        if (tolower((unsigned char) left[i]) != tolower((unsigned char) right[i]))
         {
-            return;
+            return false;
         }
     }
 
-    extract_body_from_packet_fallback(packet_ptr, body_out, body_size);
+    return true;
+}
+
+static const char *net_find_crlf(const char *cursor, const char *end)
+{
+    const char *p;
+
+    if ((NULL == cursor) || (NULL == end) || (cursor >= end))
+    {
+        return NULL;
+    }
+
+    for (p = cursor; (p + 1) < end; p++)
+    {
+        if ((p[0] == '\r') && (p[1] == '\n'))
+        {
+            return p;
+        }
+    }
+
+    return NULL;
+}
+
+static bool extract_header_from_packet(NX_PACKET *packet_ptr, const char *header_name, char *out, size_t out_size)
+{
+    const char *req;
+    const char *req_end;
+    const char *cursor;
+    const char *line_end;
+    size_t header_name_len;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return false;
+    }
+
+    out[0] = '\0';
+
+    if ((NULL == packet_ptr) || (NULL == packet_ptr->nx_packet_prepend_ptr) || (NULL == header_name))
+    {
+        return false;
+    }
+
+    req = (const char *) packet_ptr->nx_packet_prepend_ptr;
+    req_end = (const char *) packet_ptr->nx_packet_append_ptr;
+    if ((NULL == req_end) || (req >= req_end))
+    {
+        return false;
+    }
+
+    line_end = net_find_crlf(req, req_end);
+    if (NULL == line_end)
+    {
+        return false;
+    }
+
+    header_name_len = strlen(header_name);
+    cursor = line_end + 2;
+
+    while (cursor < req_end)
+    {
+        const char *colon = NULL;
+        const char *value_start;
+        const char *value_end;
+        const char *p;
+        size_t value_len;
+
+        line_end = net_find_crlf(cursor, req_end);
+        if (NULL == line_end)
+        {
+            break;
+        }
+
+        if (line_end == cursor)
+        {
+            break;
+        }
+
+        for (p = cursor; p < line_end; p++)
+        {
+            if (':' == *p)
+            {
+                colon = p;
+                break;
+            }
+        }
+
+        if ((NULL != colon) &&
+            (((size_t) (colon - cursor)) == header_name_len) &&
+            net_ascii_span_equals_ignore_case(cursor, header_name, header_name_len))
+        {
+            value_start = colon + 1;
+            while ((value_start < line_end) && isspace((unsigned char) *value_start))
+            {
+                value_start++;
+            }
+
+            value_end = line_end;
+            while ((value_end > value_start) && isspace((unsigned char) value_end[-1]))
+            {
+                value_end--;
+            }
+
+            value_len = (size_t) (value_end - value_start);
+            if (value_len >= out_size)
+            {
+                value_len = out_size - 1U;
+            }
+
+            memcpy(out, value_start, value_len);
+            out[value_len] = '\0';
+            return true;
+        }
+
+        cursor = line_end + 2;
+    }
+
+    return false;
+}
+
+static bool net_authorization_matches_api_key(const char *authorization_value)
+{
+    static const char bearer_prefix[] = "Bearer ";
+    const char *token;
+    size_t prefix_len = sizeof(bearer_prefix) - 1U;
+
+    if (NULL == authorization_value)
+    {
+        return false;
+    }
+
+    if (!net_ascii_span_equals_ignore_case(authorization_value, bearer_prefix, prefix_len))
+    {
+        return false;
+    }
+
+    token = authorization_value + prefix_len;
+    while (' ' == *token)
+    {
+        token++;
+    }
+
+    return (0 == strcmp(token, API_KEY));
+}
+
+static bool net_api_request_is_authorized(NX_PACKET *packet_ptr)
+{
+    char api_key_value[96];
+    char authorization_value[128];
+
+    if (extract_header_from_packet(packet_ptr, "X-API-KEY", api_key_value, sizeof(api_key_value)))
+    {
+        if (0 == strcmp(api_key_value, API_KEY))
+        {
+            return true;
+        }
+    }
+
+    if (extract_header_from_packet(packet_ptr, "Authorization", authorization_value, sizeof(authorization_value)))
+    {
+        if (net_authorization_matches_api_key(authorization_value))
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static UINT handle_remove_user(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *query)
@@ -2691,6 +3098,1215 @@ static bool net_appendf(char *buffer, size_t buffer_size, size_t *offset, const 
 
     *offset += (size_t) written;
     return true;
+}
+
+static void net_meeting_mode_draft_reset(void)
+{
+    memset(g_net_meeting_draft_selected, 0, sizeof(g_net_meeting_draft_selected));
+    g_net_meeting_draft_initialized = true;
+}
+
+static void net_meeting_mode_draft_sync_from_active(void)
+{
+    int user_count;
+
+    if (g_net_meeting_draft_initialized)
+    {
+        return;
+    }
+
+    net_meeting_mode_draft_reset();
+    user_count = storage_user_count();
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if (storage_profile_get(i, &profile) && storage_meeting_mode_profile_selected(&profile))
+        {
+            g_net_meeting_draft_selected[i] = true;
+        }
+    }
+}
+
+static unsigned int net_meeting_mode_draft_profile_count(void)
+{
+    unsigned int count = 0U;
+    int user_count = storage_user_count();
+
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if (g_net_meeting_draft_selected[i] &&
+            storage_profile_get(i, &profile) &&
+            (profile.card_count > 0U))
+        {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+static void net_meeting_schedule_set_status_locked(const char *status)
+{
+    if (NULL == status)
+    {
+        status = "unknown";
+    }
+
+    strncpy(g_net_meeting_schedule_last_status,
+            status,
+            sizeof(g_net_meeting_schedule_last_status) - 1U);
+    g_net_meeting_schedule_last_status[sizeof(g_net_meeting_schedule_last_status) - 1U] = '\0';
+}
+
+static bool net_parse_ulong_strict(const char *text, ULONG *out_value)
+{
+    const char *cursor;
+    char *end_ptr;
+    unsigned long value;
+
+    if ((NULL == text) || (NULL == out_value))
+    {
+        return false;
+    }
+
+    cursor = text;
+    while (('\0' != *cursor) && isspace((unsigned char) *cursor))
+    {
+        cursor++;
+    }
+
+    if (('\0' == *cursor) || ('-' == *cursor))
+    {
+        return false;
+    }
+
+    value = strtoul(cursor, &end_ptr, 10);
+    if (end_ptr == cursor)
+    {
+        return false;
+    }
+
+    while (('\0' != *end_ptr) && isspace((unsigned char) *end_ptr))
+    {
+        end_ptr++;
+    }
+
+    if ('\0' != *end_ptr)
+    {
+        return false;
+    }
+
+    *out_value = (ULONG) value;
+    return true;
+}
+
+static bool net_json_get_ulong_value(const char *json, const char *key, ULONG *out_value)
+{
+    const char *limit;
+    const char *found;
+    const char *colon;
+    const char *cursor;
+
+    if ((NULL == json) || (NULL == key) || (NULL == out_value))
+    {
+        return false;
+    }
+
+    limit = json + strlen(json);
+    found = json_find_key(json, limit, key);
+    if (NULL == found)
+    {
+        return false;
+    }
+
+    colon = json_skip_whitespace(found, limit);
+    if ((NULL == colon) || (colon >= limit) || (':' != *colon))
+    {
+        return false;
+    }
+
+    cursor = json_skip_whitespace(colon + 1, limit);
+    if ((NULL == cursor) || (cursor >= limit))
+    {
+        return false;
+    }
+
+    if ('"' == *cursor)
+    {
+        char text[24];
+        const char *end_quote;
+
+        if (!json_copy_string_value(text, sizeof(text), cursor + 1, limit, &end_quote))
+        {
+            return false;
+        }
+
+        return net_parse_ulong_strict(text, out_value);
+    }
+
+    {
+        char *end_ptr;
+        unsigned long value;
+
+        if ('-' == *cursor)
+        {
+            return false;
+        }
+
+        value = strtoul(cursor, &end_ptr, 10);
+        if (end_ptr == cursor)
+        {
+            return false;
+        }
+
+        cursor = json_skip_whitespace(end_ptr, limit);
+        if ((cursor < limit) && (',' != *cursor) && ('}' != *cursor) && (']' != *cursor))
+        {
+            return false;
+        }
+
+        *out_value = (ULONG) value;
+        return true;
+    }
+}
+
+static bool net_form_get_ulong_value(const char *form, const char *key, ULONG *out_value)
+{
+    char text[24];
+
+    if ((NULL == form) || (NULL == key) || (NULL == out_value))
+    {
+        return false;
+    }
+
+    if (!query_get_value(form, key, text, sizeof(text)))
+    {
+        return false;
+    }
+
+    return net_parse_ulong_strict(text, out_value);
+}
+
+static bool net_profile_index_add_unique(int *profiles, int max_profiles, int *profile_count, long value)
+{
+    if ((NULL == profiles) || (NULL == profile_count) ||
+        (value < 0L) || (value >= (long) STORAGE_MAX_USERS))
+    {
+        return false;
+    }
+
+    for (int i = 0; i < *profile_count; i++)
+    {
+        if (profiles[i] == (int) value)
+        {
+            return true;
+        }
+    }
+
+    if (*profile_count >= max_profiles)
+    {
+        return false;
+    }
+
+    profiles[*profile_count] = (int) value;
+    (*profile_count)++;
+    return true;
+}
+
+static bool net_parse_profile_indices_csv(const char *text, int *profiles, int max_profiles, int *profile_count)
+{
+    const char *cursor;
+
+    if ((NULL == text) || (NULL == profiles) || (NULL == profile_count))
+    {
+        return false;
+    }
+
+    *profile_count = 0;
+    cursor = text;
+    while ('\0' != *cursor)
+    {
+        char *end_ptr;
+        long value;
+
+        while (('\0' != *cursor) &&
+               (isspace((unsigned char) *cursor) || (',' == *cursor) || (';' == *cursor)))
+        {
+            cursor++;
+        }
+
+        if ('\0' == *cursor)
+        {
+            break;
+        }
+
+        if ('-' == *cursor)
+        {
+            return false;
+        }
+
+        value = strtol(cursor, &end_ptr, 10);
+        if (end_ptr == cursor)
+        {
+            return false;
+        }
+
+        if (!net_profile_index_add_unique(profiles, max_profiles, profile_count, value))
+        {
+            return false;
+        }
+
+        cursor = end_ptr;
+        while (('\0' != *cursor) && isspace((unsigned char) *cursor))
+        {
+            cursor++;
+        }
+
+        if (('\0' != *cursor) && (',' != *cursor) && (';' != *cursor))
+        {
+            return false;
+        }
+    }
+
+    return (*profile_count > 0);
+}
+
+static bool net_json_get_profile_indices(const char *json, int *profiles, int max_profiles, int *profile_count)
+{
+    const char *limit;
+    const char *found;
+    const char *colon;
+    const char *cursor;
+
+    if ((NULL == json) || (NULL == profiles) || (NULL == profile_count))
+    {
+        return false;
+    }
+
+    limit = json + strlen(json);
+    found = json_find_key(json, limit, "profile_indices");
+    if (NULL == found)
+    {
+        found = json_find_key(json, limit, "profiles");
+    }
+    if (NULL == found)
+    {
+        return false;
+    }
+
+    colon = json_skip_whitespace(found, limit);
+    if ((NULL == colon) || (colon >= limit) || (':' != *colon))
+    {
+        return false;
+    }
+
+    cursor = json_skip_whitespace(colon + 1, limit);
+    if ((NULL == cursor) || (cursor >= limit))
+    {
+        return false;
+    }
+
+    *profile_count = 0;
+    if ('"' == *cursor)
+    {
+        char csv[192];
+        const char *end_quote;
+
+        if (!json_copy_string_value(csv, sizeof(csv), cursor + 1, limit, &end_quote))
+        {
+            return false;
+        }
+
+        return net_parse_profile_indices_csv(csv, profiles, max_profiles, profile_count);
+    }
+
+    if ('[' != *cursor)
+    {
+        char *end_ptr;
+        long value;
+
+        if ('-' == *cursor)
+        {
+            return false;
+        }
+
+        value = strtol(cursor, &end_ptr, 10);
+        if (end_ptr == cursor)
+        {
+            return false;
+        }
+
+        return net_profile_index_add_unique(profiles, max_profiles, profile_count, value);
+    }
+
+    cursor++;
+    while (cursor < limit)
+    {
+        cursor = json_skip_whitespace(cursor, limit);
+        if ((NULL == cursor) || (cursor >= limit))
+        {
+            return false;
+        }
+
+        if (']' == *cursor)
+        {
+            return (*profile_count > 0);
+        }
+
+        if ('"' == *cursor)
+        {
+            char text[16];
+            const char *end_quote;
+            ULONG parsed_value;
+
+            if (!json_copy_string_value(text, sizeof(text), cursor + 1, limit, &end_quote) ||
+                !net_parse_ulong_strict(text, &parsed_value) ||
+                !net_profile_index_add_unique(profiles, max_profiles, profile_count, (long) parsed_value))
+            {
+                return false;
+            }
+            cursor = end_quote + 1;
+        }
+        else
+        {
+            char *end_ptr;
+            long value;
+
+            if ('-' == *cursor)
+            {
+                return false;
+            }
+
+            value = strtol(cursor, &end_ptr, 10);
+            if (end_ptr == cursor)
+            {
+                return false;
+            }
+
+            if (!net_profile_index_add_unique(profiles, max_profiles, profile_count, value))
+            {
+                return false;
+            }
+            cursor = end_ptr;
+        }
+
+        cursor = json_skip_whitespace(cursor, limit);
+        if ((NULL == cursor) || (cursor >= limit))
+        {
+            return false;
+        }
+
+        if (',' == *cursor)
+        {
+            cursor++;
+            continue;
+        }
+
+        if (']' == *cursor)
+        {
+            return (*profile_count > 0);
+        }
+
+        return false;
+    }
+
+    return false;
+}
+
+static bool net_form_get_profile_indices(const char *form, int *profiles, int max_profiles, int *profile_count)
+{
+    char csv[192];
+
+    if ((NULL == form) || (NULL == profiles) || (NULL == profile_count))
+    {
+        return false;
+    }
+
+    if (!query_get_value(form, "profile_indices", csv, sizeof(csv)) &&
+        !query_get_value(form, "profiles", csv, sizeof(csv)))
+    {
+        return false;
+    }
+
+    return net_parse_profile_indices_csv(csv, profiles, max_profiles, profile_count);
+}
+
+static uint8_t net_meeting_weekday_from_unix(ULONG unix_utc)
+{
+    return (uint8_t) (((unix_utc / 86400UL) + 4UL) % 7UL);
+}
+
+static const char *net_meeting_recurrence_text(uint8_t recurrence)
+{
+    switch (recurrence)
+    {
+        case STORAGE_MEETING_RECURRENCE_DAILY:
+            return "daily";
+        case STORAGE_MEETING_RECURRENCE_WEEKLY:
+            return "weekly";
+        default:
+            return "none";
+    }
+}
+
+static bool net_meeting_parse_recurrence_text(const char *text, uint8_t *out_recurrence)
+{
+    char normalized[16];
+    size_t write_index = 0U;
+
+    if ((NULL == text) || (NULL == out_recurrence))
+    {
+        return false;
+    }
+
+    while (('\0' != *text) && isspace((unsigned char) *text))
+    {
+        text++;
+    }
+
+    while (('\0' != *text) && (write_index + 1U < sizeof(normalized)))
+    {
+        if (!isspace((unsigned char) *text))
+        {
+            normalized[write_index++] = (char) tolower((unsigned char) *text);
+        }
+        text++;
+    }
+    normalized[write_index] = '\0';
+
+    if ((0 == strcmp(normalized, "none")) || (0 == strcmp(normalized, "once")) || (0 == strcmp(normalized, "0")))
+    {
+        *out_recurrence = STORAGE_MEETING_RECURRENCE_NONE;
+        return true;
+    }
+    if ((0 == strcmp(normalized, "daily")) || (0 == strcmp(normalized, "diario")) ||
+        (0 == strcmp(normalized, "diaria")) || (0 == strcmp(normalized, "1")))
+    {
+        *out_recurrence = STORAGE_MEETING_RECURRENCE_DAILY;
+        return true;
+    }
+    if ((0 == strcmp(normalized, "weekly")) || (0 == strcmp(normalized, "semanal")) || (0 == strcmp(normalized, "2")))
+    {
+        *out_recurrence = STORAGE_MEETING_RECURRENCE_WEEKLY;
+        return true;
+    }
+
+    return false;
+}
+
+static bool net_json_get_recurrence_value(const char *json, uint8_t *out_recurrence, bool *out_found)
+{
+    const char *limit;
+    const char *found;
+    const char *colon;
+    const char *cursor;
+    ULONG value = 0U;
+
+    if ((NULL == json) || (NULL == out_recurrence) || (NULL == out_found))
+    {
+        return false;
+    }
+
+    *out_found = false;
+    limit = json + strlen(json);
+    found = json_find_key(json, limit, "recurrence");
+    if (NULL == found)
+    {
+        return true;
+    }
+
+    colon = json_skip_whitespace(found, limit);
+    if ((NULL == colon) || (colon >= limit) || (':' != *colon))
+    {
+        return false;
+    }
+
+    cursor = json_skip_whitespace(colon + 1, limit);
+    if ((NULL == cursor) || (cursor >= limit))
+    {
+        return false;
+    }
+
+    *out_found = true;
+    if ('"' == *cursor)
+    {
+        char text[16];
+        const char *end_quote;
+
+        if (!json_copy_string_value(text, sizeof(text), cursor + 1, limit, &end_quote))
+        {
+            return false;
+        }
+        return net_meeting_parse_recurrence_text(text, out_recurrence);
+    }
+
+    if (!net_json_get_ulong_value(json, "recurrence", &value) ||
+        (value > STORAGE_MEETING_RECURRENCE_WEEKLY))
+    {
+        return false;
+    }
+
+    *out_recurrence = (uint8_t) value;
+    return true;
+}
+
+static bool net_form_get_recurrence_value(const char *form, uint8_t *out_recurrence, bool *out_found)
+{
+    char text[16];
+
+    if ((NULL == form) || (NULL == out_recurrence) || (NULL == out_found))
+    {
+        return false;
+    }
+
+    *out_found = false;
+    if (!query_get_value(form, "recurrence", text, sizeof(text)))
+    {
+        return true;
+    }
+
+    *out_found = true;
+    return net_meeting_parse_recurrence_text(text, out_recurrence);
+}
+
+static bool net_weekday_add_unique(uint8_t *mask, long value)
+{
+    if ((NULL == mask) || (value < 0L) || (value > 6L))
+    {
+        return false;
+    }
+
+    *mask = (uint8_t) (*mask | (uint8_t) (1U << (uint8_t) value));
+    return true;
+}
+
+static bool net_parse_weekdays_csv(const char *text, uint8_t *out_mask)
+{
+    const char *cursor;
+    uint8_t mask = 0U;
+
+    if ((NULL == text) || (NULL == out_mask))
+    {
+        return false;
+    }
+
+    cursor = text;
+    while ('\0' != *cursor)
+    {
+        char *end_ptr;
+        long value;
+
+        while (('\0' != *cursor) &&
+               (isspace((unsigned char) *cursor) || (',' == *cursor) || (';' == *cursor)))
+        {
+            cursor++;
+        }
+
+        if ('\0' == *cursor)
+        {
+            break;
+        }
+
+        if ('-' == *cursor)
+        {
+            return false;
+        }
+
+        value = strtol(cursor, &end_ptr, 10);
+        if ((end_ptr == cursor) || !net_weekday_add_unique(&mask, value))
+        {
+            return false;
+        }
+
+        cursor = end_ptr;
+        while (('\0' != *cursor) && isspace((unsigned char) *cursor))
+        {
+            cursor++;
+        }
+
+        if (('\0' != *cursor) && (',' != *cursor) && (';' != *cursor))
+        {
+            return false;
+        }
+    }
+
+    *out_mask = mask;
+    return true;
+}
+
+static bool net_json_get_weekdays_value(const char *json, uint8_t *out_mask, bool *out_found)
+{
+    const char *limit;
+    const char *found;
+    const char *colon;
+    const char *cursor;
+    ULONG mask_value = 0U;
+    uint8_t mask = 0U;
+
+    if ((NULL == json) || (NULL == out_mask) || (NULL == out_found))
+    {
+        return false;
+    }
+
+    *out_found = false;
+    if (net_json_get_ulong_value(json, "weekdays_mask", &mask_value))
+    {
+        *out_mask = (uint8_t) (mask_value & STORAGE_MEETING_WEEKDAY_MASK_ALL);
+        *out_found = true;
+        return true;
+    }
+
+    limit = json + strlen(json);
+    found = json_find_key(json, limit, "weekdays");
+    if (NULL == found)
+    {
+        return true;
+    }
+
+    colon = json_skip_whitespace(found, limit);
+    if ((NULL == colon) || (colon >= limit) || (':' != *colon))
+    {
+        return false;
+    }
+
+    cursor = json_skip_whitespace(colon + 1, limit);
+    if ((NULL == cursor) || (cursor >= limit))
+    {
+        return false;
+    }
+
+    *out_found = true;
+    if ('"' == *cursor)
+    {
+        char csv[32];
+        const char *end_quote;
+
+        if (!json_copy_string_value(csv, sizeof(csv), cursor + 1, limit, &end_quote) ||
+            !net_parse_weekdays_csv(csv, &mask))
+        {
+            return false;
+        }
+        *out_mask = mask;
+        return true;
+    }
+
+    if ('[' != *cursor)
+    {
+        char *end_ptr;
+        long value;
+
+        value = strtol(cursor, &end_ptr, 10);
+        if ((end_ptr == cursor) || !net_weekday_add_unique(&mask, value))
+        {
+            return false;
+        }
+        *out_mask = mask;
+        return true;
+    }
+
+    cursor++;
+    while (cursor < limit)
+    {
+        char *end_ptr;
+        long value;
+
+        cursor = json_skip_whitespace(cursor, limit);
+        if ((NULL == cursor) || (cursor >= limit))
+        {
+            return false;
+        }
+
+        if (']' == *cursor)
+        {
+            *out_mask = mask;
+            return true;
+        }
+
+        value = strtol(cursor, &end_ptr, 10);
+        if ((end_ptr == cursor) || !net_weekday_add_unique(&mask, value))
+        {
+            return false;
+        }
+
+        cursor = json_skip_whitespace(end_ptr, limit);
+        if ((NULL == cursor) || (cursor >= limit))
+        {
+            return false;
+        }
+
+        if (',' == *cursor)
+        {
+            cursor++;
+            continue;
+        }
+
+        if (']' == *cursor)
+        {
+            *out_mask = mask;
+            return true;
+        }
+
+        return false;
+    }
+
+    return false;
+}
+
+static bool net_form_get_weekdays_value(const char *form, uint8_t *out_mask, bool *out_found)
+{
+    ULONG mask_value = 0U;
+    char csv[32];
+
+    if ((NULL == form) || (NULL == out_mask) || (NULL == out_found))
+    {
+        return false;
+    }
+
+    *out_found = false;
+    if (net_form_get_ulong_value(form, "weekdays_mask", &mask_value))
+    {
+        *out_mask = (uint8_t) (mask_value & STORAGE_MEETING_WEEKDAY_MASK_ALL);
+        *out_found = true;
+        return true;
+    }
+
+    if (!query_get_value(form, "weekdays", csv, sizeof(csv)))
+    {
+        return true;
+    }
+
+    *out_found = true;
+    return net_parse_weekdays_csv(csv, out_mask);
+}
+
+static void net_meeting_schedule_rebuild_next_id_locked(void)
+{
+    ULONG next_id = 1U;
+
+    for (int i = 0; i < g_net_meeting_schedule_count; i++)
+    {
+        if (g_net_meeting_schedules[i].id >= next_id)
+        {
+            next_id = g_net_meeting_schedules[i].id + 1U;
+        }
+    }
+
+    if (0U == next_id)
+    {
+        next_id = 1U;
+    }
+    g_net_meeting_schedule_next_id = next_id;
+}
+
+static bool net_meeting_schedule_ensure_loaded(void)
+{
+    storage_meeting_schedule_t loaded_schedules[STORAGE_MEETING_SCHEDULE_MAX_ITEMS];
+    int loaded_count;
+    bool already_loaded;
+
+    net_action_lock();
+    already_loaded = g_net_meeting_schedules_loaded;
+    net_action_unlock();
+    if (already_loaded)
+    {
+        return true;
+    }
+
+    loaded_count = storage_meeting_schedule_load(loaded_schedules, STORAGE_MEETING_SCHEDULE_MAX_ITEMS);
+    if (loaded_count < 0)
+    {
+        return false;
+    }
+
+    net_action_lock();
+    if (!g_net_meeting_schedules_loaded)
+    {
+        g_net_meeting_schedule_count = loaded_count;
+        for (int i = 0; i < loaded_count; i++)
+        {
+            g_net_meeting_schedules[i] = loaded_schedules[i];
+        }
+        g_net_meeting_schedules_loaded = true;
+        net_meeting_schedule_rebuild_next_id_locked();
+        net_meeting_schedule_set_status_locked((loaded_count > 0) ? "loaded" : "idle");
+    }
+    net_action_unlock();
+    return true;
+}
+
+static bool net_meeting_schedule_save_locked(void)
+{
+    return storage_meeting_schedule_save(g_net_meeting_schedules, g_net_meeting_schedule_count);
+}
+
+static bool net_meeting_schedule_validate_profiles(const int *profiles, int profile_count, const char **out_error)
+{
+    int user_count = storage_user_count();
+
+    if ((NULL == profiles) || (profile_count <= 0))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "no_profiles";
+        }
+        return false;
+    }
+
+    for (int i = 0; i < profile_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if ((profiles[i] < 0) || (profiles[i] >= user_count) || !storage_profile_get(profiles[i], &profile))
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "invalid_profile";
+            }
+            return false;
+        }
+
+        if (0U == profile.card_count)
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "profile_without_cards";
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool net_meeting_schedule_parse_request(const char *body,
+                                               ULONG *out_start_utc,
+                                               ULONG *out_delay_seconds,
+                                               uint8_t *out_recurrence,
+                                               uint8_t *out_weekdays_mask,
+                                               int *out_profiles,
+                                               int *out_profile_count,
+                                               const char **out_error)
+{
+    const char *cursor;
+    bool is_json;
+    bool has_delay;
+    bool has_start;
+    ULONG delay_seconds = 0U;
+    ULONG start_utc = 0U;
+    uint8_t recurrence = STORAGE_MEETING_RECURRENCE_NONE;
+    uint8_t weekdays_mask = 0U;
+    bool recurrence_found = false;
+    bool weekdays_found = false;
+    int profile_count = 0;
+
+    if (NULL != out_error)
+    {
+        *out_error = "bad_request";
+    }
+
+    if ((NULL == body) || (NULL == out_start_utc) || (NULL == out_delay_seconds) ||
+        (NULL == out_recurrence) || (NULL == out_weekdays_mask) ||
+        (NULL == out_profiles) || (NULL == out_profile_count))
+    {
+        return false;
+    }
+
+    cursor = body;
+    while (('\0' != *cursor) && isspace((unsigned char) *cursor))
+    {
+        cursor++;
+    }
+    if ('\0' == *cursor)
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "empty_body";
+        }
+        return false;
+    }
+
+    is_json = ('{' == *cursor);
+    has_delay = is_json
+                    ? net_json_get_ulong_value(cursor, "delay_seconds", &delay_seconds)
+                    : net_form_get_ulong_value(cursor, "delay_seconds", &delay_seconds);
+    has_start = is_json
+                    ? net_json_get_ulong_value(cursor, "start_unix", &start_utc)
+                    : net_form_get_ulong_value(cursor, "start_unix", &start_utc);
+
+    if (!(is_json
+              ? net_json_get_recurrence_value(cursor, &recurrence, &recurrence_found)
+              : net_form_get_recurrence_value(cursor, &recurrence, &recurrence_found)))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_recurrence";
+        }
+        return false;
+    }
+
+    if (!(is_json
+              ? net_json_get_weekdays_value(cursor, &weekdays_mask, &weekdays_found)
+              : net_form_get_weekdays_value(cursor, &weekdays_mask, &weekdays_found)))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_weekdays";
+        }
+        return false;
+    }
+
+    SSP_PARAMETER_NOT_USED(recurrence_found);
+
+    if (has_delay)
+    {
+        ULONG now_utc = 0U;
+
+        if ((0U == delay_seconds) || (delay_seconds > NET_MEETING_SCHEDULE_MAX_DELAY_SECONDS))
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "invalid_delay";
+            }
+            return false;
+        }
+
+        if (!app_time_get_utc(&now_utc))
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "time_not_synced";
+            }
+            return false;
+        }
+
+        if ((0xFFFFFFFFUL - now_utc) < delay_seconds)
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "invalid_delay";
+            }
+            return false;
+        }
+
+        *out_start_utc = now_utc + delay_seconds;
+        *out_delay_seconds = delay_seconds;
+    }
+    else if (has_start)
+    {
+        ULONG now_utc = 0U;
+
+        if ((0U == start_utc) || (app_time_get_utc(&now_utc) && (start_utc <= now_utc)))
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "start_in_past";
+            }
+            return false;
+        }
+
+        *out_start_utc = start_utc;
+        *out_delay_seconds = 0U;
+    }
+    else
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "missing_start";
+        }
+        return false;
+    }
+
+    if (!(is_json
+              ? net_json_get_profile_indices(cursor, out_profiles, STORAGE_MAX_USERS, &profile_count)
+              : net_form_get_profile_indices(cursor, out_profiles, STORAGE_MAX_USERS, &profile_count)))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_profiles";
+        }
+        return false;
+    }
+
+    if (!net_meeting_schedule_validate_profiles(out_profiles, profile_count, out_error))
+    {
+        return false;
+    }
+
+    if (STORAGE_MEETING_RECURRENCE_WEEKLY == recurrence)
+    {
+        if (!weekdays_found || (0U == (weekdays_mask & STORAGE_MEETING_WEEKDAY_MASK_ALL)))
+        {
+            weekdays_mask = (uint8_t) (1U << net_meeting_weekday_from_unix(start_utc));
+        }
+        else
+        {
+            weekdays_mask = (uint8_t) (weekdays_mask & STORAGE_MEETING_WEEKDAY_MASK_ALL);
+        }
+    }
+    else if (STORAGE_MEETING_RECURRENCE_DAILY == recurrence)
+    {
+        weekdays_mask = 0U;
+    }
+    else
+    {
+        recurrence = STORAGE_MEETING_RECURRENCE_NONE;
+        weekdays_mask = 0U;
+    }
+
+    *out_recurrence = recurrence;
+    *out_weekdays_mask = weekdays_mask;
+    *out_profile_count = profile_count;
+    return true;
+}
+
+static bool net_meeting_schedule_advance_recurring(storage_meeting_schedule_t *schedule, ULONG now_utc)
+{
+    uint64_t next_unix = 0ULL;
+
+    if (NULL == schedule)
+    {
+        return false;
+    }
+
+    if (STORAGE_MEETING_RECURRENCE_DAILY == schedule->recurrence)
+    {
+        uint64_t start_unix = (uint64_t) schedule->start_unix;
+
+        if (start_unix <= (uint64_t) now_utc)
+        {
+            uint64_t missed_days = (((uint64_t) now_utc - start_unix) / 86400ULL) + 1ULL;
+            next_unix = start_unix + (missed_days * 86400ULL);
+        }
+        else
+        {
+            next_unix = start_unix;
+        }
+    }
+    else if (STORAGE_MEETING_RECURRENCE_WEEKLY == schedule->recurrence)
+    {
+        uint8_t mask = (uint8_t) (schedule->weekdays_mask & STORAGE_MEETING_WEEKDAY_MASK_ALL);
+        uint64_t seconds_of_day = ((uint64_t) schedule->start_unix) % 86400ULL;
+        uint64_t base_day = ((uint64_t) now_utc) / 86400ULL;
+
+        if (0U == mask)
+        {
+            mask = (uint8_t) (1U << net_meeting_weekday_from_unix(schedule->start_unix));
+        }
+
+        for (uint64_t delta = 0ULL; delta <= 7ULL; delta++)
+        {
+            uint64_t candidate_day = base_day + delta;
+            uint8_t weekday = (uint8_t) ((candidate_day + 4ULL) % 7ULL);
+
+            if (0U == (mask & (uint8_t) (1U << weekday)))
+            {
+                continue;
+            }
+
+            next_unix = (candidate_day * 86400ULL) + seconds_of_day;
+            if (next_unix > (uint64_t) now_utc)
+            {
+                break;
+            }
+            next_unix = 0ULL;
+        }
+    }
+    else
+    {
+        return false;
+    }
+
+    if ((0ULL == next_unix) || (next_unix > 0xFFFFFFFFULL))
+    {
+        return false;
+    }
+
+    schedule->start_unix = (ULONG) next_unix;
+    return true;
+}
+
+static void net_process_meeting_schedule(void)
+{
+    storage_meeting_schedule_t due_schedule;
+    int due_profile_indices[STORAGE_MAX_USERS];
+    bool should_start = false;
+    ULONG now_utc = 0U;
+    unsigned int selected_profiles = 0U;
+    unsigned int allowed_cards = 0U;
+    bool started;
+
+    if (!net_meeting_schedule_ensure_loaded() || !app_time_get_utc(&now_utc))
+    {
+        return;
+    }
+
+    memset(&due_schedule, 0, sizeof(due_schedule));
+    net_action_lock();
+    for (int i = 0; i < g_net_meeting_schedule_count; i++)
+    {
+        if (now_utc >= g_net_meeting_schedules[i].start_unix)
+        {
+            due_schedule = g_net_meeting_schedules[i];
+            if (net_meeting_schedule_advance_recurring(&g_net_meeting_schedules[i], now_utc))
+            {
+                /* Mantem o mesmo id e apenas move a proxima ocorrencia para o futuro. */
+            }
+            else
+            {
+                for (int move_index = i; move_index < (g_net_meeting_schedule_count - 1); move_index++)
+                {
+                    g_net_meeting_schedules[move_index] = g_net_meeting_schedules[move_index + 1];
+                }
+                g_net_meeting_schedule_count--;
+                if (g_net_meeting_schedule_count < 0)
+                {
+                    g_net_meeting_schedule_count = 0;
+                }
+            }
+
+            g_net_meeting_schedule_last_id = due_schedule.id;
+            g_net_meeting_schedule_last_start_utc = due_schedule.start_unix;
+            net_meeting_schedule_set_status_locked("starting");
+            (void) net_meeting_schedule_save_locked();
+            should_start = true;
+            break;
+        }
+    }
+    net_action_unlock();
+
+    if (!should_start)
+    {
+        return;
+    }
+
+    for (unsigned int i = 0U; i < due_schedule.profile_count; i++)
+    {
+        due_profile_indices[i] = (int) due_schedule.profile_indices[i];
+    }
+
+    started = storage_meeting_mode_start(due_profile_indices,
+                                         (int) due_schedule.profile_count,
+                                         &selected_profiles,
+                                         &allowed_cards);
+
+    net_action_lock();
+    g_net_meeting_schedule_last_selected = selected_profiles;
+    g_net_meeting_schedule_last_allowed = allowed_cards;
+    net_meeting_schedule_set_status_locked(started ? "started" : "failed");
+    net_action_unlock();
 }
 
 static void extract_query_from_resource(const char *resource, char *query_out, size_t query_size)
@@ -2913,9 +4529,17 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
         for (int i = start_index; i < end_index; i++)
         {
             char cards_csv[FORM_CARDS_BUFFER_SIZE];
+            char cards_html[(UID_MAX_LEN * STORAGE_MAX_CARDS_PER_USER * 6) + 16];
+            char name_html[NAME_MAX_LEN * 6];
+            char role_html[STORAGE_ROLE_MAX_LEN * 6];
+            char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6];
             int written;
 
             profile_cards_to_csv(&profile_snapshot[i], cards_csv, sizeof(cards_csv));
+            net_html_escape(profile_snapshot[i].name, name_html, sizeof(name_html));
+            net_html_escape(('\0' != profile_snapshot[i].role[0]) ? profile_snapshot[i].role : "-", role_html, sizeof(role_html));
+            net_html_escape(('\0' != profile_snapshot[i].chapter[0]) ? profile_snapshot[i].chapter : "-", chapter_html, sizeof(chapter_html));
+            net_html_escape(('\0' != cards_csv[0]) ? cards_csv : "-", cards_html, sizeof(cards_html));
             written = snprintf(&rows[rows_len],
                                sizeof(rows) - rows_len,
                                "<tr><td>%d</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>"
@@ -2923,11 +4547,11 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
                                "<a class='small danger' href='/remove_user?index=%d'>Remover</a>"
                                "</td></tr>",
                                i,
-                               profile_snapshot[i].name,
-                               ('\0' != profile_snapshot[i].role[0]) ? profile_snapshot[i].role : "-",
-                               ('\0' != profile_snapshot[i].chapter[0]) ? profile_snapshot[i].chapter : "-",
+                               name_html,
+                               role_html,
+                               chapter_html,
                                profile_snapshot[i].is_admin ? "Sim" : "Nao",
-                               ('\0' != cards_csv[0]) ? cards_csv : "-",
+                               cards_html,
                                i,
                                i);
             if ((written <= 0) || ((size_t) written >= (sizeof(rows) - rows_len)))
@@ -3633,28 +5257,36 @@ static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
     {
         for (int i = start_index; i < end_index; i++)
         {
+            char name_html[NAME_MAX_LEN * 6];
+            char role_html[STORAGE_ROLE_MAX_LEN * 6];
+            char photo_id_html[STORAGE_PHOTO_ID_MAX_LEN * 6];
+
             if (!storage_profile_get(i, &profile))
             {
                 continue;
             }
+
+            net_html_escape(profile.name, name_html, sizeof(name_html));
+            net_html_escape(('\0' != profile.role[0]) ? profile.role : "-", role_html, sizeof(role_html));
+            net_html_escape(profile.photo_id, photo_id_html, sizeof(photo_id_html));
 
             if ('\0' != profile.photo_id[0])
             {
                 written = snprintf(&g_net_metric_buffer[body_len],
                                    sizeof(g_net_metric_buffer) - body_len,
                                    "<tr><td>%s</td><td>%s</td><td>%s</td><td><a class='small' href='/storage_photo_download?photo_id=%s' download>Baixar foto</a></td></tr>",
-                                   profile.name,
-                                   ('\0' != profile.role[0]) ? profile.role : "-",
-                                   profile.photo_id,
-                                   profile.photo_id);
+                                   name_html,
+                                   role_html,
+                                   photo_id_html,
+                                   photo_id_html);
             }
             else
             {
                 written = snprintf(&g_net_metric_buffer[body_len],
                                    sizeof(g_net_metric_buffer) - body_len,
                                    "<tr><td>%s</td><td>%s</td><td>-</td><td>-</td></tr>",
-                                   profile.name,
-                                   ('\0' != profile.role[0]) ? profile.role : "-");
+                                   name_html,
+                                   role_html);
             }
 
             if ((written <= 0) || ((size_t) written >= (sizeof(g_net_metric_buffer) - body_len)))
@@ -3868,14 +5500,23 @@ static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr,
         for (int item = 0; item < page_items; item++)
         {
             int entry_index = count - 1 - (start_offset + item);
+            char data_html[UID_MAX_LEN * 6];
+            char user_html[NAME_MAX_LEN * 6];
+
             net_format_access_log_timestamp(&entries[entry_index], timestamp, sizeof(timestamp));
+            net_html_escape(('\0' != entries[entry_index].data[0]) ? entries[entry_index].data : "-",
+                            data_html,
+                            sizeof(data_html));
+            net_html_escape(('\0' != entries[entry_index].user[0]) ? entries[entry_index].user : "-",
+                            user_html,
+                            sizeof(user_html));
             int written = snprintf(&rows[rows_len],
                                    sizeof(rows) - rows_len,
                                    "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
                                    timestamp,
                                    net_event_type_text(entries[entry_index].type),
-                                   ('\0' != entries[entry_index].data[0]) ? entries[entry_index].data : "-",
-                                   ('\0' != entries[entry_index].user[0]) ? entries[entry_index].user : "-");
+                                   data_html,
+                                   user_html);
             if ((written <= 0) || ((size_t) written >= (sizeof(rows) - rows_len)))
             {
                 break;
@@ -3915,60 +5556,135 @@ static UINT render_light_access_log_page(NX_HTTP_SERVER *server_ptr,
     return send_html_response(server_ptr, packet_ptr, html);
 }
 
-static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
+static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
+                                           NX_PACKET *packet_ptr,
+                                           const char *message,
+                                           int page)
 {
+    const char *message_to_render = message;
     size_t offset = 0U;
     int user_count;
     int selectable_count = 0;
+    int selectable_total = 0;
+    int page_start;
+    int page_end;
+    int rendered_count = 0;
     bool active;
     unsigned int selected_profiles;
     unsigned int allowed_cards;
+    unsigned int draft_selected_profiles;
+    char prev_button[96];
+    char next_button[96];
 
     if (!net_admin_is_authenticated())
     {
         return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para configurar o modo reuniao.</div>");
     }
 
+    if ((NULL == message_to_render) && ('\0' != g_net_flash_message[0]))
+    {
+        message_to_render = g_net_flash_message;
+        g_net_flash_message[0] = '\0';
+    }
+
     active = storage_meeting_mode_is_active();
     selected_profiles = storage_meeting_mode_selected_profile_count();
     allowed_cards = storage_meeting_mode_allowed_card_count();
+    net_meeting_mode_draft_sync_from_active();
+    draft_selected_profiles = net_meeting_mode_draft_profile_count();
     user_count = storage_user_count();
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    if (page < 0)
+    {
+        page = 0;
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if (storage_profile_get(i, &profile) && (profile.card_count > 0U))
+        {
+            selectable_total++;
+        }
+    }
+
+    page_start = page * MEETING_MODE_PAGE_SIZE;
+    if (page_start >= selectable_total)
+    {
+        page = 0;
+        page_start = 0;
+    }
+    page_end = page_start + MEETING_MODE_PAGE_SIZE;
+    if (page_end > selectable_total)
+    {
+        page_end = selectable_total;
+    }
+
+    if (page > 0)
+    {
+        snprintf(prev_button,
+                 sizeof(prev_button),
+                 "<a class='small secondary' href='/meeting_mode/%d'>Anterior</a>",
+                 page - 1);
+    }
+    else
+    {
+        prev_button[0] = '\0';
+    }
+
+    if (page_end < selectable_total)
+    {
+        snprintf(next_button,
+                 sizeof(next_button),
+                 "<a class='small' href='/meeting_mode/%d'>Proxima</a>",
+                 page + 1);
+    }
+    else
+    {
+        next_button[0] = '\0';
+    }
 
     g_net_metric_buffer[0] = '\0';
     if (!net_appendf(g_net_metric_buffer,
                      sizeof(g_net_metric_buffer),
                      &offset,
+                     "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                     "<style>"
+                     "body{font-family:Arial,sans-serif;background:#f5f7fb;color:#18212d;margin:0;padding:18px;}"
+                     ".wrap{max-width:980px;margin:0 auto;}"
+                     ".card{background:#fff;border-radius:16px;padding:18px;margin-bottom:16px;box-shadow:0 8px 26px rgba(0,0,0,.08);}"
+                     ".actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;}"
+                     ".small,.btn{display:inline-block;text-decoration:none;border:none;border-radius:10px;padding:12px 16px;background:#0b6ef3;color:#fff;cursor:pointer;}"
+                     ".secondary{background:#6b7a90;}.danger{background:#d64545;}.muted{color:#607086;font-size:14px;}.warn{color:#b26a00;}.ok{color:#137333;}"
+                     ".table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}table{width:100%%;border-collapse:collapse;}th,td{padding:10px;border-bottom:1px solid #e7ebf2;text-align:left;vertical-align:top;}"
+                     "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.actions{flex-direction:column;align-items:stretch;gap:8px;}.small,.btn{display:block;width:100%%;box-sizing:border-box;text-align:center;}.table-wrap{margin:0 -4px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}th,td{padding:8px;font-size:13px;white-space:nowrap;}}"
+                     "</style></head><body><div class='wrap'><div class='card'>"
+                     "<h1>Modo reuniao</h1>"
+                     "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/admin_profiles'>Perfis</a><a class='small secondary' href='/logout'>Sair</a></div>"
+                     "%s"
                      "<p class='%s'><strong>Modo reuniao %s.</strong></p>"
-                     "<p class='muted'>Quando ativo, apenas os perfis selecionados nesta pagina liberam a entrada por RFID.</p>"
-                     "<p class='muted'>Botoes locais e o comando manual da porta continuam disponiveis como override administrativo.</p>"
-                     "<p class='muted'>Perfis liberados agora: <strong>%u</strong> | Cartoes liberados: <strong>%u</strong></p>",
+                     "<p class='muted'>Perfis liberados agora: <strong>%u</strong> | Cartoes liberados: <strong>%u</strong></p>"
+                     "<p class='muted'>Selecao preparada para iniciar: <strong>%u</strong> perfil(is).</p>"
+                     "<p class='muted'>Mostrando %d a %d de %d perfis com cartao RFID.</p>"
+                     "%s"
+                     "<div class='table-wrap'><table><tr><th>Nome</th><th>Cargo</th><th>Capitulo</th><th>Cartoes</th><th>Acao</th></tr>",
+                     (NULL != message_to_render) ? message_to_render : "",
                      active ? "ok" : "warn",
                      active ? "ativo" : "desativado",
                      selected_profiles,
-                     allowed_cards))
+                     allowed_cards,
+                     draft_selected_profiles,
+                     (selectable_total > 0) ? (page_start + 1) : 0,
+                     page_end,
+                     selectable_total,
+                     active ? "<div class='actions'><a class='small danger' href='/meeting_mode_stop'>Encerrar modo reuniao</a></div>" : ""))
     {
-        return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
-    }
-
-    if (active)
-    {
-        if (!net_appendf(g_net_metric_buffer,
-                         sizeof(g_net_metric_buffer),
-                         &offset,
-                         "<div class='actions'><a class='small danger' href='/meeting_mode_stop'>Encerrar modo reuniao</a></div>"))
-        {
-            return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
-        }
-    }
-
-    if (!net_appendf(g_net_metric_buffer,
-                     sizeof(g_net_metric_buffer),
-                     &offset,
-                     "<form action='/meeting_mode_start' method='post' onsubmit='return syncMeetingModeSelection();'>"
-                     "<input type='hidden' name='selected' id='meeting_mode_selected' value=''>"
-                     "<div style='max-height:360px;overflow:auto;border:1px solid #e7ebf2;border-radius:12px;padding:12px;background:#f8fbff;'>"))
-    {
-        return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
     }
 
     for (int i = 0; i < user_count; i++)
@@ -3977,86 +5693,127 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr, NX_PACKET
         char name_html[NAME_MAX_LEN * 6];
         char role_html[STORAGE_ROLE_MAX_LEN * 6];
         char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6];
-        char cards_csv[FORM_CARDS_BUFFER_SIZE];
-        const char *checked = "";
+        const char *toggle_class;
+        const char *toggle_label;
 
         if (!storage_profile_get(i, &profile) || (0U == profile.card_count))
         {
             continue;
         }
 
+        if ((selectable_count < page_start) || (selectable_count >= page_end))
+        {
+            selectable_count++;
+            continue;
+        }
+
         selectable_count++;
-        checked = storage_meeting_mode_profile_selected(&profile) ? " checked" : "";
-        profile_cards_to_csv(&profile, cards_csv, sizeof(cards_csv));
+        rendered_count++;
         net_html_escape(profile.name, name_html, sizeof(name_html));
         net_html_escape(('\0' != profile.role[0]) ? profile.role : "-", role_html, sizeof(role_html));
         net_html_escape(('\0' != profile.chapter[0]) ? profile.chapter : "-", chapter_html, sizeof(chapter_html));
+        toggle_class = g_net_meeting_draft_selected[i] ? "small secondary" : "small";
+        toggle_label = g_net_meeting_draft_selected[i] ? "Remover" : "Selecionar";
 
         if (!net_appendf(g_net_metric_buffer,
                          sizeof(g_net_metric_buffer),
                          &offset,
-                         "<label style='display:flex;align-items:flex-start;gap:10px;padding:10px 4px;border-bottom:1px solid #eef2f7;'>"
-                         "<input type='checkbox' class='meeting-member' value='%d'%s style='width:auto;margin:3px 0 0 0;'>"
-                         "<span><strong>%s</strong><br><span class='muted'>%s | %s | %s</span></span>"
-                         "</label>",
-                         i,
-                         checked,
+                         "<tr><td>%s</td><td>%s</td><td>%s</td><td>%u</td><td><a class='%s' href='/meeting_mode_toggle?index=%d&page=%d'>%s</a></td></tr>",
                          name_html,
                          role_html,
                          chapter_html,
-                         ('\0' != cards_csv[0]) ? cards_csv : "-"))
+                         profile.card_count,
+                         toggle_class,
+                         i,
+                         page,
+                         toggle_label))
         {
-            break;
+            return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
         }
     }
 
-    if (0 == selectable_count)
+    if (0 == selectable_total)
     {
-        (void) net_appendf(g_net_metric_buffer,
-                           sizeof(g_net_metric_buffer),
-                           &offset,
-                           "<p class='warn'>Nenhum perfil com cartao RFID vinculado esta disponivel para o modo reuniao.</p>");
+        if (!net_appendf(g_net_metric_buffer,
+                         sizeof(g_net_metric_buffer),
+                         &offset,
+                         "<tr><td colspan='5'>Nenhum perfil com cartao RFID vinculado esta disponivel.</td></tr>"))
+        {
+            return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
+        }
+    }
+    else if (0 == rendered_count)
+    {
+        if (!net_appendf(g_net_metric_buffer,
+                         sizeof(g_net_metric_buffer),
+                         &offset,
+                         "<tr><td colspan='5'>Nao ha perfis nesta pagina. Volte para a primeira pagina.</td></tr>"))
+        {
+            return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
+        }
     }
 
     if (!net_appendf(g_net_metric_buffer,
                      sizeof(g_net_metric_buffer),
                      &offset,
-                     "</div>"
-                     "<p class='muted'>Perfis sem cartao nao aparecem nessa selecao. Marque os membros permitidos e clique em iniciar.</p>"
-                     "<div class='actions'><button class='btn' type='submit'>Iniciar modo reuniao</button><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
+                     "</table></div>"
+                     "<form action='/meeting_mode_start' method='post'>"
+                     "<div class='actions'>%s%s<a class='small secondary' href='/meeting_mode_clear?page=%d'>Limpar selecao</a><button class='btn' type='submit'>Iniciar modo reuniao</button><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
                      "</form>"
-                     "<script>"
-                     "function syncMeetingModeSelection(){"
-                     "var values=[];"
-                     "var checks=document.querySelectorAll('.meeting-member');"
-                     "for(var i=0;i<checks.length;i++){if(checks[i].checked){values.push(checks[i].value);}}"
-                     "document.getElementById('meeting_mode_selected').value=values.join(',');"
-                     "return true;"
-                     "}"
-                     "</script>"))
+                     "</div></div></body></html>",
+                     prev_button,
+                     next_button,
+                     page))
     {
-        return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", "<p class='warn'>Nao foi possivel montar a pagina do modo reuniao.</p>", message);
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
     }
 
-    return render_light_shell(server_ptr, packet_ptr, "Modo reuniao", g_net_metric_buffer, message);
+    return send_html_response(server_ptr, packet_ptr, g_net_metric_buffer);
 }
 
 static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const char *form_data)
 {
-    char selected_text[512];
     int selected_indices[STORAGE_MAX_USERS];
     int selected_count;
     unsigned int selected_profiles = 0U;
     unsigned int allowed_cards = 0U;
+    int user_count;
+
+    SSP_PARAMETER_NOT_USED(form_data);
 
     if (!net_admin_is_authenticated())
     {
         return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para iniciar o modo reuniao.</div>");
     }
 
-    selected_text[0] = '\0';
-    (void) query_get_value_raw(form_data, "selected", selected_text, sizeof(selected_text));
-    selected_count = parse_profile_index_csv(selected_text, selected_indices, STORAGE_MAX_USERS);
+    net_meeting_mode_draft_sync_from_active();
+    selected_count = 0;
+    user_count = storage_user_count();
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if (!g_net_meeting_draft_selected[i])
+        {
+            continue;
+        }
+
+        if (!storage_profile_get(i, &profile) || (0U == profile.card_count))
+        {
+            continue;
+        }
+
+        if (selected_count < STORAGE_MAX_USERS)
+        {
+            selected_indices[selected_count++] = i;
+        }
+    }
+
     if (selected_count <= 0)
     {
         return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Selecione ao menos um perfil com cartao para iniciar a reuniao.</div>");
@@ -4070,6 +5827,7 @@ static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const ch
     {
         char message[192];
 
+        g_net_meeting_draft_initialized = false;
         snprintf(message,
                  sizeof(message),
                  "<div class='card ok'>Modo reuniao ativado com %u perfil(is) e %u cartao(oes) liberado(s). Apenas os membros selecionados entram por RFID.</div>",
@@ -4077,6 +5835,56 @@ static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const ch
                  allowed_cards);
         return light_redirect_with_flash(server_ptr, "/meeting_mode", message);
     }
+}
+
+static UINT handle_light_meeting_mode_toggle(NX_HTTP_SERVER *server_ptr, const char *query)
+{
+    storage_user_profile_t profile;
+    char location[32];
+    int index = query_get_int(query, "index", -1);
+    int page = query_get_int(query, "page", 0);
+
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para editar a selecao do modo reuniao.</div>");
+    }
+
+    if (page < 0)
+    {
+        page = 0;
+    }
+
+    snprintf(location, sizeof(location), "/meeting_mode/%d", page);
+    if ((index < 0) || (index >= STORAGE_MAX_USERS) ||
+        !storage_profile_get(index, &profile) ||
+        (0U == profile.card_count))
+    {
+        return light_redirect_with_flash(server_ptr, location, "<div class='card warn'>Selecione um perfil valido com cartao RFID.</div>");
+    }
+
+    net_meeting_mode_draft_sync_from_active();
+    g_net_meeting_draft_selected[index] = !g_net_meeting_draft_selected[index];
+    return light_redirect_with_flash(server_ptr, location, "<div class='card ok'>Selecao do modo reuniao atualizada.</div>");
+}
+
+static UINT handle_light_meeting_mode_clear(NX_HTTP_SERVER *server_ptr, const char *query)
+{
+    char location[32];
+    int page = query_get_int(query, "page", 0);
+
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para limpar a selecao do modo reuniao.</div>");
+    }
+
+    if (page < 0)
+    {
+        page = 0;
+    }
+
+    net_meeting_mode_draft_reset();
+    snprintf(location, sizeof(location), "/meeting_mode/%d", page);
+    return light_redirect_with_flash(server_ptr, location, "<div class='card ok'>Selecao do modo reuniao limpa.</div>");
 }
 
 static UINT handle_light_meeting_mode_stop(NX_HTTP_SERVER *server_ptr)
@@ -4087,6 +5895,7 @@ static UINT handle_light_meeting_mode_stop(NX_HTTP_SERVER *server_ptr)
     }
 
     storage_meeting_mode_stop();
+    g_net_meeting_draft_initialized = false;
     return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card ok'>Modo reuniao encerrado. O acesso voltou ao comportamento normal.</div>");
 }
 
@@ -4141,16 +5950,35 @@ static bool net_pin_is_valid_4_digits(const char *pin)
 static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data)
 {
     char pin[16];
+    ULONG now = tx_time_get();
+
+    if ((0U != g_net_admin_login_block_until) &&
+        ((LONG) (now - g_net_admin_login_block_until) < 0))
+    {
+        return light_redirect_with_flash(server_ptr,
+                                         "/login",
+                                         "<div class='card warn'>Muitas tentativas. Aguarde um minuto antes de tentar novamente.</div>");
+    }
 
     if (!query_get_value(form_data, "pin", pin, sizeof(pin)))
     {
         return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Digite o PIN antes de entrar.</div>");
     }
 
-    if (storage_admin_pin_valid(pin) || (0 == strcmp(pin, WEB_ADMIN_PIN)))
+    if (storage_admin_pin_valid(pin) ||
+        (!storage_admin_pin_configured() && (0 == strcmp(pin, WEB_ADMIN_PIN))))
     {
         net_admin_begin_session();
+        g_net_admin_login_failures = 0U;
+        g_net_admin_login_block_until = 0U;
         return light_redirect_with_flash(server_ptr, "/", "<div class='card ok'>Sessao admin iniciada.</div>");
+    }
+
+    g_net_admin_login_failures++;
+    if (g_net_admin_login_failures >= WEB_ADMIN_LOGIN_MAX_FAILURES)
+    {
+        g_net_admin_login_failures = 0U;
+        g_net_admin_login_block_until = now + WEB_ADMIN_LOGIN_BLOCK_TICKS;
     }
 
     return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>PIN invalido.</div>");
@@ -4342,6 +6170,411 @@ static UINT handle_light_import_profiles(NX_HTTP_SERVER *server_ptr, const char 
     return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card ok'>Importação agendada. Recarregue a página em alguns instantes para ver o resultado.</div>");
 }
 
+static UINT handle_api_door_open(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
+{
+    static const char ok_json[] = "{\"ok\":true,\"message\":\"Door open command sent.\"}";
+    static const char unauthorized_json[] = "{\"ok\":false,\"error\":\"unauthorized\"}";
+    static const char busy_json[] = "{\"ok\":false,\"error\":\"cooldown\"}";
+    ULONG now = tx_time_get();
+
+    if (!net_api_request_is_authorized(packet_ptr))
+    {
+        return send_buffer_status_response(server_ptr,
+                                           packet_ptr,
+                                           NX_HTTP_STATUS_UNAUTHORIZED,
+                                           unauthorized_json,
+                                           sizeof(unauthorized_json) - 1U,
+                                            "application/json");
+    }
+
+    if ((0U != g_net_api_door_next_allowed_tick) &&
+        ((LONG) (now - g_net_api_door_next_allowed_tick) < 0))
+    {
+        return send_buffer_status_response(server_ptr,
+                                           packet_ptr,
+                                           NX_HTTP_STATUS_CONFLICT,
+                                           busy_json,
+                                           sizeof(busy_json) - 1U,
+                                           "application/json");
+    }
+
+    g_net_api_door_next_allowed_tick = now + NET_API_DOOR_COOLDOWN_TICKS;
+    app_post_event(EVENT_DOOR_OPEN, "API");
+    return send_buffer_status_response(server_ptr,
+                                       packet_ptr,
+                                       NX_HTTP_STATUS_OK,
+                                       ok_json,
+                                       sizeof(ok_json) - 1U,
+                                       "application/json");
+}
+
+static UINT net_send_json_error(NX_HTTP_SERVER *server_ptr,
+                                NX_PACKET *packet_ptr,
+                                const char *status_code,
+                                const char *error)
+{
+    if (NULL == error)
+    {
+        error = "error";
+    }
+
+    snprintf(g_net_api_json,
+             sizeof(g_net_api_json),
+             "{\"ok\":false,\"error\":\"%s\"}",
+             error);
+
+    return send_buffer_status_response(server_ptr,
+                                       packet_ptr,
+                                       status_code,
+                                       g_net_api_json,
+                                       strlen(g_net_api_json),
+                                       "application/json");
+}
+
+static bool net_meeting_cancel_parse_id(const char *body, const char *query, ULONG *out_id, bool *out_has_id)
+{
+    const char *cursor = body;
+    ULONG id = 0U;
+
+    if ((NULL == out_id) || (NULL == out_has_id))
+    {
+        return false;
+    }
+
+    *out_id = 0U;
+    *out_has_id = false;
+
+    if ((NULL != query) && net_form_get_ulong_value(query, "id", &id))
+    {
+        *out_id = id;
+        *out_has_id = true;
+        return (0U != id);
+    }
+
+    if (NULL == cursor)
+    {
+        return true;
+    }
+
+    while (('\0' != *cursor) && isspace((unsigned char) *cursor))
+    {
+        cursor++;
+    }
+
+    if ('\0' == *cursor)
+    {
+        return true;
+    }
+
+    if ('{' == *cursor)
+    {
+        if (!net_json_get_ulong_value(cursor, "id", &id))
+        {
+            return false;
+        }
+    }
+    else if (!net_form_get_ulong_value(cursor, "id", &id))
+    {
+        return false;
+    }
+
+    *out_id = id;
+    *out_has_id = true;
+    return (0U != id);
+}
+
+static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body)
+{
+    int profiles[STORAGE_MAX_USERS];
+    int profile_count = 0;
+    ULONG start_utc = 0U;
+    ULONG delay_seconds = 0U;
+    ULONG schedule_id = 0U;
+    uint8_t recurrence = STORAGE_MEETING_RECURRENCE_NONE;
+    uint8_t weekdays_mask = 0U;
+    int pending_count = 0;
+    const char *error = "bad_request";
+    bool time_synced;
+    ULONG now_utc = 0U;
+    bool saved = false;
+
+    if (!net_api_request_is_authorized(packet_ptr))
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_UNAUTHORIZED, "unauthorized");
+    }
+
+    if (!net_meeting_schedule_parse_request(body,
+                                            &start_utc,
+                                            &delay_seconds,
+                                            &recurrence,
+                                            &weekdays_mask,
+                                            profiles,
+                                            &profile_count,
+                                            &error))
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_BAD_REQUEST, error);
+    }
+
+    if (!net_meeting_schedule_ensure_loaded())
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_CONFLICT, "schedule_storage_unavailable");
+    }
+
+    net_action_lock();
+    if (g_net_meeting_schedule_count >= STORAGE_MEETING_SCHEDULE_MAX_ITEMS)
+    {
+        net_action_unlock();
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_CONFLICT, "schedule_full");
+    }
+
+    schedule_id = g_net_meeting_schedule_next_id++;
+    if (0U == g_net_meeting_schedule_next_id)
+    {
+        g_net_meeting_schedule_next_id = 1U;
+    }
+
+    memset(&g_net_meeting_schedules[g_net_meeting_schedule_count], 0, sizeof(g_net_meeting_schedules[g_net_meeting_schedule_count]));
+    g_net_meeting_schedules[g_net_meeting_schedule_count].id = schedule_id;
+    g_net_meeting_schedules[g_net_meeting_schedule_count].start_unix = start_utc;
+    g_net_meeting_schedules[g_net_meeting_schedule_count].profile_count = (unsigned int) profile_count;
+    g_net_meeting_schedules[g_net_meeting_schedule_count].recurrence = recurrence;
+    g_net_meeting_schedules[g_net_meeting_schedule_count].weekdays_mask = weekdays_mask;
+    for (int i = 0; i < profile_count; i++)
+    {
+        g_net_meeting_schedules[g_net_meeting_schedule_count].profile_indices[i] = (uint8_t) profiles[i];
+    }
+    g_net_meeting_schedule_count++;
+    g_net_meeting_schedule_last_id = schedule_id;
+    g_net_meeting_schedule_last_start_utc = start_utc;
+    g_net_meeting_schedule_last_selected = 0U;
+    g_net_meeting_schedule_last_allowed = 0U;
+    net_meeting_schedule_set_status_locked("scheduled");
+    saved = net_meeting_schedule_save_locked();
+    pending_count = g_net_meeting_schedule_count;
+    if (!saved)
+    {
+        if (g_net_meeting_schedule_count > 0)
+        {
+            g_net_meeting_schedule_count--;
+            memset(&g_net_meeting_schedules[g_net_meeting_schedule_count], 0, sizeof(g_net_meeting_schedules[g_net_meeting_schedule_count]));
+        }
+        net_meeting_schedule_set_status_locked("save_failed");
+    }
+    net_action_unlock();
+
+    if (!saved)
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_INTERNAL_ERROR, "schedule_save_failed");
+    }
+
+    time_synced = app_time_get_utc(&now_utc);
+    snprintf(g_net_api_json,
+             sizeof(g_net_api_json),
+             "{\"ok\":true,\"id\":%lu,\"pending_count\":%d,\"active\":%s,"
+             "\"time_synced\":%s,\"now_unix\":%lu,\"start_unix\":%lu,"
+             "\"delay_seconds\":%lu,\"profile_count\":%d,"
+             "\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
+             (unsigned long) schedule_id,
+             pending_count,
+             storage_meeting_mode_is_active() ? "true" : "false",
+             time_synced ? "true" : "false",
+             (unsigned long) (time_synced ? now_utc : 0U),
+             (unsigned long) start_utc,
+             (unsigned long) delay_seconds,
+             profile_count,
+             net_meeting_recurrence_text(recurrence),
+             (unsigned int) weekdays_mask);
+
+    return send_buffer_status_response(server_ptr,
+                                       packet_ptr,
+                                       NX_HTTP_STATUS_OK,
+                                       g_net_api_json,
+                                       strlen(g_net_api_json),
+                                       "application/json");
+}
+
+static UINT handle_api_meeting_cancel(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body, const char *query)
+{
+    storage_meeting_schedule_t backup_schedules[STORAGE_MEETING_SCHEDULE_MAX_ITEMS];
+    int backup_count = 0;
+    ULONG id = 0U;
+    bool has_id = false;
+    int canceled_count = 0;
+    int pending_count = 0;
+    bool saved = true;
+
+    if (!net_api_request_is_authorized(packet_ptr))
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_UNAUTHORIZED, "unauthorized");
+    }
+
+    if (!net_meeting_cancel_parse_id(body, query, &id, &has_id))
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_BAD_REQUEST, "invalid_id");
+    }
+
+    if (!net_meeting_schedule_ensure_loaded())
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_CONFLICT, "schedule_storage_unavailable");
+    }
+
+    net_action_lock();
+    backup_count = g_net_meeting_schedule_count;
+    for (int i = 0; i < backup_count; i++)
+    {
+        backup_schedules[i] = g_net_meeting_schedules[i];
+    }
+
+    if (has_id)
+    {
+        for (int i = 0; i < g_net_meeting_schedule_count; i++)
+        {
+            if (g_net_meeting_schedules[i].id == id)
+            {
+                for (int move_index = i; move_index < (g_net_meeting_schedule_count - 1); move_index++)
+                {
+                    g_net_meeting_schedules[move_index] = g_net_meeting_schedules[move_index + 1];
+                }
+                g_net_meeting_schedule_count--;
+                canceled_count = 1;
+                break;
+            }
+        }
+    }
+    else
+    {
+        canceled_count = g_net_meeting_schedule_count;
+        g_net_meeting_schedule_count = 0;
+    }
+
+    if (canceled_count > 0)
+    {
+        saved = net_meeting_schedule_save_locked();
+    }
+    if (!saved)
+    {
+        g_net_meeting_schedule_count = backup_count;
+        for (int i = 0; i < backup_count; i++)
+        {
+            g_net_meeting_schedules[i] = backup_schedules[i];
+        }
+        net_meeting_schedule_set_status_locked("save_failed");
+    }
+    else
+    {
+        net_meeting_schedule_set_status_locked((canceled_count > 0) ? "canceled" : "idle");
+    }
+    pending_count = g_net_meeting_schedule_count;
+    net_action_unlock();
+
+    if (!saved)
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_INTERNAL_ERROR, "schedule_save_failed");
+    }
+
+    snprintf(g_net_api_json,
+             sizeof(g_net_api_json),
+             "{\"ok\":true,\"canceled_count\":%d,\"pending_count\":%d,\"active\":%s}",
+             canceled_count,
+             pending_count,
+             storage_meeting_mode_is_active() ? "true" : "false");
+
+    return send_buffer_status_response(server_ptr,
+                                       packet_ptr,
+                                       NX_HTTP_STATUS_OK,
+                                       g_net_api_json,
+                                       strlen(g_net_api_json),
+                                       "application/json");
+}
+
+static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
+{
+    int pending_count;
+    ULONG last_id;
+    ULONG last_start_utc;
+    unsigned int last_selected;
+    unsigned int last_allowed;
+    char last_status[NET_MEETING_SCHEDULE_STATUS_LEN];
+    bool time_synced;
+    ULONG now_utc = 0U;
+    bool active;
+    unsigned int active_selected;
+    unsigned int active_allowed;
+
+    if (!net_api_request_is_authorized(packet_ptr))
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_UNAUTHORIZED, "unauthorized");
+    }
+
+    if (!net_meeting_schedule_ensure_loaded())
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_CONFLICT, "schedule_storage_unavailable");
+    }
+
+    active = storage_meeting_mode_is_active();
+    active_selected = storage_meeting_mode_selected_profile_count();
+    active_allowed = storage_meeting_mode_allowed_card_count();
+    time_synced = app_time_get_utc(&now_utc);
+
+    net_action_lock();
+    pending_count = g_net_meeting_schedule_count;
+    last_id = g_net_meeting_schedule_last_id;
+    last_start_utc = g_net_meeting_schedule_last_start_utc;
+    last_selected = g_net_meeting_schedule_last_selected;
+    last_allowed = g_net_meeting_schedule_last_allowed;
+    strncpy(last_status, g_net_meeting_schedule_last_status, sizeof(last_status) - 1U);
+    last_status[sizeof(last_status) - 1U] = '\0';
+
+    {
+        size_t offset = 0U;
+
+        (void) net_appendf(g_net_api_json,
+                           sizeof(g_net_api_json),
+                           &offset,
+                           "{\"ok\":true,\"active\":%s,\"pending_count\":%d,"
+                           "\"time_synced\":%s,\"now_unix\":%lu,"
+                           "\"active_selected_profiles\":%u,\"active_allowed_cards\":%u,"
+                           "\"last_id\":%lu,\"last_start_unix\":%lu,"
+                           "\"last_selected_profiles\":%u,\"last_allowed_cards\":%u,"
+                           "\"last_status\":\"%s\",\"schedules\":[",
+                           active ? "true" : "false",
+                           pending_count,
+                           time_synced ? "true" : "false",
+                           (unsigned long) (time_synced ? now_utc : 0U),
+                           active_selected,
+                           active_allowed,
+                           (unsigned long) last_id,
+                           (unsigned long) last_start_utc,
+                           last_selected,
+                           last_allowed,
+                           last_status);
+
+        for (int i = 0; i < g_net_meeting_schedule_count; i++)
+        {
+            (void) net_appendf(g_net_api_json,
+                               sizeof(g_net_api_json),
+                               &offset,
+                               "%s{\"id\":%lu,\"start_unix\":%lu,\"profile_count\":%u,\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
+                               (i > 0) ? "," : "",
+                               (unsigned long) g_net_meeting_schedules[i].id,
+                               (unsigned long) g_net_meeting_schedules[i].start_unix,
+                               g_net_meeting_schedules[i].profile_count,
+                               net_meeting_recurrence_text(g_net_meeting_schedules[i].recurrence),
+                               (unsigned int) g_net_meeting_schedules[i].weekdays_mask);
+        }
+
+        (void) net_appendf(g_net_api_json, sizeof(g_net_api_json), &offset, "]}");
+    }
+    net_action_unlock();
+
+    return send_buffer_status_response(server_ptr,
+                                       packet_ptr,
+                                       NX_HTTP_STATUS_OK,
+                                       g_net_api_json,
+                                       strlen(g_net_api_json),
+                                       "application/json");
+}
+
 UINT authentication_check(NX_HTTP_SERVER *server_ptr,
                           UINT request_type,
                           CHAR *resource,
@@ -4407,7 +6640,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
     body[0] = '\0';
     if (NX_HTTP_SERVER_POST_REQUEST == request_type)
     {
-        extract_body_from_packet(server_ptr, packet_ptr, body, sizeof(body));
+        if (!extract_body_from_packet(server_ptr, packet_ptr, body, sizeof(body)))
+        {
+            return send_plain_status_response(server_ptr, packet_ptr, NX_HTTP_STATUS_ENTITY_TOO_LARGE, "ERR_BODY_TOO_LARGE");
+        }
     }
 
     if (NX_HTTP_SERVER_GET_REQUEST == request_type)
@@ -4416,6 +6652,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         if (0 == strcmp(path, "/health"))
         {
             return send_plain_response(server_ptr, packet_ptr, "OK");
+        }
+        if (0 == strcmp(path, "/api/meeting/status"))
+        {
+            return handle_api_meeting_status(server_ptr, packet_ptr);
         }
         if (0 == strcmp(path, "/"))
         {
@@ -4427,6 +6667,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         }
         if (0 == strcmp(path, "/logout"))
         {
+            if (!net_admin_is_authenticated())
+            {
+                return light_redirect_with_flash(server_ptr, "/", "<div class='card warn'>Sessao admin nao pertence a este cliente.</div>");
+            }
             net_admin_end_session();
             return light_redirect_with_flash(server_ptr, "/", "<div class='card ok'>Sessão de administração encerrada.</div>");
         }
@@ -4493,7 +6737,22 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         }
         if (0 == strcmp(path, "/meeting_mode"))
         {
-            return render_light_meeting_mode_page(server_ptr, packet_ptr, NULL);
+            return render_light_meeting_mode_page(server_ptr, packet_ptr, NULL, query_get_int(query, "page", 0));
+        }
+        if (0 == strncmp(path, "/meeting_mode/", strlen("/meeting_mode/")))
+        {
+            return render_light_meeting_mode_page(server_ptr,
+                                                  packet_ptr,
+                                                  NULL,
+                                                  net_path_get_index_after_prefix(path, "/meeting_mode/", 0));
+        }
+        if (0 == strcmp(path, "/meeting_mode_toggle"))
+        {
+            return handle_light_meeting_mode_toggle(server_ptr, query);
+        }
+        if (0 == strcmp(path, "/meeting_mode_clear"))
+        {
+            return handle_light_meeting_mode_clear(server_ptr, query);
         }
         if (0 == strcmp(path, "/meeting_mode_stop"))
         {
@@ -4583,6 +6842,11 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         {
             char uid_text[UID_MAX_LEN] = "";
 
+            if (!net_admin_is_authenticated())
+            {
+                return send_plain_status_response(server_ptr, packet_ptr, NX_HTTP_STATUS_UNAUTHORIZED, "ERR_AUTH");
+            }
+
             app_state_lock();
             strncpy(uid_text, (const char *) g_app_state.last_uid, sizeof(uid_text) - 1U);
             uid_text[sizeof(uid_text) - 1U] = '\0';
@@ -4595,6 +6859,18 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
     if (NX_HTTP_SERVER_POST_REQUEST == request_type)
     {
         g_net_debug_http_stage = 4U;
+        if (0 == strcmp(path, "/api/door/open"))
+        {
+            return handle_api_door_open(server_ptr, packet_ptr);
+        }
+        if (0 == strcmp(path, "/api/meeting/schedule"))
+        {
+            return handle_api_meeting_schedule(server_ptr, packet_ptr, body);
+        }
+        if (0 == strcmp(path, "/api/meeting/cancel"))
+        {
+            return handle_api_meeting_cancel(server_ptr, packet_ptr, body, query);
+        }
         if (0 == strcmp(path, "/login"))
         {
             return handle_light_login(server_ptr, body);
@@ -4642,7 +6918,9 @@ UINT request_notify(NX_HTTP_SERVER *server_ptr, UINT request_type, CHAR *resourc
     const char *metric_case;
     g_net_debug_http_inflight = 1U;
     net_http_lock();
+    (void) net_request_source_ip(packet_ptr, &g_net_current_request_ip);
     status = request_notify_impl(server_ptr, request_type, resource, packet_ptr);
+    g_net_current_request_ip = 0U;
     net_http_unlock();
     strncpy(path_copy, (const char *) g_net_debug_last_path, sizeof(path_copy) - 1U);
     path_copy[sizeof(path_copy) - 1U] = '\0';
@@ -4730,6 +7008,7 @@ void thread_net_entry(ULONG arg)
 
         net_process_pending_actions();
         net_service_ntp();
+        net_process_meeting_schedule();
 
         (void) nx_ip_info_get(&g_ip0,
                               &ip_packets_sent,

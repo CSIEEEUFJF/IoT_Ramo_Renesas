@@ -1173,6 +1173,7 @@ static bool ui_touch_poll(ui_touch_event_t *event)
 
         /* Mantem o touch alinhado com a rotacao de 180 graus aplicada ao painel. */
         scaled_x = (UI_SCREEN_WIDTH - 1) - scaled_x;
+        scaled_y = (UI_SCREEN_HEIGHT - 1) - scaled_y;
         if (scaled_x < 0)
         {
             scaled_x = 0;
@@ -2089,7 +2090,7 @@ static void ui_enter_enroll_wait(ui_status_t *status)
     g_ui_touch_last_action_tick = 0U;
     g_ui_touch_pressed = false;
     ui_flush_pending_events();
-    app_set_enrollment_mode(false);
+    app_set_enrollment_mode(true);
     app_set_ui_mode(APP_UI_MODE_ENROLL_WAIT);
 }
 
@@ -2130,7 +2131,7 @@ static void ui_pin_set_digit(ui_status_t *status, char digit)
 
     if ((status->pin_count == UI_PIN_LENGTH)
         && (storage_admin_pin_valid(status->pin_buffer)
-            || (0 == strncmp(status->pin_buffer, UI_ADMIN_PIN, UI_PIN_LENGTH))))
+            || (!storage_admin_pin_configured() && (0 == strncmp(status->pin_buffer, UI_ADMIN_PIN, UI_PIN_LENGTH)))))
     {
         ui_enter_enroll_wait(status);
     }
@@ -2164,7 +2165,7 @@ static void ui_pin_submit(ui_status_t *status)
 
     if ((status->pin_count == UI_PIN_LENGTH)
         && (storage_admin_pin_valid(status->pin_buffer)
-            || (0 == strncmp(status->pin_buffer, UI_ADMIN_PIN, UI_PIN_LENGTH))))
+            || (!storage_admin_pin_configured() && (0 == strncmp(status->pin_buffer, UI_ADMIN_PIN, UI_PIN_LENGTH)))))
     {
         ui_enter_enroll_wait(status);
         return;
@@ -2450,16 +2451,18 @@ static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_
     const int32_t inner_y = frame_y + 4;
     const int32_t inner_w = frame_w - 8;
     const int32_t inner_h = frame_h - 8;
-    const int32_t logo_x = inner_x + ((inner_w - UI_LOGO_WAIT_WIDTH) / 2);
-    const int32_t logo_y = inner_y + ((inner_h - UI_LOGO_WAIT_HEIGHT) / 2) - 4;
+    const int32_t logo_w = (int32_t) UI_LOGO_WAIT_WIDTH;
+    const int32_t logo_h = (int32_t) UI_LOGO_WAIT_HEIGHT;
+    const int32_t logo_x = inner_x + ((inner_w - logo_w) / 2);
+    const int32_t logo_y = inner_y + ((inner_h - logo_h) / 2) - 4;
 
     ui_fill_rect(0, 0, UI_SCREEN_WIDTH, UI_SCREEN_HEIGHT, UI_COLOR_WAIT_BG);
     ui_fill_rect(frame_x, frame_y, frame_w, frame_h, UI_COLOR_WAIT_LINE);
     ui_fill_rect(inner_x, inner_y, inner_w, inner_h, UI_COLOR_TEXT);
     ui_draw_rgb565_image_scaled_cropped(logo_x,
                                         logo_y,
-                                        UI_LOGO_WAIT_WIDTH,
-                                        UI_LOGO_WAIT_HEIGHT,
+                                        logo_w,
+                                        logo_h,
                                         g_ramo_logo_rgb565,
                                         (int32_t) RAMO_LOGO_WIDTH,
                                         (int32_t) RAMO_LOGO_HEIGHT,
@@ -2930,7 +2933,7 @@ static void ui_render_screen(const ui_status_t *status, const ui_snapshot_t *sna
 
     if (UI_VIEW_IDLE == status->view)
     {
-        ui_draw_wait_screen("AGUARDANDO USUARIO", "APROXIME O CARTAO", false);
+        ui_draw_wait_screen("AGUARDANDO USUARIO", "APROXIME O CARTAO", true);
         return;
     }
 
