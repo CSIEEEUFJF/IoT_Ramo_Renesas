@@ -3454,6 +3454,7 @@ static void storage_ensure_loaded_locked(void)
 static void storage_mark_runtime_state_loaded(void)
 {
     g_storage_loaded = true;
+    g_storage_users_load_failed = false;
 }
 
 void storage_init(void)
