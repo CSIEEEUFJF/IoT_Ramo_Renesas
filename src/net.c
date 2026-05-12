@@ -4353,7 +4353,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
     ULONG link_status = 0U;
     bool is_admin = net_admin_is_authenticated();
     storage_debug_info_t storage_debug;
-    char storage_debug_line[256];
+    char storage_debug_line[320];
 
     nx_ip_address_get(&g_ip0, &ip_address, &network_mask);
     ip_to_string(ip_address, ip_text, sizeof(ip_text));
@@ -4364,7 +4364,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
     {
         snprintf(storage_debug_line,
                  sizeof(storage_debug_line),
-                 "<p class='muted'>QSPI diag: <strong>stage=%lu media=%lu save=%lu load=%lu bytes=%lu users=%lu runs=%lu loaded=%u failed=%u</strong></p>",
+                 "<p class='muted'>QSPI diag: <strong>stage=%lu media=%lu save=%lu load=%lu bytes=%lu users=%lu runs=%lu loaded=%u failed=%u direct=%lu/%lu</strong></p>",
                  (unsigned long) storage_debug.last_stage,
                  (unsigned long) storage_debug.last_media_status,
                  (unsigned long) storage_debug.last_save_status,
@@ -4373,7 +4373,9 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
                  (unsigned long) storage_debug.last_user_count,
                  (unsigned long) storage_debug.worker_runs,
                  storage_debug.loaded ? 1U : 0U,
-                 storage_debug.load_failed ? 1U : 0U);
+                 storage_debug.load_failed ? 1U : 0U,
+                 (unsigned long) storage_debug.direct_persist_successes,
+                 (unsigned long) storage_debug.direct_persist_requests);
     }
     else
     {
@@ -4624,14 +4626,14 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
              "body{font-family:Arial,sans-serif;background:#f5f7fb;color:#18212d;margin:0;padding:18px;}"
              ".wrap{max-width:980px;margin:0 auto;}"
              ".card{background:#fff;border-radius:16px;padding:18px;margin-bottom:16px;box-shadow:0 8px 26px rgba(0,0,0,.08);}"
-             ".actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;}"
+             ".actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;}.actions form{margin:0;}"
              ".small{display:inline-block;text-decoration:none;border:none;border-radius:10px;padding:12px 16px;background:#0b6ef3;color:#fff;}"
              ".secondary{background:#6b7a90;}.danger{background:#d64545;}.muted{color:#607086;font-size:14px;}.warn{color:#b26a00;}.ok{color:#137333;}"
              ".table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}table{width:100%%;border-collapse:collapse;}th,td{padding:10px;border-bottom:1px solid #e7ebf2;text-align:left;vertical-align:top;}"
              "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.actions{flex-direction:column;align-items:stretch;gap:8px;}.small{display:block;width:100%%;box-sizing:border-box;text-align:center;}.table-wrap{margin:0 -4px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}th,td{padding:8px;font-size:13px;white-space:nowrap;}}"
              "</style></head><body><div class='wrap'><div class='card'>"
              "<h1>Perfis existentes</h1>"
-             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/import'>Importar perfis</a><a class='small' href='/storage_export'>Exportar storage</a><a class='small' href='/save_users'>Persistir cadastros</a><a class='small secondary' href='/'>Voltar</a></div>"
+             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/import'>Importar perfis</a><a class='small' href='/storage_export'>Exportar storage</a><form action='/save_users' method='post'><button class='small' type='submit'>Persistir cadastros</button></form><a class='small secondary' href='/'>Voltar</a></div>"
              "%s"
              "%s"
              "<p class='muted'>Mostrando %d a %d de %d perfis carregados.</p>"
@@ -6993,6 +6995,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         if (0 == strcmp(path, "/login"))
         {
             return handle_light_login(server_ptr, ('\0' != body[0]) ? body : query);
+        }
+        if (0 == strcmp(path, "/save_users"))
+        {
+            return handle_light_save_users(server_ptr);
         }
         if (0 == strcmp(path, "/upload_photo_begin"))
         {

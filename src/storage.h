@@ -69,6 +69,8 @@ typedef struct
     ULONG last_read_bytes;
     ULONG last_user_count;
     ULONG last_json_size;
+    ULONG direct_persist_requests;
+    ULONG direct_persist_successes;
 } storage_debug_info_t;
 
 void storage_init(void);

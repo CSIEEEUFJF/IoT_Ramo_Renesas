@@ -109,6 +109,8 @@ volatile ULONG g_storage_debug_last_load_status = 0U;
 volatile ULONG g_storage_debug_last_saved_bytes = 0U;
 volatile ULONG g_storage_debug_last_read_bytes = 0U;
 volatile ULONG g_storage_debug_last_user_count = 0U;
+volatile ULONG g_storage_debug_direct_persist_requests = 0U;
+volatile ULONG g_storage_debug_direct_persist_successes = 0U;
 
 typedef struct st_storage_photo_file_header
 {
@@ -4582,19 +4584,22 @@ bool storage_persist_now_direct(void)
     ULONG user_count_snapshot = 0U;
 
     storage_init();
+    g_storage_debug_direct_persist_requests++;
+    g_storage_debug_last_stage = 18U;
 
-    storage_io_lock();
     storage_lock();
     storage_ensure_loaded_locked();
     if (!g_storage_loaded)
     {
         storage_unlock();
-        storage_io_unlock();
         g_storage_persist_status = STORAGE_PERSIST_STATUS_FAILED;
         g_storage_debug_last_save_status = FX_INVALID_NAME;
         return false;
     }
+    storage_unlock();
 
+    storage_io_lock();
+    storage_lock();
     g_storage_persist_status = STORAGE_PERSIST_STATUS_PENDING;
     g_storage_users_load_failed = false;
     storage_capture_users_io_snapshot_locked();
@@ -4607,6 +4612,10 @@ bool storage_persist_now_direct(void)
     g_storage_persist_json_size = persist_size;
     g_storage_persist_status = ok ? STORAGE_PERSIST_STATUS_SUCCESS : STORAGE_PERSIST_STATUS_FAILED;
     g_storage_debug_last_user_count = user_count_snapshot;
+    if (ok)
+    {
+        g_storage_debug_direct_persist_successes++;
+    }
     storage_unlock();
 
     return ok;
@@ -4669,6 +4678,8 @@ void storage_debug_snapshot(storage_debug_info_t *out_info)
     out_info->last_saved_bytes = g_storage_debug_last_saved_bytes;
     out_info->last_read_bytes = g_storage_debug_last_read_bytes;
     out_info->last_user_count = g_storage_debug_last_user_count;
+    out_info->direct_persist_requests = g_storage_debug_direct_persist_requests;
+    out_info->direct_persist_successes = g_storage_debug_direct_persist_successes;
 }
 
 bool storage_access_log_enqueue(const app_access_log_entry_t *entry)
