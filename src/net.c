@@ -114,7 +114,6 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define METRIC_GROUP_MAX 24
 #define NET_API_JSON_BUFFER_SIZE 1536
 #define NET_MEETING_SCHEDULE_STATUS_LEN 32
-#define NET_MEETING_SCHEDULE_MAX_DELAY_SECONDS (24UL * 60UL * 60UL)
 #define UPLOAD_IMAGE_DIM        160U
 #define UPLOAD_TILE_DIM         40U
 #define UPLOAD_TILE_COUNT_X     (UPLOAD_IMAGE_DIM / UPLOAD_TILE_DIM)
@@ -4757,11 +4756,10 @@ static bool net_meeting_schedule_parse_request(const char *body,
 {
     const char *cursor;
     bool is_json;
-    bool has_delay;
+    bool delay_seconds_present;
     bool has_start_unix;
     bool has_start_utc;
     bool start_utc_present;
-    ULONG delay_seconds = 0U;
     ULONG start_utc = 0U;
     ULONG start_unix = 0U;
     uint8_t recurrence = STORAGE_MEETING_RECURRENCE_NONE;
@@ -4769,6 +4767,7 @@ static bool net_meeting_schedule_parse_request(const char *body,
     bool recurrence_found = false;
     bool weekdays_found = false;
     char start_utc_probe[32];
+    char delay_seconds_probe[24];
     char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
     int profile_count = 0;
 
@@ -4800,9 +4799,9 @@ static bool net_meeting_schedule_parse_request(const char *body,
     }
 
     is_json = ('{' == *cursor);
-    has_delay = is_json
-                    ? net_json_get_ulong_value(cursor, "delay_seconds", &delay_seconds)
-                    : net_form_get_ulong_value(cursor, "delay_seconds", &delay_seconds);
+    delay_seconds_present = is_json
+                                ? (NULL != json_find_key(cursor, cursor + strlen(cursor), "delay_seconds"))
+                                : query_get_value(cursor, "delay_seconds", delay_seconds_probe, sizeof(delay_seconds_probe));
     has_start_utc = is_json
                         ? net_json_get_utc_time_value(cursor, "start_utc", &start_utc)
                         : net_form_get_utc_time_value(cursor, "start_utc", &start_utc);
@@ -4818,6 +4817,15 @@ static bool net_meeting_schedule_parse_request(const char *body,
         if (NULL != out_error)
         {
             *out_error = "missing_meeting_chapter";
+        }
+        return false;
+    }
+
+    if (delay_seconds_present)
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "delay_not_supported";
         }
         return false;
     }
@@ -4855,41 +4863,7 @@ static bool net_meeting_schedule_parse_request(const char *body,
 
     SSP_PARAMETER_NOT_USED(recurrence_found);
 
-    if (has_delay)
-    {
-        ULONG now_utc = 0U;
-
-        if ((0U == delay_seconds) || (delay_seconds > NET_MEETING_SCHEDULE_MAX_DELAY_SECONDS))
-        {
-            if (NULL != out_error)
-            {
-                *out_error = "invalid_delay";
-            }
-            return false;
-        }
-
-        if (!app_time_get_utc(&now_utc))
-        {
-            if (NULL != out_error)
-            {
-                *out_error = "time_not_synced";
-            }
-            return false;
-        }
-
-        if ((0xFFFFFFFFUL - now_utc) < delay_seconds)
-        {
-            if (NULL != out_error)
-            {
-                *out_error = "invalid_delay";
-            }
-            return false;
-        }
-
-        *out_start_utc = now_utc + delay_seconds;
-        *out_delay_seconds = delay_seconds;
-    }
-    else if (has_start_utc || has_start_unix)
+    if (has_start_utc || has_start_unix)
     {
         ULONG now_utc = 0U;
 
@@ -7348,7 +7322,7 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
              "\"time_synced\":%s,\"now_utc\":\"%s\",\"now_unix\":%lu,"
              "\"start_utc\":\"%s\",\"start_unix\":%lu,"
              "\"meeting_chapter\":\"%s\","
-             "\"delay_seconds\":%lu,\"profile_count\":%d,"
+             "\"profile_count\":%d,"
              "\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
              (unsigned long) schedule_id,
              pending_count,
@@ -7359,7 +7333,6 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
              start_utc_text,
              (unsigned long) start_utc,
              meeting_chapter_json,
-             (unsigned long) delay_seconds,
              profile_count,
              net_meeting_recurrence_text(recurrence),
              (unsigned int) weekdays_mask);

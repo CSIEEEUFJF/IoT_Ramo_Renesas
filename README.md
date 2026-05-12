@@ -371,7 +371,7 @@ O modo reunião também pode ser agendado por API. As rotas usam a mesma autenti
 - `POST /api/meeting/cancel`
 - `GET /api/meeting/status`
 
-O agendamento aceita JSON ou formulário `application/x-www-form-urlencoded`. Para iniciar por atraso relativo, envie `delay_seconds` e a lista `profile_indices` com os índices dos perfis autorizados:
+O agendamento aceita JSON ou formulário `application/x-www-form-urlencoded`. Envie sempre um horário absoluto em UTC pelo campo `start_utc`, no formato ISO `YYYY-MM-DDTHH:MM:SSZ`, e a lista `profile_indices` com os índices dos perfis autorizados:
 
 ```js
 await fetch("http://192.168.11.2/api/meeting/schedule", {
@@ -382,13 +382,13 @@ await fetch("http://192.168.11.2/api/meeting/schedule", {
   },
   body: JSON.stringify({
     meeting_chapter: "RAS",
-    delay_seconds: 300,
+    start_utc: "2030-01-01T00:00:00Z",
     profile_indices: [0, 4, 12]
   })
 });
 ```
 
-Para horário absoluto, use `start_utc` em UTC, no formato ISO `YYYY-MM-DDTHH:MM:SSZ`. Nesse caso, o agendamento depende do NTP estar sincronizado antes do horário chegar:
+O agendamento depende do NTP estar sincronizado antes do horário chegar:
 
 ```json
 {"meeting_chapter":"RAS","start_utc":"2030-01-01T00:00:00Z","profile_indices":[0,4,12]}
@@ -445,8 +445,7 @@ Regras importantes:
 - quando a seleção vier por nome, cada item precisa ter `name` e `chapter`
 - `start_utc` deve estar em UTC, por exemplo `2030-01-01T00:00:00Z`
 - `start_unix` ainda é aceito apenas por compatibilidade
-- `delay_seconds` aceita até 24 horas
-- `delay_seconds` precisa de NTP sincronizado, pois o firmware converte o atraso para o horário absoluto antes de salvar
+- `delay_seconds` não é aceito para agendamento de reunião; use sempre data e hora absolutas
 - até 8 agendamentos pendentes podem ficar salvos ao mesmo tempo
 - os agendamentos pendentes são persistidos em QSPI no arquivo `meeting.json`
 - agendamentos recorrentes mantêm o mesmo `id` e atualizam o próximo horário após cada execução
