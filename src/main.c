@@ -6,6 +6,7 @@
 #include "storage.h"
 #include <stdio.h>
 #include <stdint.h>
+#include <ctype.h>
 
 /* Configurações de rede */
 const char * RELAY_HOST    = "192.168.1.100";
@@ -503,7 +504,7 @@ void app_set_last_identity(const char *uid, const char *user)
 {
     app_state_lock();
 
-    if ((NULL != uid) && ('\0' != uid[0]))
+    if (NULL != uid)
     {
         strncpy((char *) g_app_state.last_uid, uid, UID_MAX_LEN - 1U);
         g_app_state.last_uid[UID_MAX_LEN - 1U] = '\0';
@@ -516,6 +517,104 @@ void app_set_last_identity(const char *uid, const char *user)
     }
 
     app_state_unlock();
+}
+
+static void app_trimmed_bounds(const char *text, const char **out_start, size_t *out_len)
+{
+    const char *start = (NULL != text) ? text : "";
+    const char *end;
+
+    while (('\0' != *start) && isspace((int) (unsigned char) *start))
+    {
+        start++;
+    }
+
+    end = start + strlen(start);
+    while ((end > start) && isspace((int) (unsigned char) *(end - 1)))
+    {
+        end--;
+    }
+
+    if (NULL != out_start)
+    {
+        *out_start = start;
+    }
+    if (NULL != out_len)
+    {
+        *out_len = (size_t) (end - start);
+    }
+}
+
+static bool app_names_match(const char *lhs, const char *rhs)
+{
+    const char *lhs_start;
+    const char *rhs_start;
+    size_t lhs_len;
+    size_t rhs_len;
+
+    app_trimmed_bounds(lhs, &lhs_start, &lhs_len);
+    app_trimmed_bounds(rhs, &rhs_start, &rhs_len);
+
+    if ((0U == lhs_len) || (lhs_len != rhs_len))
+    {
+        return false;
+    }
+
+    for (size_t i = 0U; i < lhs_len; i++)
+    {
+        unsigned char lhs_char = (unsigned char) lhs_start[i];
+        unsigned char rhs_char = (unsigned char) rhs_start[i];
+
+        if (tolower((int) lhs_char) != tolower((int) rhs_char))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool app_lookup_primary_uid_for_user_name_nowait(const char *user_name, char *out_uid, size_t out_uid_size)
+{
+    int user_count;
+
+    if ((NULL != out_uid) && (out_uid_size > 0U))
+    {
+        out_uid[0] = '\0';
+    }
+
+    if ((NULL == user_name) || ('\0' == user_name[0]) || (NULL == out_uid) || (out_uid_size == 0U))
+    {
+        return false;
+    }
+
+    user_count = storage_user_count_nowait();
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if (!storage_profile_get_nowait(i, &profile) ||
+            !app_names_match(profile.name, user_name) ||
+            (0U == profile.card_count) ||
+            ('\0' == profile.cards[0][0]))
+        {
+            continue;
+        }
+
+        for (size_t j = 0U; ((j + 1U) < out_uid_size) && ('\0' != profile.cards[0][j]); j++)
+        {
+            out_uid[j] = profile.cards[0][j];
+            out_uid[j + 1U] = '\0';
+        }
+        return ('\0' != out_uid[0]);
+    }
+
+    return false;
 }
 
 void app_set_ui_mode(app_ui_mode_t mode)
@@ -667,7 +766,7 @@ void app_post_event(app_event_type_t type, const char * data)
         {
             const char *door_user = ((NULL != data) && ('\0' != data[0])) ? data : "Abertura manual";
 
-            app_set_last_identity(NULL, door_user);
+            app_set_last_identity("", door_user);
             app_metric_begin_ui_result("autorizado");
             app_metric_begin_door(door_user);
             app_set_door(true);
@@ -729,12 +828,15 @@ void app_post_door_open_event(const char *source, const char *user)
 {
     app_event_t ev = { .type = EVENT_DOOR_OPEN };
     app_access_log_entry_t access_log_entry;
+    char door_uid[UID_MAX_LEN];
     const char *door_source = ((NULL != source) && ('\0' != source[0])) ? source : "API";
     const char *door_user = ((NULL != user) && ('\0' != user[0])) ? user : door_source;
+    bool found_profile_uid;
 
     memset(&access_log_entry, 0, sizeof(access_log_entry));
 
-    app_set_last_identity(NULL, door_user);
+    found_profile_uid = app_lookup_primary_uid_for_user_name_nowait(door_user, door_uid, sizeof(door_uid));
+    app_set_last_identity(found_profile_uid ? door_uid : "", door_user);
     app_metric_begin_ui_result("autorizado");
     app_metric_begin_door(door_source);
     app_set_door(true);

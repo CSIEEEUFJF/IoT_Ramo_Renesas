@@ -73,7 +73,7 @@ Content-Type: application/json
 
 ### Corpo
 
-O corpo e opcional. Quando enviado, o nome e gravado no log de acesso como responsavel pela abertura via aplicativo.
+O corpo e opcional. Quando enviado, o nome e gravado no log de acesso como responsavel pela abertura via aplicativo. Se o nome bater com um perfil cadastrado, a tela da placa tambem usa esse perfil para exibir a foto do usuario durante o acesso liberado.
 
 Campos aceitos:
 
