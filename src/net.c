@@ -5654,38 +5654,11 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
     ULONG network_mask = 0U;
     ULONG link_status = 0U;
     bool is_admin = net_admin_is_authenticated();
-    storage_debug_info_t storage_debug;
-    char storage_debug_line[420];
 
     nx_ip_address_get(&g_ip0, &ip_address, &network_mask);
     ip_to_string(ip_address, ip_text, sizeof(ip_text));
     ip_to_string(network_mask, netmask_text, sizeof(netmask_text));
     (void) nx_ip_status_check(&g_ip0, NX_IP_LINK_ENABLED, &link_status, NX_NO_WAIT);
-    storage_debug_snapshot(&storage_debug);
-    if (is_admin)
-    {
-        snprintf(storage_debug_line,
-                 sizeof(storage_debug_line),
-                 "<p class='muted'>QSPI diag: <strong>stage=%lu media=%lu save=%lu load=%lu bytes=%lu users=%lu runs=%lu loaded=%u failed=%u direct=%lu/%lu fmt=%lu erase=%lu estep=%lu</strong></p>",
-                 (unsigned long) storage_debug.last_stage,
-                 (unsigned long) storage_debug.last_media_status,
-                 (unsigned long) storage_debug.last_save_status,
-                 (unsigned long) storage_debug.last_load_status,
-                 (unsigned long) storage_debug.last_saved_bytes,
-                 (unsigned long) storage_debug.last_user_count,
-                 (unsigned long) storage_debug.worker_runs,
-                 storage_debug.loaded ? 1U : 0U,
-                 storage_debug.load_failed ? 1U : 0U,
-                 (unsigned long) storage_debug.direct_persist_successes,
-                 (unsigned long) storage_debug.direct_persist_requests,
-                 (unsigned long) storage_debug.format_status,
-                 (unsigned long) storage_debug.erase_status,
-                 (unsigned long) storage_debug.erase_step);
-    }
-    else
-    {
-        storage_debug_line[0] = '\0';
-    }
 
     if ((NULL == message_to_render) && ('\0' != g_net_flash_message[0]))
     {
@@ -5714,7 +5687,6 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
              "<p class='%s'>Link Ethernet: <strong>%s</strong></p>"
              "<p class='muted'>Sessao admin web: <strong>%s</strong></p>"
              "<p class='muted'>Persistencia QSPI: <strong>%s</strong></p>"
-             "%s"
              "<div class='nav'><a class='small' href='/'>Inicio</a>%s%s</div></div>"
              "%s"
              "%s%s%s%s%s%s"
@@ -5725,7 +5697,6 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
              (0U != link_status) ? "conectado" : "sem link",
              is_admin ? "autenticada" : "bloqueada",
              light_persist_status_text(),
-             storage_debug_line,
              is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/import'>Importar</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/meeting_mode'>Reuniao</a><a class='small' href='/meeting_schedules'>Agendamentos</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
              is_admin ? "<a class='small secondary' href='/logout'>Sair</a>" : "<a class='small' href='/login'>Entrar</a>",
              (NULL != message_to_render) ? message_to_render : "",
