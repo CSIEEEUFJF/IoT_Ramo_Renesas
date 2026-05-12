@@ -3223,12 +3223,14 @@ static bool storage_load_users_stream(void)
     }
 
     storage_lock();
-    if (!g_storage_loaded && !main_file_valid && !g_storage_users_load_failed)
+    if (!g_storage_loaded && !main_file_valid)
     {
         g_user_count = 0;
         g_recent_user_valid = false;
         memset(g_users, 0, sizeof(g_users));
         g_storage_loaded = true;
+        g_storage_users_load_failed = false;
+        g_storage_debug_last_user_count = 0U;
     }
     committed = g_storage_loaded;
     storage_unlock();
