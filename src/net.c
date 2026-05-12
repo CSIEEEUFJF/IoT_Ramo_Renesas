@@ -152,6 +152,7 @@ typedef struct st_net_metric_group
 static char g_net_flash_message[512] = {0};
 static ULONG g_net_admin_session_deadline = 0U;
 static ULONG g_net_admin_session_ip = 0U;
+static char g_net_admin_session_user[NAME_MAX_LEN] = {0};
 static ULONG g_net_current_request_ip = 0U;
 static ULONG g_net_admin_login_block_until = 0U;
 static ULONG g_net_api_door_next_allowed_tick = 0U;
@@ -322,16 +323,28 @@ static bool net_admin_is_authenticated(void)
     return true;
 }
 
-static void net_admin_begin_session(void)
+static void net_admin_begin_session(const char *admin_name)
 {
     g_net_admin_session_deadline = tx_time_get() + WEB_ADMIN_SESSION_TICKS;
     g_net_admin_session_ip = 0U;
+
+    if ((NULL != admin_name) && ('\0' != admin_name[0]))
+    {
+        strncpy(g_net_admin_session_user, admin_name, sizeof(g_net_admin_session_user) - 1U);
+        g_net_admin_session_user[sizeof(g_net_admin_session_user) - 1U] = '\0';
+    }
+    else
+    {
+        strncpy(g_net_admin_session_user, "Administrador web", sizeof(g_net_admin_session_user) - 1U);
+        g_net_admin_session_user[sizeof(g_net_admin_session_user) - 1U] = '\0';
+    }
 }
 
 static void net_admin_end_session(void)
 {
     g_net_admin_session_deadline = 0U;
     g_net_admin_session_ip = 0U;
+    g_net_admin_session_user[0] = '\0';
 }
 
 static const char *net_metric_http_case_for_path(const char *path)
@@ -7751,7 +7764,10 @@ static bool net_pin_is_valid_4_digits(const char *pin)
     return (len == STORAGE_ADMIN_PIN_LEN);
 }
 
-static bool net_admin_pin_valid_nowait(const char *pin, bool *out_pin_configured)
+static bool net_admin_pin_valid_nowait(const char *pin,
+                                       bool *out_pin_configured,
+                                       char *out_admin_name,
+                                       size_t out_admin_name_size)
 {
     int user_count;
     bool pin_configured = false;
@@ -7760,6 +7776,10 @@ static bool net_admin_pin_valid_nowait(const char *pin, bool *out_pin_configured
     if (NULL != out_pin_configured)
     {
         *out_pin_configured = false;
+    }
+    if ((NULL != out_admin_name) && (out_admin_name_size > 0U))
+    {
+        out_admin_name[0] = '\0';
     }
     if ((NULL == pin) || ('\0' == pin[0]))
     {
@@ -7785,6 +7805,17 @@ static bool net_admin_pin_valid_nowait(const char *pin, bool *out_pin_configured
         if (0 == strcmp(profile.admin_pin, pin))
         {
             pin_valid = true;
+            if ((NULL != out_admin_name) && (out_admin_name_size > 0U))
+            {
+                size_t copy_len = 0U;
+
+                while (((copy_len + 1U) < out_admin_name_size) && ('\0' != profile.name[copy_len]))
+                {
+                    out_admin_name[copy_len] = profile.name[copy_len];
+                    copy_len++;
+                }
+                out_admin_name[copy_len] = '\0';
+            }
             break;
         }
     }
@@ -7799,8 +7830,11 @@ static bool net_admin_pin_valid_nowait(const char *pin, bool *out_pin_configured
 static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data)
 {
     char pin[16];
+    char admin_name[NAME_MAX_LEN];
     ULONG now = tx_time_get();
     bool pin_configured = false;
+
+    admin_name[0] = '\0';
 
     if (!query_get_value(form_data, "pin", pin, sizeof(pin)))
     {
@@ -7809,7 +7843,7 @@ static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data
 
     if (0 == strcmp(pin, WEB_ADMIN_PIN))
     {
-        net_admin_begin_session();
+        net_admin_begin_session("Administrador web");
         g_net_admin_login_failures = 0U;
         g_net_admin_login_block_until = 0U;
         return light_redirect_with_flash(server_ptr, "/", "<div class='card ok'>Sessao admin iniciada.</div>");
@@ -7823,9 +7857,9 @@ static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data
                                          "<div class='card warn'>Muitas tentativas. Aguarde um minuto antes de tentar novamente.</div>");
     }
 
-    if (net_admin_pin_valid_nowait(pin, &pin_configured))
+    if (net_admin_pin_valid_nowait(pin, &pin_configured, admin_name, sizeof(admin_name)))
     {
-        net_admin_begin_session();
+        net_admin_begin_session(('\0' != admin_name[0]) ? admin_name : "Administrador web");
         g_net_admin_login_failures = 0U;
         g_net_admin_login_block_until = 0U;
         return light_redirect_with_flash(server_ptr, "/", "<div class='card ok'>Sessao admin iniciada.</div>");
@@ -8880,7 +8914,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
             {
                 return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para controlar a porta.</div>");
             }
-            app_post_event(EVENT_DOOR_OPEN, "WEB");
+            app_post_door_open_event("WEB",
+                                     ('\0' != g_net_admin_session_user[0])
+                                         ? g_net_admin_session_user
+                                         : "Administrador web");
             return light_redirect_with_flash(server_ptr, "/door", "<div class='card ok'>Comando de abertura enviado.</div>");
         }
         if (0 == strcmp(path, "/lampadatoggle"))
