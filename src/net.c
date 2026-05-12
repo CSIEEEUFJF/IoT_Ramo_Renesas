@@ -3290,6 +3290,283 @@ static bool net_form_get_ulong_value(const char *form, const char *key, ULONG *o
     return net_parse_ulong_strict(text, out_value);
 }
 
+static bool net_is_leap_year(unsigned int year)
+{
+    return (((year % 4U) == 0U) && (((year % 100U) != 0U) || ((year % 400U) == 0U)));
+}
+
+static unsigned int net_days_in_month(unsigned int year, unsigned int month)
+{
+    static const unsigned int days_by_month[12] =
+    {
+        31U, 28U, 31U, 30U, 31U, 30U, 31U, 31U, 30U, 31U, 30U, 31U
+    };
+
+    if ((month < 1U) || (month > 12U))
+    {
+        return 0U;
+    }
+
+    if ((2U == month) && net_is_leap_year(year))
+    {
+        return 29U;
+    }
+
+    return days_by_month[month - 1U];
+}
+
+static bool net_parse_fixed_digits(const char **cursor, unsigned int digits, unsigned int *out_value)
+{
+    unsigned int value = 0U;
+
+    if ((NULL == cursor) || (NULL == *cursor) || (NULL == out_value))
+    {
+        return false;
+    }
+
+    for (unsigned int i = 0U; i < digits; i++)
+    {
+        char ch = (*cursor)[i];
+        if (!isdigit((unsigned char) ch))
+        {
+            return false;
+        }
+        value = (value * 10U) + (unsigned int) (ch - '0');
+    }
+
+    *cursor += digits;
+    *out_value = value;
+    return true;
+}
+
+static bool net_parse_utc_datetime_text(const char *text, ULONG *out_unix)
+{
+    const char *cursor;
+    uint64_t days = 0ULL;
+    uint64_t unix_value;
+    unsigned int year;
+    unsigned int month;
+    unsigned int day;
+    unsigned int hour;
+    unsigned int minute;
+    unsigned int second = 0U;
+
+    if ((NULL == text) || (NULL == out_unix))
+    {
+        return false;
+    }
+
+    cursor = text;
+    while (('\0' != *cursor) && isspace((unsigned char) *cursor))
+    {
+        cursor++;
+    }
+
+    if (!net_parse_fixed_digits(&cursor, 4U, &year) || ('-' != *cursor++))
+    {
+        return false;
+    }
+    if (!net_parse_fixed_digits(&cursor, 2U, &month) || ('-' != *cursor++))
+    {
+        return false;
+    }
+    if (!net_parse_fixed_digits(&cursor, 2U, &day))
+    {
+        return false;
+    }
+
+    if (('T' != *cursor) && ('t' != *cursor) && (' ' != *cursor))
+    {
+        return false;
+    }
+    cursor++;
+
+    if (!net_parse_fixed_digits(&cursor, 2U, &hour) || (':' != *cursor++))
+    {
+        return false;
+    }
+    if (!net_parse_fixed_digits(&cursor, 2U, &minute))
+    {
+        return false;
+    }
+    if (':' == *cursor)
+    {
+        cursor++;
+        if (!net_parse_fixed_digits(&cursor, 2U, &second))
+        {
+            return false;
+        }
+    }
+
+    while (('\0' != *cursor) && isspace((unsigned char) *cursor))
+    {
+        cursor++;
+    }
+    if (('Z' == *cursor) || ('z' == *cursor))
+    {
+        cursor++;
+    }
+    else if ((0 == strncmp(cursor, "UTC", 3U)) || (0 == strncmp(cursor, "utc", 3U)))
+    {
+        cursor += 3U;
+    }
+
+    while (('\0' != *cursor) && isspace((unsigned char) *cursor))
+    {
+        cursor++;
+    }
+    if ('\0' != *cursor)
+    {
+        return false;
+    }
+
+    if ((year < 1970U) || (year > 2106U) ||
+        (month < 1U) || (month > 12U) ||
+        (day < 1U) || (day > net_days_in_month(year, month)) ||
+        (hour > 23U) || (minute > 59U) || (second > 59U))
+    {
+        return false;
+    }
+
+    for (unsigned int y = 1970U; y < year; y++)
+    {
+        days += net_is_leap_year(y) ? 366ULL : 365ULL;
+    }
+    for (unsigned int m = 1U; m < month; m++)
+    {
+        days += (uint64_t) net_days_in_month(year, m);
+    }
+    days += (uint64_t) (day - 1U);
+
+    unix_value = (days * 86400ULL) +
+                 ((uint64_t) hour * 3600ULL) +
+                 ((uint64_t) minute * 60ULL) +
+                 (uint64_t) second;
+    if (unix_value > 0xFFFFFFFFULL)
+    {
+        return false;
+    }
+
+    *out_unix = (ULONG) unix_value;
+    return true;
+}
+
+static bool net_json_get_utc_time_value(const char *json, const char *key, ULONG *out_unix)
+{
+    const char *limit;
+    const char *found;
+    const char *colon;
+    const char *cursor;
+    const char *end_quote;
+    char text[32];
+
+    if ((NULL == json) || (NULL == key) || (NULL == out_unix))
+    {
+        return false;
+    }
+
+    limit = json + strlen(json);
+    found = json_find_key(json, limit, key);
+    if (NULL == found)
+    {
+        return false;
+    }
+
+    colon = json_skip_whitespace(found, limit);
+    if ((NULL == colon) || (colon >= limit) || (':' != *colon))
+    {
+        return false;
+    }
+
+    cursor = json_skip_whitespace(colon + 1, limit);
+    if ((NULL == cursor) || (cursor >= limit) || ('"' != *cursor))
+    {
+        return false;
+    }
+
+    if (!json_copy_string_value(text, sizeof(text), cursor + 1, limit, &end_quote))
+    {
+        return false;
+    }
+
+    return net_parse_utc_datetime_text(text, out_unix);
+}
+
+static bool net_form_get_utc_time_value(const char *form, const char *key, ULONG *out_unix)
+{
+    char text[32];
+
+    if ((NULL == form) || (NULL == key) || (NULL == out_unix))
+    {
+        return false;
+    }
+
+    if (!query_get_value(form, key, text, sizeof(text)))
+    {
+        return false;
+    }
+
+    return net_parse_utc_datetime_text(text, out_unix);
+}
+
+static void net_format_utc_datetime(ULONG unix_utc, char *out, size_t out_size)
+{
+    uint64_t days;
+    uint32_t seconds_of_day;
+    unsigned int year = 1970U;
+    unsigned int month = 1U;
+    unsigned int day;
+    unsigned int hour;
+    unsigned int minute;
+    unsigned int second;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    days = ((uint64_t) unix_utc) / 86400ULL;
+    seconds_of_day = (uint32_t) (((uint64_t) unix_utc) % 86400ULL);
+
+    while (true)
+    {
+        unsigned int year_days = net_is_leap_year(year) ? 366U : 365U;
+        if (days < (uint64_t) year_days)
+        {
+            break;
+        }
+        days -= (uint64_t) year_days;
+        year++;
+    }
+
+    while (month <= 12U)
+    {
+        unsigned int month_days = net_days_in_month(year, month);
+        if (days < (uint64_t) month_days)
+        {
+            break;
+        }
+        days -= (uint64_t) month_days;
+        month++;
+    }
+
+    day = (unsigned int) days + 1U;
+    hour = seconds_of_day / 3600U;
+    seconds_of_day %= 3600U;
+    minute = seconds_of_day / 60U;
+    second = seconds_of_day % 60U;
+
+    snprintf(out,
+             out_size,
+             "%04u-%02u-%02uT%02u:%02u:%02uZ",
+             year,
+             month,
+             day,
+             hour,
+             minute,
+             second);
+}
+
 static bool net_profile_index_add_unique(int *profiles, int max_profiles, int *profile_count, long value)
 {
     if ((NULL == profiles) || (NULL == profile_count) ||
@@ -4351,13 +4628,17 @@ static bool net_meeting_schedule_parse_request(const char *body,
     const char *cursor;
     bool is_json;
     bool has_delay;
-    bool has_start;
+    bool has_start_unix;
+    bool has_start_utc;
+    bool start_utc_present;
     ULONG delay_seconds = 0U;
     ULONG start_utc = 0U;
+    ULONG start_unix = 0U;
     uint8_t recurrence = STORAGE_MEETING_RECURRENCE_NONE;
     uint8_t weekdays_mask = 0U;
     bool recurrence_found = false;
     bool weekdays_found = false;
+    char start_utc_probe[32];
     int profile_count = 0;
 
     if (NULL != out_error)
@@ -4390,9 +4671,24 @@ static bool net_meeting_schedule_parse_request(const char *body,
     has_delay = is_json
                     ? net_json_get_ulong_value(cursor, "delay_seconds", &delay_seconds)
                     : net_form_get_ulong_value(cursor, "delay_seconds", &delay_seconds);
-    has_start = is_json
-                    ? net_json_get_ulong_value(cursor, "start_unix", &start_utc)
-                    : net_form_get_ulong_value(cursor, "start_unix", &start_utc);
+    has_start_utc = is_json
+                        ? net_json_get_utc_time_value(cursor, "start_utc", &start_utc)
+                        : net_form_get_utc_time_value(cursor, "start_utc", &start_utc);
+    start_utc_present = is_json
+                            ? (NULL != json_find_key(cursor, cursor + strlen(cursor), "start_utc"))
+                            : query_get_value(cursor, "start_utc", start_utc_probe, sizeof(start_utc_probe));
+    has_start_unix = is_json
+                         ? net_json_get_ulong_value(cursor, "start_unix", &start_unix)
+                         : net_form_get_ulong_value(cursor, "start_unix", &start_unix);
+
+    if (start_utc_present && !has_start_utc)
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_start_utc";
+        }
+        return false;
+    }
 
     if (!(is_json
               ? net_json_get_recurrence_value(cursor, &recurrence, &recurrence_found)
@@ -4452,9 +4748,14 @@ static bool net_meeting_schedule_parse_request(const char *body,
         *out_start_utc = now_utc + delay_seconds;
         *out_delay_seconds = delay_seconds;
     }
-    else if (has_start)
+    else if (has_start_utc || has_start_unix)
     {
         ULONG now_utc = 0U;
+
+        if (!has_start_utc)
+        {
+            start_utc = start_unix;
+        }
 
         if ((0U == start_utc) || (app_time_get_utc(&now_utc) && (start_utc <= now_utc)))
         {
@@ -6803,6 +7104,8 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     const char *error = "bad_request";
     bool time_synced;
     ULONG now_utc = 0U;
+    char now_utc_text[24];
+    char start_utc_text[24];
     bool saved = false;
 
     if (!net_api_request_is_authorized(packet_ptr))
@@ -6875,17 +7178,22 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     }
 
     time_synced = app_time_get_utc(&now_utc);
+    net_format_utc_datetime(time_synced ? now_utc : 0U, now_utc_text, sizeof(now_utc_text));
+    net_format_utc_datetime(start_utc, start_utc_text, sizeof(start_utc_text));
     snprintf(g_net_api_json,
              sizeof(g_net_api_json),
              "{\"ok\":true,\"id\":%lu,\"pending_count\":%d,\"active\":%s,"
-             "\"time_synced\":%s,\"now_unix\":%lu,\"start_unix\":%lu,"
+             "\"time_synced\":%s,\"now_utc\":\"%s\",\"now_unix\":%lu,"
+             "\"start_utc\":\"%s\",\"start_unix\":%lu,"
              "\"delay_seconds\":%lu,\"profile_count\":%d,"
              "\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
              (unsigned long) schedule_id,
              pending_count,
              storage_meeting_mode_is_active() ? "true" : "false",
              time_synced ? "true" : "false",
+             now_utc_text,
              (unsigned long) (time_synced ? now_utc : 0U),
+             start_utc_text,
              (unsigned long) start_utc,
              (unsigned long) delay_seconds,
              profile_count,
@@ -7004,6 +7312,8 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     char last_status[NET_MEETING_SCHEDULE_STATUS_LEN];
     bool time_synced;
     ULONG now_utc = 0U;
+    char now_utc_text[24];
+    char last_start_utc_text[24];
     bool active;
     unsigned int active_selected;
     unsigned int active_allowed;
@@ -7022,6 +7332,7 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     active_selected = storage_meeting_mode_selected_profile_count();
     active_allowed = storage_meeting_mode_allowed_card_count();
     time_synced = app_time_get_utc(&now_utc);
+    net_format_utc_datetime(time_synced ? now_utc : 0U, now_utc_text, sizeof(now_utc_text));
 
     net_action_lock();
     pending_count = g_net_meeting_schedule_count;
@@ -7031,6 +7342,7 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     last_allowed = g_net_meeting_schedule_last_allowed;
     strncpy(last_status, g_net_meeting_schedule_last_status, sizeof(last_status) - 1U);
     last_status[sizeof(last_status) - 1U] = '\0';
+    net_format_utc_datetime(last_start_utc, last_start_utc_text, sizeof(last_start_utc_text));
 
     {
         size_t offset = 0U;
@@ -7039,18 +7351,20 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
                            sizeof(g_net_api_json),
                            &offset,
                            "{\"ok\":true,\"active\":%s,\"pending_count\":%d,"
-                           "\"time_synced\":%s,\"now_unix\":%lu,"
+                           "\"time_synced\":%s,\"now_utc\":\"%s\",\"now_unix\":%lu,"
                            "\"active_selected_profiles\":%u,\"active_allowed_cards\":%u,"
-                           "\"last_id\":%lu,\"last_start_unix\":%lu,"
+                           "\"last_id\":%lu,\"last_start_utc\":\"%s\",\"last_start_unix\":%lu,"
                            "\"last_selected_profiles\":%u,\"last_allowed_cards\":%u,"
                            "\"last_status\":\"%s\",\"schedules\":[",
                            active ? "true" : "false",
                            pending_count,
                            time_synced ? "true" : "false",
+                           now_utc_text,
                            (unsigned long) (time_synced ? now_utc : 0U),
                            active_selected,
                            active_allowed,
                            (unsigned long) last_id,
+                           last_start_utc_text,
                            (unsigned long) last_start_utc,
                            last_selected,
                            last_allowed,
@@ -7058,12 +7372,18 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
 
         for (int i = 0; i < g_net_meeting_schedule_count; i++)
         {
+            char schedule_start_utc_text[24];
+
+            net_format_utc_datetime(g_net_meeting_schedules[i].start_unix,
+                                    schedule_start_utc_text,
+                                    sizeof(schedule_start_utc_text));
             (void) net_appendf(g_net_api_json,
                                sizeof(g_net_api_json),
                                &offset,
-                               "%s{\"id\":%lu,\"start_unix\":%lu,\"profile_count\":%u,\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
+                               "%s{\"id\":%lu,\"start_utc\":\"%s\",\"start_unix\":%lu,\"profile_count\":%u,\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
                                (i > 0) ? "," : "",
                                (unsigned long) g_net_meeting_schedules[i].id,
+                               schedule_start_utc_text,
                                (unsigned long) g_net_meeting_schedules[i].start_unix,
                                g_net_meeting_schedules[i].profile_count,
                                net_meeting_recurrence_text(g_net_meeting_schedules[i].recurrence),
