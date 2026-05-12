@@ -39,7 +39,7 @@ extern ssp_err_t fx_media_init0_format(void);
 #define MEETING_SCHEDULE_BUFFER_SIZE 3072U
 #define METRICS_LOG_BUFFER_SIZE 6144
 #define STORAGE_MEDIA_SAFE_DELAY_TICKS (2U * TX_TIMER_TICKS_PER_SECOND)
-#define STORAGE_THREAD_STACK_SIZE 2048U
+#define STORAGE_THREAD_STACK_SIZE 4096U
 #define STORAGE_PHOTO_COPY_ROWS 8U
 #define STORAGE_PHOTO_FILE_MAGIC 0x50485247UL
 
@@ -81,7 +81,6 @@ static FX_FILE g_access_log_file;
 static FX_FILE g_metrics_file;
 static FX_FILE g_photo_file;
 static FX_FILE g_meeting_schedule_file;
-static user_t g_storage_users_io_snapshot[STORAGE_MAX_USERS];
 static user_t g_storage_recent_io_snapshot;
 static char g_storage_users_json_chunk[USERS_JSON_CHUNK_SIZE];
 static char g_storage_users_json_object[USERS_JSON_OBJECT_SIZE];
@@ -123,6 +122,8 @@ static void storage_thread_entry(ULONG initial_input);
 static void storage_refresh_metrics_snapshot(void);
 static void storage_ensure_loaded_locked(void);
 static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_user_count);
+static bool storage_load_users_file(const char *filename, bool commit_profiles);
+static void storage_restore_users_backup_after_failed_save(void);
 static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_size);
 static bool storage_save_metrics_buffer(const char *log_buffer, size_t log_size);
 static bool storage_save_meeting_schedules_json(const storage_meeting_schedule_t *schedules, int schedule_count);
@@ -1021,17 +1022,32 @@ static void storage_capture_users_io_snapshot_locked(void)
     }
 
     storage_reset_users_io_snapshot();
-    if (count_to_copy > 0)
-    {
-        memcpy(g_storage_users_io_snapshot, g_users, (size_t) count_to_copy * sizeof(g_users[0]));
-    }
-
     g_storage_users_io_count = count_to_copy;
     if (g_recent_user_valid)
     {
         g_storage_recent_io_snapshot = g_recent_user;
         g_storage_recent_io_valid = true;
     }
+}
+
+static bool storage_copy_user_for_io(int index, user_t *out_profile)
+{
+    bool copied = false;
+
+    if (NULL == out_profile)
+    {
+        return false;
+    }
+
+    storage_lock();
+    if ((index >= 0) && (index < g_user_count) && (index < STORAGE_MAX_USERS))
+    {
+        *out_profile = g_users[index];
+        copied = true;
+    }
+    storage_unlock();
+
+    return copied;
 }
 
 static void storage_append_user_to_io_snapshot(const user_t *profile)
@@ -1041,15 +1057,18 @@ static void storage_append_user_to_io_snapshot(const user_t *profile)
         return;
     }
 
+    storage_lock();
     if (g_storage_users_io_count < STORAGE_MAX_USERS)
     {
-        g_storage_users_io_snapshot[g_storage_users_io_count++] = *profile;
+        g_users[g_storage_users_io_count++] = *profile;
+        g_user_count = g_storage_users_io_count;
         if (storage_profile_has_cards(profile))
         {
             g_storage_recent_io_snapshot = *profile;
             g_storage_recent_io_valid = true;
         }
     }
+    storage_unlock();
 }
 
 static void storage_commit_users_io_snapshot_locked(void)
@@ -1065,11 +1084,6 @@ static void storage_commit_users_io_snapshot_locked(void)
         count_to_commit = STORAGE_MAX_USERS;
     }
 
-    memset(g_users, 0, sizeof(g_users));
-    if (count_to_commit > 0)
-    {
-        memcpy(g_users, g_storage_users_io_snapshot, (size_t) count_to_commit * sizeof(g_users[0]));
-    }
     g_user_count = count_to_commit;
 
     if (g_storage_recent_io_valid)
@@ -1576,12 +1590,27 @@ static bool storage_write_users_json_fragment(const char *fragment, size_t fragm
     return (FX_SUCCESS == status);
 }
 
+static void storage_restore_users_backup_after_failed_save(void)
+{
+    storage_media_lock();
+    if (storage_media_open())
+    {
+        (void) fx_file_delete(&g_fx_media0, USERS_FILE_NAME);
+        (void) fx_file_rename(&g_fx_media0, USERS_BACKUP_FILE_NAME, USERS_FILE_NAME);
+        (void) fx_media_flush(&g_fx_media0);
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+    }
+    storage_media_unlock();
+}
+
 static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_user_count)
 {
     UINT status;
     bool file_opened = false;
     bool ok = false;
     bool prepend_comma = false;
+    bool old_file_renamed = false;
     size_t json_size = 0U;
     int count_to_write = g_storage_users_io_count;
     ULONG start_tick = tx_time_get();
@@ -1671,9 +1700,16 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
 
     for (int i = 0; (FX_SUCCESS == status) && (i < count_to_write); i++)
     {
+        user_t profile;
         size_t object_size = 0U;
 
-        if (!storage_append_user_json_locked(&g_storage_users_io_snapshot[i],
+        if (!storage_copy_user_for_io(i, &profile))
+        {
+            status = FX_INVALID_NAME;
+            break;
+        }
+
+        if (!storage_append_user_json_locked(&profile,
                                              prepend_comma,
                                              g_storage_users_json_object,
                                              sizeof(g_storage_users_json_object),
@@ -1710,7 +1746,6 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
 
     if (FX_SUCCESS == status)
     {
-        bool old_file_renamed = false;
         UINT rename_status;
 
         (void) fx_file_delete(&g_fx_media0, USERS_BACKUP_FILE_NAME);
@@ -1740,7 +1775,6 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
 
         if (FX_SUCCESS == status)
         {
-            (void) fx_file_delete(&g_fx_media0, USERS_BACKUP_FILE_NAME);
             status = fx_media_flush(&g_fx_media0);
         }
     }
@@ -1756,6 +1790,17 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
         g_storage_media_ready = false;
     }
 
+    storage_media_unlock();
+
+    if ((FX_SUCCESS == status) && !storage_load_users_file(USERS_FILE_NAME, false))
+    {
+        status = FX_INVALID_NAME;
+    }
+    if ((FX_SUCCESS != status) && old_file_renamed)
+    {
+        storage_restore_users_backup_after_failed_save();
+    }
+
     g_storage_debug_last_save_status = status;
     g_storage_debug_last_stage = 15U;
     g_storage_debug_last_saved_bytes = (ULONG) json_size;
@@ -1763,7 +1808,6 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
     {
         *out_json_size = json_size;
     }
-    storage_media_unlock();
     app_metric_add_no_persist("Storage persist latency", "users.json", tx_time_get() - start_tick, (FX_SUCCESS == status));
     return (FX_SUCCESS == status);
 }
@@ -2909,7 +2953,12 @@ static bool storage_load_users_file(const char *filename, bool commit_profiles)
         bytes_left = (ULONG) g_users_file.fx_file_current_file_size;
         if (commit_profiles)
         {
+            storage_lock();
             storage_reset_users_io_snapshot();
+            memset(g_users, 0, sizeof(g_users));
+            g_user_count = 0;
+            g_recent_user_valid = false;
+            storage_unlock();
         }
 
         while ((FX_SUCCESS == status) && (bytes_left > 0U))
@@ -3728,6 +3777,30 @@ int storage_user_count(void)
     return count;
 }
 
+int storage_user_count_nowait(void)
+{
+    int count;
+
+    storage_init();
+    storage_lock();
+    count = g_user_count;
+    storage_unlock();
+
+    return count;
+}
+
+bool storage_users_loaded_nowait(void)
+{
+    bool loaded;
+
+    storage_init();
+    storage_lock();
+    loaded = g_storage_loaded;
+    storage_unlock();
+
+    return loaded;
+}
+
 bool storage_user_get(int index, char *out_name, char *out_uid)
 {
     bool ok = false;
@@ -3820,6 +3893,28 @@ bool storage_profile_get(int index, storage_user_profile_t *out_profile)
     storage_init();
     storage_lock();
     storage_ensure_loaded_locked();
+
+    if ((index >= 0) && (index < g_user_count))
+    {
+        *out_profile = g_users[index];
+        ok = true;
+    }
+
+    storage_unlock();
+    return ok;
+}
+
+bool storage_profile_get_nowait(int index, storage_user_profile_t *out_profile)
+{
+    bool ok = false;
+
+    if (NULL == out_profile)
+    {
+        return false;
+    }
+
+    storage_init();
+    storage_lock();
 
     if ((index >= 0) && (index < g_user_count))
     {
@@ -4447,6 +4542,8 @@ bool storage_remove_uid(const char *uid_str)
 
 bool storage_persist_now(void)
 {
+    UINT semaphore_status;
+
     storage_init();
     if (!g_storage_thread_ready)
     {
@@ -4458,7 +4555,17 @@ bool storage_persist_now(void)
     g_storage_persist_status = STORAGE_PERSIST_STATUS_PENDING;
     storage_unlock();
 
-    return (TX_SUCCESS == tx_semaphore_put(&g_storage_persist_semaphore));
+    semaphore_status = tx_semaphore_put(&g_storage_persist_semaphore);
+    if (TX_SUCCESS != semaphore_status)
+    {
+        storage_lock();
+        g_storage_persist_requested = false;
+        g_storage_persist_status = STORAGE_PERSIST_STATUS_FAILED;
+        storage_unlock();
+        return false;
+    }
+
+    return true;
 }
 
 bool storage_persist_wait(ULONG timeout_ticks)
@@ -4491,6 +4598,33 @@ bool storage_persist_wait(ULONG timeout_ticks)
 unsigned int storage_persist_status(void)
 {
     return (unsigned int) g_storage_persist_status;
+}
+
+void storage_debug_snapshot(storage_debug_info_t *out_info)
+{
+    if (NULL == out_info)
+    {
+        return;
+    }
+
+    memset(out_info, 0, sizeof(*out_info));
+    storage_init();
+    storage_lock();
+    out_info->persist_status = (unsigned int) g_storage_persist_status;
+    out_info->thread_ready = g_storage_thread_ready;
+    out_info->loaded = g_storage_loaded;
+    out_info->load_failed = g_storage_users_load_failed;
+    out_info->last_json_size = (ULONG) g_storage_persist_json_size;
+    storage_unlock();
+
+    out_info->worker_runs = g_storage_debug_worker_runs;
+    out_info->last_stage = g_storage_debug_last_stage;
+    out_info->last_media_status = g_storage_debug_last_media_status;
+    out_info->last_save_status = g_storage_debug_last_save_status;
+    out_info->last_load_status = g_storage_debug_last_load_status;
+    out_info->last_saved_bytes = g_storage_debug_last_saved_bytes;
+    out_info->last_read_bytes = g_storage_debug_last_read_bytes;
+    out_info->last_user_count = g_storage_debug_last_user_count;
 }
 
 bool storage_access_log_enqueue(const app_access_log_entry_t *entry)

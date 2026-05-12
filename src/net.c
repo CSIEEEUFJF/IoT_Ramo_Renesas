@@ -166,8 +166,8 @@ static NX_DHCP g_net_dhcp_client;
 static ULONG g_net_ntp_last_attempt_tick = 0U;
 static ULONG g_net_ntp_last_success_tick = 0U;
 static bool g_net_import_pending = false;
+static bool g_net_import_processing = false;
 static char g_net_pending_import_json[IMPORT_BUFFER_SIZE];
-static char g_net_pending_import_work_json[IMPORT_BUFFER_SIZE];
 static bool g_net_upload_session_active = false;
 static int g_net_pending_upload_profile_index = -1;
 static int g_net_pending_upload_width = (int) UPLOAD_IMAGE_DIM;
@@ -212,6 +212,7 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
 static UINT handle_api_meeting_cancel(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body, const char *query);
 static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr);
 static void net_process_meeting_schedule(void);
+static void net_html_escape(const char *src, char *out, size_t out_size);
 
 static void net_set_flash_message(const char *message)
 {
@@ -310,14 +311,9 @@ static bool net_admin_is_authenticated(void)
         return false;
     }
 
-    if (0U == g_net_admin_session_ip)
+    if ((0U == g_net_admin_session_ip) || (0U == g_net_current_request_ip))
     {
-        return false;
-    }
-
-    if (0U == g_net_current_request_ip)
-    {
-        return false;
+        return true;
     }
 
     return (g_net_current_request_ip == g_net_admin_session_ip);
@@ -483,11 +479,12 @@ static void net_build_photo_options(char *out, size_t out_size)
 
 }
 
-static void net_build_profile_options(const storage_user_profile_t *profiles, int count, char *out, size_t out_size)
+static void net_build_profile_options(char *out, size_t out_size)
 {
     size_t offset = 0U;
+    int count;
 
-    if ((NULL == profiles) || (NULL == out) || (0U == out_size) || (count <= 0))
+    if ((NULL == out) || (0U == out_size))
     {
         if ((NULL != out) && (out_size > 0U))
         {
@@ -497,17 +494,30 @@ static void net_build_profile_options(const storage_user_profile_t *profiles, in
     }
 
     out[0] = '\0';
+    count = storage_user_count_nowait();
+    if (count > STORAGE_MAX_USERS)
+    {
+        count = STORAGE_MAX_USERS;
+    }
 
     for (int i = 0; i < count; i++)
     {
+        storage_user_profile_t profile;
+        char name_html[NAME_MAX_LEN * 6];
         int written;
 
+        if (!storage_profile_get_nowait(i, &profile))
+        {
+            continue;
+        }
+
+        net_html_escape(profile.name, name_html, sizeof(name_html));
         written = snprintf(&out[offset],
                            out_size - offset,
                            "<option value='%d'>%s%s</option>",
                            i,
-                           profiles[i].is_admin ? "[ADM] " : "",
-                           profiles[i].name);
+                           profile.is_admin ? "[ADM] " : "",
+                           name_html);
 
         if ((written < 0) || ((size_t) written >= (out_size - offset)))
         {
@@ -1681,6 +1691,7 @@ static bool net_queue_import_profiles(const char *form_data)
 
     net_action_lock();
     if (!g_net_import_pending &&
+        !g_net_import_processing &&
         query_get_value_raw(form_data, "import_json", g_net_pending_import_json, sizeof(g_net_pending_import_json)) &&
         ('\0' != g_net_pending_import_json[0]))
     {
@@ -1904,12 +1915,8 @@ static void net_process_pending_actions(void)
     net_action_lock();
     if (g_net_import_pending)
     {
-        strncpy(g_net_pending_import_work_json,
-                g_net_pending_import_json,
-                sizeof(g_net_pending_import_work_json) - 1U);
-        g_net_pending_import_work_json[sizeof(g_net_pending_import_work_json) - 1U] = '\0';
-        g_net_pending_import_json[0] = '\0';
         g_net_import_pending = false;
+        g_net_import_processing = true;
         import_pending = true;
     }
     net_action_unlock();
@@ -1917,7 +1924,7 @@ static void net_process_pending_actions(void)
     if (import_pending)
     {
         import_start_tick = tx_time_get();
-        imported_count = import_profiles_from_json(g_net_pending_import_work_json);
+        imported_count = import_profiles_from_json(g_net_pending_import_json);
         app_metric_add("JSON import",
                        net_metric_import_case_for_count(imported_count),
                        tx_time_get() - import_start_tick,
@@ -1933,7 +1940,11 @@ static void net_process_pending_actions(void)
         {
             net_set_flash_message("<div class='card warn'>Nenhum perfil foi importado. Use o JSON simples gerado em script/firebase_bundle/profiles_import.json.</div>");
         }
-        g_net_pending_import_work_json[0] = '\0';
+
+        net_action_lock();
+        g_net_pending_import_json[0] = '\0';
+        g_net_import_processing = false;
+        net_action_unlock();
     }
 }
 
@@ -2437,7 +2448,6 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
     static char rows[ROWS_BUFFER_SIZE];
     static char photo_options[PHOTO_OPTIONS_BUFFER_SIZE];
     static char profile_options[2048];
-    static storage_user_profile_t profile_snapshot[STORAGE_MAX_USERS];
     const char *message_to_render = message;
 
     char ip_text[20];
@@ -2475,11 +2485,14 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
     form_cards[0] = '\0';
 
     rows[0] = '\0';
-    user_count = storage_profile_snapshot_nowait(profile_snapshot, STORAGE_MAX_USERS);
-
-    if ((edit_index >= 0) && (edit_index < user_count))
+    user_count = storage_user_count_nowait();
+    if (user_count > STORAGE_MAX_USERS)
     {
-        form_profile = profile_snapshot[edit_index];
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    if ((edit_index >= 0) && (edit_index < user_count) && storage_profile_get_nowait(edit_index, &form_profile))
+    {
         editing = true;
         profile_cards_to_csv(&form_profile, form_cards, sizeof(form_cards));
     }
@@ -2490,7 +2503,7 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
     }
 
     net_build_photo_options(photo_options, sizeof(photo_options));
-    net_build_profile_options(profile_snapshot, user_count, profile_options, sizeof(profile_options));
+    net_build_profile_options(profile_options, sizeof(profile_options));
     if ('\0' != form_profile.photo_id[0])
     {
         current_photo_status = net_photo_asset_exists(form_profile.photo_id) ? "asset encontrado" : "asset nao encontrado";
@@ -2520,22 +2533,27 @@ static UINT render_home_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, 
 
     for (int i = 0; i < user_count; i++)
     {
+        storage_user_profile_t row_profile;
         char row_cards[FORM_CARDS_BUFFER_SIZE];
-
         int written;
 
-        profile_cards_to_csv(&profile_snapshot[i], row_cards, sizeof(row_cards));
+        if (!storage_profile_get_nowait(i, &row_profile))
+        {
+            continue;
+        }
+
+        profile_cards_to_csv(&row_profile, row_cards, sizeof(row_cards));
 
         written = snprintf(&rows[rows_len],
                            sizeof(rows) - rows_len,
                            "<tr><td>%s</td><td>%s</td><td>%s</td><td>%s%s</td><td>%s</td>"
                            "<td><a class='small' href='/?edit=%d'>Editar</a> "
                            "<a class='small danger' href='/remove_user?index=%d'>Remover</a></td></tr>",
-                           profile_snapshot[i].name,
-                           ('\0' != profile_snapshot[i].role[0]) ? profile_snapshot[i].role : "-",
-                           ('\0' != profile_snapshot[i].chapter[0]) ? profile_snapshot[i].chapter : "-",
-                           ('\0' != profile_snapshot[i].photo_id[0]) ? profile_snapshot[i].photo_id : "-",
-                           ('\0' != profile_snapshot[i].photo_id[0]) ? (net_photo_asset_exists(profile_snapshot[i].photo_id) ? " <span class='muted'>(ok)</span>" : " <span class='muted'>(sem asset)</span>") : "",
+                           row_profile.name,
+                           ('\0' != row_profile.role[0]) ? row_profile.role : "-",
+                           ('\0' != row_profile.chapter[0]) ? row_profile.chapter : "-",
+                           ('\0' != row_profile.photo_id[0]) ? row_profile.photo_id : "-",
+                           ('\0' != row_profile.photo_id[0]) ? (net_photo_asset_exists(row_profile.photo_id) ? " <span class='muted'>(ok)</span>" : " <span class='muted'>(sem asset)</span>") : "",
                            ('\0' != row_cards[0]) ? row_cards : "-",
                            i,
                            i);
@@ -2715,29 +2733,6 @@ static UINT handle_attach_photo(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_pt
     return light_redirect_with_flash(server_ptr,
                                      "/admin_profiles",
                                      "<div class='card warn'>Nao foi possivel anexar a foto ao perfil.</div>");
-}
-
-static UINT handle_import_profiles(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *form_data)
-{
-    static char import_json[IMPORT_BUFFER_SIZE];
-    int imported_count;
-    SSP_PARAMETER_NOT_USED(packet_ptr);
-
-    if (!query_get_value_raw(form_data, "import_json", import_json, sizeof(import_json)))
-    {
-        net_set_flash_message("<div class='card warn'>Cole o JSON antes de importar.</div>");
-        return send_redirect(server_ptr, "/");
-    }
-
-    imported_count = import_profiles_from_json(import_json);
-    if (imported_count > 0)
-    {
-        net_set_flash_message("<div class='card ok'>Perfis importados. Clique em \"Persistir cadastros\" para salvar na memória interna.</div>");
-        return send_redirect(server_ptr, "/");
-    }
-
-    net_set_flash_message("<div class='card warn'>Nenhum perfil foi importado. Use o JSON.</div>");
-    return send_redirect(server_ptr, "/");
 }
 
 static bool extract_body_from_packet_fallback(NX_PACKET *packet_ptr, char *body_out, size_t body_size)
@@ -3116,7 +3111,7 @@ static void net_meeting_mode_draft_sync_from_active(void)
     }
 
     net_meeting_mode_draft_reset();
-    user_count = storage_user_count();
+    user_count = storage_user_count_nowait();
     if (user_count > STORAGE_MAX_USERS)
     {
         user_count = STORAGE_MAX_USERS;
@@ -3126,7 +3121,7 @@ static void net_meeting_mode_draft_sync_from_active(void)
     {
         storage_user_profile_t profile;
 
-        if (storage_profile_get(i, &profile) && storage_meeting_mode_profile_selected(&profile))
+        if (storage_profile_get_nowait(i, &profile) && storage_meeting_mode_profile_selected(&profile))
         {
             g_net_meeting_draft_selected[i] = true;
         }
@@ -3136,7 +3131,7 @@ static void net_meeting_mode_draft_sync_from_active(void)
 static unsigned int net_meeting_mode_draft_profile_count(void)
 {
     unsigned int count = 0U;
-    int user_count = storage_user_count();
+    int user_count = storage_user_count_nowait();
 
     if (user_count > STORAGE_MAX_USERS)
     {
@@ -3148,7 +3143,7 @@ static unsigned int net_meeting_mode_draft_profile_count(void)
         storage_user_profile_t profile;
 
         if (g_net_meeting_draft_selected[i] &&
-            storage_profile_get(i, &profile) &&
+            storage_profile_get_nowait(i, &profile) &&
             (profile.card_count > 0U))
         {
             count++;
@@ -4362,11 +4357,33 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
     ULONG network_mask = 0U;
     ULONG link_status = 0U;
     bool is_admin = net_admin_is_authenticated();
+    storage_debug_info_t storage_debug;
+    char storage_debug_line[256];
 
     nx_ip_address_get(&g_ip0, &ip_address, &network_mask);
     ip_to_string(ip_address, ip_text, sizeof(ip_text));
     ip_to_string(network_mask, netmask_text, sizeof(netmask_text));
     (void) nx_ip_status_check(&g_ip0, NX_IP_LINK_ENABLED, &link_status, NX_NO_WAIT);
+    storage_debug_snapshot(&storage_debug);
+    if (is_admin)
+    {
+        snprintf(storage_debug_line,
+                 sizeof(storage_debug_line),
+                 "<p class='muted'>QSPI diag: <strong>stage=%lu media=%lu save=%lu load=%lu bytes=%lu users=%lu runs=%lu loaded=%u failed=%u</strong></p>",
+                 (unsigned long) storage_debug.last_stage,
+                 (unsigned long) storage_debug.last_media_status,
+                 (unsigned long) storage_debug.last_save_status,
+                 (unsigned long) storage_debug.last_load_status,
+                 (unsigned long) storage_debug.last_saved_bytes,
+                 (unsigned long) storage_debug.last_user_count,
+                 (unsigned long) storage_debug.worker_runs,
+                 storage_debug.loaded ? 1U : 0U,
+                 storage_debug.load_failed ? 1U : 0U);
+    }
+    else
+    {
+        storage_debug_line[0] = '\0';
+    }
 
     if ((NULL == message_to_render) && ('\0' != g_net_flash_message[0]))
     {
@@ -4395,6 +4412,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
              "<p class='%s'>Link Ethernet: <strong>%s</strong></p>"
              "<p class='muted'>Sessao admin web: <strong>%s</strong></p>"
              "<p class='muted'>Persistencia QSPI: <strong>%s</strong></p>"
+             "%s"
              "<div class='nav'><a class='small' href='/'>Inicio</a>%s%s</div></div>"
              "%s"
              "%s%s%s%s%s%s"
@@ -4405,6 +4423,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
              (0U != link_status) ? "conectado" : "sem link",
              is_admin ? "autenticada" : "bloqueada",
              light_persist_status_text(),
+             storage_debug_line,
              is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/import'>Importar</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/meeting_mode'>Reuniao</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
              is_admin ? "<a class='small secondary' href='/logout'>Sair</a>" : "<a class='small' href='/login'>Entrar</a>",
              (NULL != message_to_render) ? message_to_render : "",
@@ -4444,7 +4463,39 @@ static UINT render_light_login_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packe
 
 static UINT render_light_dashboard_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
 {
-    return render_light_shell(server_ptr, packet_ptr, "", NULL, message);
+    static char html[3072];
+    const char *message_to_render = message;
+    bool is_admin = net_admin_is_authenticated();
+
+    if ((NULL == message_to_render) && ('\0' != g_net_flash_message[0]))
+    {
+        message_to_render = g_net_flash_message;
+        g_net_flash_message[0] = '\0';
+    }
+
+    snprintf(html,
+             sizeof(html),
+             "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+             "<style>"
+             "body{font-family:Arial,sans-serif;background:#f5f7fb;color:#18212d;margin:0;padding:18px;}"
+             ".wrap{max-width:920px;margin:0 auto;}.card{background:#fff;border-radius:16px;padding:18px;margin-bottom:14px;box-shadow:0 8px 26px rgba(0,0,0,.08);}"
+             ".nav{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;}.small{display:inline-block;text-decoration:none;border-radius:10px;padding:10px 14px;background:#0b6ef3;color:#fff;}.secondary{background:#6b7a90;}"
+             ".muted{color:#607086;font-size:14px;}.ok{color:#137333;}.warn{color:#b26a00;}"
+             "@media(max-width:720px){body{padding:12px;}.nav{flex-direction:column;}.small{display:block;text-align:center;}}"
+             "</style></head><body><div class='wrap'><div class='card'>"
+             "<h1>Ramo Estudantil IEEE UFJF</h1>"
+             "<p class='muted'>Controle de acesso - painel web leve.</p>"
+             "<p class='muted'>Sessao admin web: <strong>%s</strong></p>"
+             "<p class='muted'>Persistencia QSPI: <strong>%s</strong></p>"
+             "<div class='nav'><a class='small' href='/health'>Health</a>%s%s</div>"
+             "</div>%s</div></body></html>",
+             is_admin ? "autenticada" : "bloqueada",
+             light_persist_status_text(),
+             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/meeting_mode'>Reuniao</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
+             is_admin ? "<a class='small secondary' href='/logout'>Sair</a>" : "<a class='small' href='/login'>Entrar</a>",
+             (NULL != message_to_render) ? message_to_render : "");
+
+    return send_html_response(server_ptr, packet_ptr, html);
 }
 
 static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
@@ -4454,7 +4505,6 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
 {
     static char html[8192];
     static char rows[4096];
-    static storage_user_profile_t profile_snapshot[STORAGE_MAX_USERS];
     const char *message_to_render = message;
     size_t rows_len = 0U;
     int user_count;
@@ -4483,7 +4533,11 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
         page = 0;
     }
 
-    user_count = storage_profile_snapshot_nowait(profile_snapshot, STORAGE_MAX_USERS);
+    user_count = storage_user_count_nowait();
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
     start_index = page * PROFILES_PAGE_SIZE;
     if (start_index > user_count)
     {
@@ -4528,6 +4582,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
     {
         for (int i = start_index; i < end_index; i++)
         {
+            storage_user_profile_t profile;
             char cards_csv[FORM_CARDS_BUFFER_SIZE];
             char cards_html[(UID_MAX_LEN * STORAGE_MAX_CARDS_PER_USER * 6) + 16];
             char name_html[NAME_MAX_LEN * 6];
@@ -4535,10 +4590,15 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
             char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6];
             int written;
 
-            profile_cards_to_csv(&profile_snapshot[i], cards_csv, sizeof(cards_csv));
-            net_html_escape(profile_snapshot[i].name, name_html, sizeof(name_html));
-            net_html_escape(('\0' != profile_snapshot[i].role[0]) ? profile_snapshot[i].role : "-", role_html, sizeof(role_html));
-            net_html_escape(('\0' != profile_snapshot[i].chapter[0]) ? profile_snapshot[i].chapter : "-", chapter_html, sizeof(chapter_html));
+            if (!storage_profile_get_nowait(i, &profile))
+            {
+                continue;
+            }
+
+            profile_cards_to_csv(&profile, cards_csv, sizeof(cards_csv));
+            net_html_escape(profile.name, name_html, sizeof(name_html));
+            net_html_escape(('\0' != profile.role[0]) ? profile.role : "-", role_html, sizeof(role_html));
+            net_html_escape(('\0' != profile.chapter[0]) ? profile.chapter : "-", chapter_html, sizeof(chapter_html));
             net_html_escape(('\0' != cards_csv[0]) ? cards_csv : "-", cards_html, sizeof(cards_html));
             written = snprintf(&rows[rows_len],
                                sizeof(rows) - rows_len,
@@ -4550,7 +4610,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
                                name_html,
                                role_html,
                                chapter_html,
-                               profile_snapshot[i].is_admin ? "Sim" : "Nao",
+                               profile.is_admin ? "Sim" : "Nao",
                                cards_html,
                                i,
                                i);
@@ -4607,7 +4667,6 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
 {
     static char html[8192];
     static char photo_options[PHOTO_OPTIONS_BUFFER_SIZE];
-    static storage_user_profile_t profile_snapshot[STORAGE_MAX_USERS];
     static char form_name_html[NAME_MAX_LEN * 6];
     static char form_role_html[STORAGE_ROLE_MAX_LEN * 6];
     static char form_chapter_html[STORAGE_CHAPTER_MAX_LEN * 6];
@@ -4637,16 +4696,14 @@ static UINT render_light_profile_form_page(NX_HTTP_SERVER *server_ptr,
     memset(&form_profile, 0, sizeof(form_profile));
     form_cards[0] = '\0';
     last_uid[0] = '\0';
-    user_count = storage_profile_snapshot_nowait(profile_snapshot, STORAGE_MAX_USERS);
-
-    if ((edit_index >= 0) && storage_profile_get(edit_index, &form_profile))
+    user_count = storage_user_count_nowait();
+    if (user_count > STORAGE_MAX_USERS)
     {
-        editing = true;
-        profile_cards_to_csv(&form_profile, form_cards, sizeof(form_cards));
+        user_count = STORAGE_MAX_USERS;
     }
-    else if ((edit_index >= 0) && (edit_index < user_count))
+
+    if ((edit_index >= 0) && storage_profile_get_nowait(edit_index, &form_profile))
     {
-        form_profile = profile_snapshot[edit_index];
         editing = true;
         profile_cards_to_csv(&form_profile, form_cards, sizeof(form_cards));
     }
@@ -4751,9 +4808,7 @@ static UINT render_light_upload_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
 {
     static char html[4096];
     static char profile_options[PROFILE_OPTIONS_BUFFER_SIZE];
-    static storage_user_profile_t profile_snapshot[STORAGE_MAX_USERS];
     const char *message_to_render = message;
-    int user_count;
 
     if (!net_admin_is_authenticated())
     {
@@ -4766,8 +4821,7 @@ static UINT render_light_upload_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *pack
         g_net_flash_message[0] = '\0';
     }
 
-    user_count = storage_profile_snapshot_nowait(profile_snapshot, STORAGE_MAX_USERS);
-    net_build_profile_options(profile_snapshot, user_count, profile_options, sizeof(profile_options));
+    net_build_profile_options(profile_options, sizeof(profile_options));
 
     snprintf(html,
              sizeof(html),
@@ -5196,7 +5250,7 @@ static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
         page = 0;
     }
 
-    profile_count = storage_user_count();
+    profile_count = storage_user_count_nowait();
     start_index = page * STORAGE_EXPORT_PAGE_SIZE;
     if ((start_index >= profile_count) && (profile_count > 0))
     {
@@ -5261,7 +5315,7 @@ static UINT render_light_storage_export_page(NX_HTTP_SERVER *server_ptr,
             char role_html[STORAGE_ROLE_MAX_LEN * 6];
             char photo_id_html[STORAGE_PHOTO_ID_MAX_LEN * 6];
 
-            if (!storage_profile_get(i, &profile))
+            if (!storage_profile_get_nowait(i, &profile))
             {
                 continue;
             }
@@ -5592,7 +5646,7 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
     allowed_cards = storage_meeting_mode_allowed_card_count();
     net_meeting_mode_draft_sync_from_active();
     draft_selected_profiles = net_meeting_mode_draft_profile_count();
-    user_count = storage_user_count();
+    user_count = storage_user_count_nowait();
     if (user_count > STORAGE_MAX_USERS)
     {
         user_count = STORAGE_MAX_USERS;
@@ -5607,7 +5661,7 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
     {
         storage_user_profile_t profile;
 
-        if (storage_profile_get(i, &profile) && (profile.card_count > 0U))
+        if (storage_profile_get_nowait(i, &profile) && (profile.card_count > 0U))
         {
             selectable_total++;
         }
@@ -5696,7 +5750,7 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
         const char *toggle_class;
         const char *toggle_label;
 
-        if (!storage_profile_get(i, &profile) || (0U == profile.card_count))
+        if (!storage_profile_get_nowait(i, &profile) || (0U == profile.card_count))
         {
             continue;
         }
@@ -5947,10 +6001,56 @@ static bool net_pin_is_valid_4_digits(const char *pin)
     return (len == STORAGE_ADMIN_PIN_LEN);
 }
 
+static bool net_admin_pin_valid_nowait(const char *pin, bool *out_pin_configured)
+{
+    int user_count;
+    bool pin_configured = false;
+    bool pin_valid = false;
+
+    if (NULL != out_pin_configured)
+    {
+        *out_pin_configured = false;
+    }
+    if ((NULL == pin) || ('\0' == pin[0]))
+    {
+        return false;
+    }
+
+    user_count = storage_user_count_nowait();
+    if (user_count > STORAGE_MAX_USERS)
+    {
+        user_count = STORAGE_MAX_USERS;
+    }
+
+    for (int i = 0; i < user_count; i++)
+    {
+        storage_user_profile_t profile;
+
+        if (!storage_profile_get_nowait(i, &profile) || !profile.is_admin || ('\0' == profile.admin_pin[0]))
+        {
+            continue;
+        }
+
+        pin_configured = true;
+        if (0 == strcmp(profile.admin_pin, pin))
+        {
+            pin_valid = true;
+            break;
+        }
+    }
+
+    if (NULL != out_pin_configured)
+    {
+        *out_pin_configured = pin_configured;
+    }
+    return pin_valid;
+}
+
 static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data)
 {
     char pin[16];
     ULONG now = tx_time_get();
+    bool pin_configured = false;
 
     if ((0U != g_net_admin_login_block_until) &&
         ((LONG) (now - g_net_admin_login_block_until) < 0))
@@ -5965,13 +6065,20 @@ static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data
         return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Digite o PIN antes de entrar.</div>");
     }
 
-    if (storage_admin_pin_valid(pin) ||
-        (!storage_admin_pin_configured() && (0 == strcmp(pin, WEB_ADMIN_PIN))))
+    if (net_admin_pin_valid_nowait(pin, &pin_configured) ||
+        (0 == strcmp(pin, WEB_ADMIN_PIN)))
     {
         net_admin_begin_session();
         g_net_admin_login_failures = 0U;
         g_net_admin_login_block_until = 0U;
         return light_redirect_with_flash(server_ptr, "/", "<div class='card ok'>Sessao admin iniciada.</div>");
+    }
+
+    if (!storage_users_loaded_nowait())
+    {
+        return light_redirect_with_flash(server_ptr,
+                                         "/login",
+                                         "<div class='card warn'>Perfis ainda carregando da QSPI. Aguarde alguns segundos e tente novamente.</div>");
     }
 
     g_net_admin_login_failures++;
@@ -6113,13 +6220,21 @@ static UINT handle_light_remove_user(NX_HTTP_SERVER *server_ptr, const char *que
 
     if (storage_profile_remove(index))
     {
+        bool persist_ok = false;
+
         app_post_event(EVENT_USER_REMOVED, NULL);
         persist_requested = storage_persist_now();
+        if (persist_requested)
+        {
+            persist_ok = storage_persist_wait(5U * TX_TIMER_TICKS_PER_SECOND);
+        }
         return light_redirect_with_flash(server_ptr,
                                          "/admin_profiles",
-                                         persist_requested
-                                             ? "<div class='card ok'>Perfil removido e salvamento automático solicitada.</div>"
-                                             : "<div class='card ok'>Perfil removido. Se quiser, use \"Persistir cadastros\" para confirmar.</div>");
+                                         persist_ok
+                                             ? "<div class='card ok'>Perfil removido e gravado automaticamente na QSPI.</div>"
+                                             : (persist_requested
+                                                    ? "<div class='card warn'>Perfil removido, mas a gravacao automatica na QSPI ainda nao foi confirmada.</div>"
+                                                    : "<div class='card warn'>Perfil removido, mas nao foi possivel iniciar a gravacao automatica na QSPI.</div>"));
     }
 
     return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card warn'>Perfil não encontrado.</div>");
@@ -6127,17 +6242,30 @@ static UINT handle_light_remove_user(NX_HTTP_SERVER *server_ptr, const char *que
 
 static UINT handle_light_save_users(NX_HTTP_SERVER *server_ptr)
 {
+    bool persist_requested;
+    bool persist_ok = false;
+
     if (!net_admin_is_authenticated())
     {
         return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para persistir os perfis.</div>");
     }
 
-    if (storage_persist_now())
+    persist_requested = storage_persist_now();
+    if (persist_requested)
     {
-        return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card ok'>Persistencia solicitada. Aguarde alguns segundos e recarregue a página.</div>");
+        persist_ok = storage_persist_wait(8U * TX_TIMER_TICKS_PER_SECOND);
     }
 
-    return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card warn'>Não foi possivel salvar os cadastros agora.</div>");
+    if (persist_ok)
+    {
+        return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card ok'>Cadastros gravados na QSPI.</div>");
+    }
+
+    return light_redirect_with_flash(server_ptr,
+                                     "/admin_profiles",
+                                     persist_requested
+                                         ? "<div class='card warn'>A gravacao na QSPI foi solicitada, mas nao foi confirmada no tempo esperado.</div>"
+                                         : "<div class='card warn'>Nao foi possivel iniciar a gravacao dos cadastros na QSPI.</div>");
 }
 
 static UINT handle_light_save_access_log(NX_HTTP_SERVER *server_ptr)

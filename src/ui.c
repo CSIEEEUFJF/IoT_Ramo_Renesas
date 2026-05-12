@@ -199,6 +199,7 @@ static bool ui_enroll_save_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_touch_accept_action(void);
 static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_gear);
 static void ui_ip_to_string(ULONG ip_address, char *out, size_t out_size);
+static void ui_show_ip_status(ui_status_t *status);
 static void ui_draw_pixel_text_centered(int32_t y, const char *text, uint16_t color, uint32_t scale);
 static void ui_draw_pixel_text_centered_in_rect(int32_t x, int32_t width, int32_t y, const char *text, uint16_t color, uint32_t scale);
 static void ui_draw_text_crisp(int32_t x, int32_t y, const char *text, uint16_t color, uint32_t scale);
@@ -2496,6 +2497,39 @@ static void ui_ip_to_string(ULONG ip_address, char *out, size_t out_size)
              (unsigned long) (ip_address & 0xFFUL));
 }
 
+static void ui_show_ip_status(ui_status_t *status)
+{
+    char ip_text[20];
+    ULONG ip_address = 0U;
+    ULONG network_mask = 0U;
+    UINT ip_status;
+
+    if (NULL == status)
+    {
+        return;
+    }
+
+    ip_status = nx_ip_address_get(&g_ip0, &ip_address, &network_mask);
+    if ((NX_SUCCESS != ip_status) || (0U == ip_address))
+    {
+        ui_copy_text(ip_text, sizeof(ip_text), "AGUARDANDO DHCP");
+    }
+    else
+    {
+        ui_ip_to_string(ip_address, ip_text, sizeof(ip_text));
+    }
+
+    ui_set_status(status,
+                  "IP ATUAL",
+                  ip_text,
+                  "REDE DHCP",
+                  UI_COLOR_BRAND,
+                  UI_STATUS_HOLD_TICKS,
+                  false);
+    status->view = UI_VIEW_RESULT;
+    app_set_ui_mode(APP_UI_MODE_IDLE);
+}
+
 static void ui_show_splash(void)
 {
     ui_draw_wait_screen("AGUARDANDO USUARIO", "APROXIME O CARTAO", false);
@@ -2647,6 +2681,10 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
 
         case EVENT_UI_NAV_CANCEL:
             ui_enter_idle(status);
+            break;
+
+        case EVENT_UI_SHOW_IP:
+            ui_show_ip_status(status);
             break;
 
         case EVENT_RFID_AUTH_OK:
@@ -2876,6 +2914,8 @@ static void ui_render(const ui_status_t *status, const ui_snapshot_t *snapshot)
     int32_t user_y;
     int32_t meta_y;
     int32_t status_y;
+    bool use_status_title;
+    const char *photo_id;
 
     if ((NULL == status) || (NULL == snapshot))
     {
@@ -2883,9 +2923,18 @@ static void ui_render(const ui_status_t *status, const ui_snapshot_t *snapshot)
     }
 
     idle_mode = status->sticky;
-    user_text = idle_mode ? "Aguardando cartão" : snapshot->last_user;
+    use_status_title = (!idle_mode) && ('\0' != status->line1[0]);
+    user_text = idle_mode ? "Aguardando cartão" : (use_status_title ? status->line1 : snapshot->last_user);
+    photo_id = use_status_title ? "" : snapshot->photo_id;
     hero_color = idle_mode ? UI_COLOR_BRAND : status->accent;
-    ui_format_profile_meta(snapshot, meta_text, sizeof(meta_text));
+    if (use_status_title)
+    {
+        meta_text[0] = '\0';
+    }
+    else
+    {
+        ui_format_profile_meta(snapshot, meta_text, sizeof(meta_text));
+    }
     ui_wrap_pixel_text_two_lines(user_text, user_line1, sizeof(user_line1), user_line2, sizeof(user_line2), 228, 2U);
     ui_fit_pixel_text_to_width(meta_text, meta_line, sizeof(meta_line), 228, 1U);
     ui_fit_pixel_text_to_width(status->line2, status_line, sizeof(status_line), 228, 1U);
@@ -2898,7 +2947,7 @@ static void ui_render(const ui_status_t *status, const ui_snapshot_t *snapshot)
     meta_y = ('\0' != user_line2[0]) ? 274 : 268;
     status_y = ('\0' != user_line2[0]) ? 300 : 292;
 
-    ui_draw_hero_panel(8, 14, 224, 222, user_text, snapshot->photo_id, hero_color, idle_mode);
+    ui_draw_hero_panel(8, 14, 224, 222, user_text, photo_id, hero_color, idle_mode);
 
     if (idle_mode)
     {

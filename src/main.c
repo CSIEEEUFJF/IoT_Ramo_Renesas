@@ -26,7 +26,7 @@ const char * API_KEY       = "SuperStrongKey123!";
 
 #define PRIO_RFID            3
 #define PRIO_UI              2
-#define PRIO_NET             4
+#define PRIO_NET             6
 #define PRIO_TUNNEL          5
 #define PRIO_GPIO            3
 #define PRIO_STATUS          6

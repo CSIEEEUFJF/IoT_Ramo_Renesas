@@ -46,6 +46,7 @@ typedef enum {
     EVENT_CARD_REGISTERED,
     EVENT_CARD_ALREADY_REGISTERED,
     EVENT_CARD_REGISTRATION_FAILED,
+    EVENT_UI_SHOW_IP,
 } app_event_type_t;
 
 typedef struct {

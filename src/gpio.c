@@ -1,12 +1,14 @@
 #include "gpio.h"
 #include "main.h"
 
-/* Header Arduino: D6 = P613 (porta), D5 = P608 (luz), D4 = P112 (botao externo da porta). */
+/* Header Arduino: D6 = P613 (porta), D5 = P608 (luz), D4 = P112 (botao externo da porta).
+ * Placa SK-S7G2: S5 = P005, usado para mostrar o IP na tela. */
 #define PIN_RELAY_DOOR   IOPORT_PORT_06_PIN_13
 #define PIN_RELAY_LIGHT  IOPORT_PORT_06_PIN_08
 #define PIN_BTN_DOOR     IOPORT_PORT_00_PIN_08
 #define PIN_BTN_LIGHT    IOPORT_PORT_00_PIN_09
 #define PIN_BTN_DOOR_EXT IOPORT_PORT_01_PIN_12
+#define PIN_BTN_SHOW_IP  IOPORT_PORT_00_PIN_05
 
 #define DOOR_OPEN_TIME_MS  2000
 #define BTN_POLL_MS         50
@@ -26,6 +28,9 @@ void gpio_init(void)
                                   IOPORT_CFG_PORT_OUTPUT_LOW |
                                   IOPORT_CFG_DRIVE_MID);
     (void) g_ioport.p_api->pinCfg(PIN_BTN_DOOR_EXT,
+                                  IOPORT_CFG_PORT_DIRECTION_INPUT |
+                                  IOPORT_CFG_PULLUP_ENABLE);
+    (void) g_ioport.p_api->pinCfg(PIN_BTN_SHOW_IP,
                                   IOPORT_CFG_PORT_DIRECTION_INPUT |
                                   IOPORT_CFG_PULLUP_ENABLE);
     g_ioport.p_api->pinWrite(PIN_RELAY_DOOR, IOPORT_LEVEL_HIGH);
@@ -50,10 +55,11 @@ void thread_gpio_entry(ULONG arg)
 {
     SSP_PARAMETER_NOT_USED(arg);
 
-    ioport_level_t btn_door_level, btn_light_level, btn_door_ext_level;
+    ioport_level_t btn_door_level, btn_light_level, btn_door_ext_level, btn_show_ip_level;
     bool last_btn_door_pressed = false;
     bool last_btn_light_pressed = false;
     bool last_btn_door_ext_pressed = false;
+    bool last_btn_show_ip_pressed = false;
     bool combo_tracking = false;
     bool combo_fired = false;
     ULONG combo_start_tick = 0U;
@@ -68,14 +74,17 @@ void thread_gpio_entry(ULONG arg)
         bool btn_door_pressed;
         bool btn_light_pressed;
         bool btn_door_ext_pressed;
+        bool btn_show_ip_pressed;
         app_ui_mode_t ui_mode;
 
         g_ioport.p_api->pinRead(PIN_BTN_DOOR, &btn_door_level);
         g_ioport.p_api->pinRead(PIN_BTN_LIGHT, &btn_light_level);
         g_ioport.p_api->pinRead(PIN_BTN_DOOR_EXT, &btn_door_ext_level);
+        g_ioport.p_api->pinRead(PIN_BTN_SHOW_IP, &btn_show_ip_level);
         btn_door_pressed = (IOPORT_LEVEL_LOW == btn_door_level);
         btn_light_pressed = (IOPORT_LEVEL_LOW == btn_light_level);
         btn_door_ext_pressed = (IOPORT_LEVEL_LOW == btn_door_ext_level);
+        btn_show_ip_pressed = (IOPORT_LEVEL_LOW == btn_show_ip_level);
         ui_mode = app_get_ui_mode();
 
         if (btn_door_pressed && btn_light_pressed)
@@ -187,9 +196,15 @@ void thread_gpio_entry(ULONG arg)
             app_post_event(EVENT_DOOR_OPEN, "BOTAO_D4");
         }
 
+        if (!last_btn_show_ip_pressed && btn_show_ip_pressed)
+        {
+            app_post_event(EVENT_UI_SHOW_IP, NULL);
+        }
+
         last_btn_door_pressed = btn_door_pressed;
         last_btn_light_pressed = btn_light_pressed;
         last_btn_door_ext_pressed = btn_door_ext_pressed;
+        last_btn_show_ip_pressed = btn_show_ip_pressed;
 
         app_state_lock();
         bool current_door = g_app_state.door_open;

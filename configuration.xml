@@ -846,7 +846,7 @@
     <module id="module.el.nxd.packet_pool.583194893">
       <property id="module.el.nx.packet_pool.name" value="g_packet_pool0"/>
       <property id="module.el.nx.packet_pool.packet_size" value="1568"/>
-      <property id="module.el.nx.packet_pool.number_of_packets" value="16"/>
+      <property id="module.el.nx.packet_pool.number_of_packets" value="24"/>
       <property id="module.el.nx.packet_pool.init_function" value="packet_pool_init0"/>
       <property id="module.el.nx.packet_pool.init" value="module.el.nx.packet_pool.init.enable"/>
     </module>
@@ -870,7 +870,7 @@
       <property id="module.el.nx.ipv6.address_global" value="2001:0:0:0:0:0:0:1"/>
       <property id="module.el.nx.ipv6.address_local" value="0:0:0:0:0:0:0:0"/>
       <property id="module.el.nx.ip.stack_size" value="2048"/>
-      <property id="module.el.nx.ip.priority" value="10"/>
+      <property id="module.el.nx.ip.priority" value="1"/>
       <property id="module.el.nx.ip.arp" value="module.el.nx.ip.arp.enable"/>
       <property id="module.el.nx.ip.arp_cache_size_units" value="module.el.nx.ip.arp_cache_size_units.bytes"/>
       <property id="module.el.nx.ip.arp_cache_size" value="520"/>
@@ -1668,7 +1668,7 @@
     <config id="config.el.nxd_http_server">
       <property id="config.el.nxd_http_server.filex" value="config.el.nxd_http_server.filex.enable"/>
       <property id="config.el.nxd_http_server.multipart" value="config.el.nxd_http_server.multipart.disable"/>
-      <property id="config.el.nxd_http_server.priority" value="8"/>
+      <property id="config.el.nxd_http_server.priority" value="5"/>
       <property id="config.el.nxd_http_server.time_slice" value="2"/>
       <property id="config.el.nxd_http_server.server_window_size" value="2048"/>
       <property id="config.el.nxd_http_server.server_timeout" value="10"/>

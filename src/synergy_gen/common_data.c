@@ -738,7 +738,7 @@ void nx_common_init0(void) {
 	nx_system_initialize();
 }
 NX_PACKET_POOL g_packet_pool0;
-uint8_t g_packet_pool0_pool_memory[(16 * (1568 + sizeof(NX_PACKET)))];
+uint8_t g_packet_pool0_pool_memory[(24 * (1568 + sizeof(NX_PACKET)))];
 #if defined(__ICCARM__)
             #define g_packet_pool0_err_callback_WEAK_ATTRIBUTE
             #pragma weak g_packet_pool0_err_callback  = g_packet_pool0_err_callback_internal
@@ -773,7 +773,7 @@ void packet_pool_init0(void) {
 	/* Create Client packet pool. */
 	g_packet_pool0_err = nx_packet_pool_create(&g_packet_pool0,
 			"g_packet_pool0 Packet Pool", 1568, &g_packet_pool0_pool_memory[0],
-			(16 * (1568 + sizeof(NX_PACKET))));
+			(24 * (1568 + sizeof(NX_PACKET))));
 	if (NX_SUCCESS != g_packet_pool0_err) {
 		g_packet_pool0_err_callback((void*) &g_packet_pool0,
 				&g_packet_pool0_err);
@@ -843,7 +843,7 @@ void ip_init0(void) {
 	/* Create an IP instance. */
 	g_ip0_err = nx_ip_create(&g_ip0, "g_ip0 IP Instance",
 			IP_ADDRESS(0, 0, 0, 0), IP_ADDRESS(0, 0, 0, 0), &g_packet_pool0,
-			g_sf_el_nx, &g_ip0_stack_memory[0], 2048, 10);
+			g_sf_el_nx, &g_ip0_stack_memory[0], 2048, 1);
 	if (NX_SUCCESS != g_ip0_err) {
 		g_ip0_err_callback((void*) &g_ip0, &g_ip0_err);
 	}

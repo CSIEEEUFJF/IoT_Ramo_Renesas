@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include "main.h"
 
-#define STORAGE_MAX_USERS            50
+#define STORAGE_MAX_USERS           100
 #define STORAGE_MAX_CARDS_PER_USER    4
 #define STORAGE_ROLE_MAX_LEN         48
 #define STORAGE_CHAPTER_MAX_LEN      48
@@ -54,16 +54,36 @@ typedef enum
     STORAGE_ACCESS_RESULT_DENIED_MEETING_MODE,
 } storage_access_result_t;
 
+typedef struct
+{
+    unsigned int persist_status;
+    bool thread_ready;
+    bool loaded;
+    bool load_failed;
+    ULONG worker_runs;
+    ULONG last_stage;
+    ULONG last_media_status;
+    ULONG last_save_status;
+    ULONG last_load_status;
+    ULONG last_saved_bytes;
+    ULONG last_read_bytes;
+    ULONG last_user_count;
+    ULONG last_json_size;
+} storage_debug_info_t;
+
 void storage_init(void);
 bool storage_check_uid(const char *uid_str, char *out_name);
 storage_access_result_t storage_authorize_uid(const char *uid_str, char *out_name);
 int  storage_user_count(void);
+int  storage_user_count_nowait(void);
+bool storage_users_loaded_nowait(void);
 bool storage_user_get(int index, char *out_name, char *out_uid);
 bool storage_add_user(const char *uid_str, const char *name);
 bool storage_remove_uid(const char *uid_str);
 int storage_profile_snapshot(storage_user_profile_t *out_profiles, int max_profiles);
 int storage_profile_snapshot_nowait(storage_user_profile_t *out_profiles, int max_profiles);
 bool storage_profile_get(int index, storage_user_profile_t *out_profile);
+bool storage_profile_get_nowait(int index, storage_user_profile_t *out_profile);
 bool storage_profile_find_by_uid(const char *uid_str, storage_user_profile_t *out_profile);
 bool storage_profile_upsert(const storage_user_profile_t *profile, int edit_index);
 bool storage_profile_remove(int index);
@@ -83,6 +103,7 @@ bool storage_admin_pin_configured(void);
 bool storage_persist_now(void);
 bool storage_persist_wait(ULONG timeout_ticks);
 unsigned int storage_persist_status(void);
+void storage_debug_snapshot(storage_debug_info_t *out_info);
 bool storage_access_log_enqueue(const app_access_log_entry_t *entry);
 bool storage_access_log_persist_now(void);
 bool storage_access_log_ensure_loaded(void);

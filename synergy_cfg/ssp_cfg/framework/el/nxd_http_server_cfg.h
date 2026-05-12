@@ -7,7 +7,7 @@
 #if (0)
             #define NX_HTTP_MULTIPART_ENABLE
             #endif
-#define NX_HTTP_SERVER_PRIORITY                     8
+#define NX_HTTP_SERVER_PRIORITY                     5
 #define NX_HTTP_SERVER_WINDOW_SIZE                  2048
 #define NX_HTTP_SERVER_TIMEOUT                      (10 * NX_IP_PERIODIC_RATE)
 #define NX_HTTP_SERVER_TIMEOUT_ACCEPT               (10 * NX_IP_PERIODIC_RATE)
