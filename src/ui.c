@@ -2738,7 +2738,6 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
             break;
 
         case EVENT_DOOR_OPEN:
-        case EVENT_DOOR_CLOSE:
         case EVENT_LIGHT_ON:
         case EVENT_LIGHT_OFF:
             break;

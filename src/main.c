@@ -182,7 +182,7 @@ static void app_metric_log_push_locked(const app_metric_entry_t *entry)
 
 static bool app_history_entry_is_retained(ULONG entry_unix_utc, ULONG now_unix_utc)
 {
-    if ((0U == entry_unix_utc) || (0U == now_unix_utc) || (entry_unix_utc >= now_unix_utc))
+    if ((0U == now_unix_utc) || (entry_unix_utc >= now_unix_utc))
     {
         return true;
     }
@@ -402,16 +402,17 @@ const char *app_metric_case_text(app_metric_case_t case_id)
     }
 }
 
-static void app_metric_add_locked_internal(app_metric_kind_t kind,
+static bool app_metric_add_locked_internal(app_metric_kind_t kind,
                                            app_metric_case_t case_id,
                                            ULONG duration_ticks,
-                                           bool success)
+                                           bool success,
+                                           app_metric_entry_t *out_entry)
 {
     app_metric_entry_t entry;
 
     if (APP_METRIC_KIND_UNKNOWN == kind)
     {
-        return;
+        return false;
     }
 
     memset(&entry, 0, sizeof(entry));
@@ -423,6 +424,11 @@ static void app_metric_add_locked_internal(app_metric_kind_t kind,
     (void) app_time_get_utc_locked(&entry.unix_utc);
 
     app_metric_log_push_locked(&entry);
+    if (NULL != out_entry)
+    {
+        *out_entry = entry;
+    }
+    return true;
 }
 
 static void app_civil_from_days(int64_t days_since_unix_epoch, int *year, unsigned int *month, unsigned int *day)
@@ -662,11 +668,6 @@ void app_post_event(app_event_type_t type, const char * data)
             app_set_door(true);
             break;
 
-        case EVENT_DOOR_CLOSE:
-            app_set_door(false);
-            app_metric_finish_door(true);
-            break;
-
         case EVENT_LIGHT_ON:
             app_set_light(true);
             break;
@@ -782,11 +783,16 @@ void app_metric_add(const char *metric_name, const char *case_name, ULONG durati
 {
     app_metric_kind_t kind = app_metric_kind_from_text(metric_name);
     app_metric_case_t case_id = app_metric_case_from_text(case_name);
+    app_metric_entry_t entry;
+    bool added;
 
     app_state_lock();
-    app_metric_add_locked_internal(kind, case_id, duration_ticks, success);
+    added = app_metric_add_locked_internal(kind, case_id, duration_ticks, success, &entry);
     app_state_unlock();
-    (void) storage_metrics_persist_now();
+    if (added)
+    {
+        (void) storage_metric_enqueue(&entry);
+    }
 }
 
 void app_metric_add_no_persist(const char *metric_name, const char *case_name, ULONG duration_ticks, bool success)
@@ -795,7 +801,7 @@ void app_metric_add_no_persist(const char *metric_name, const char *case_name, U
     app_metric_case_t case_id = app_metric_case_from_text(case_name);
 
     app_state_lock();
-    app_metric_add_locked_internal(kind, case_id, duration_ticks, success);
+    (void) app_metric_add_locked_internal(kind, case_id, duration_ticks, success, NULL);
     app_state_unlock();
 }
 
@@ -978,11 +984,10 @@ void app_metric_finish_door(bool success)
 
     if (pending)
     {
-        app_metric_add_no_persist(app_metric_kind_text(APP_METRIC_KIND_DOOR_ACTUATION),
-                                  app_metric_case_text(case_id),
-                                  tx_time_get() - start_tick,
-                                  success);
-        (void) storage_metrics_persist_now();
+        app_metric_add(app_metric_kind_text(APP_METRIC_KIND_DOOR_ACTUATION),
+                       app_metric_case_text(case_id),
+                       tx_time_get() - start_tick,
+                       success);
     }
 }
 
@@ -1015,10 +1020,9 @@ void app_metric_finish_ui_result(bool success)
 
     if (pending)
     {
-        app_metric_add_no_persist(app_metric_kind_text(APP_METRIC_KIND_UI_RESULT),
-                                  app_metric_case_text(case_id),
-                                  tx_time_get() - start_tick,
-                                  success);
-        (void) storage_metrics_persist_now();
+        app_metric_add(app_metric_kind_text(APP_METRIC_KIND_UI_RESULT),
+                       app_metric_case_text(case_id),
+                       tx_time_get() - start_tick,
+                       success);
     }
 }

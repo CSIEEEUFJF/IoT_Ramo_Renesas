@@ -212,7 +212,7 @@ Eventos relevantes:
 
 Observacao:
 
-- `EVENT_DOOR_CLOSE` ainda existe no enum, mas o fechamento automatico da porta nao gera mais esse evento para log
+- o firmware registra apenas o gatilho de abertura da porta; o fim do pulso do relé é controlado diretamente pelo GPIO, sem evento de fechamento
 
 ## 6. Fluxos principais
 
@@ -474,6 +474,8 @@ Regras importantes:
 - os agendamentos pendentes são persistidos em QSPI no arquivo `meeting.json`
 - uma reunião ativa é persistida em QSPI no arquivo `meeting_active.json`; se a placa reiniciar antes de `end_utc`, o firmware restaura o modo reunião após sincronizar o relógio
 - agendamentos recorrentes mantêm o mesmo `id` e atualizam o próximo horário após cada execução
+- no horário marcado, o firmware só remove ou avança o agendamento depois que a reunião ativa é gravada com sucesso em `meeting_active.json`
+- os agendamentos novos salvam `profile_keys`, derivados dos cartões dos perfis, para evitar liberar a pessoa errada caso a ordem da lista de usuários mude
 - no horário marcado, o firmware chama a mesma lógica de `storage_meeting_mode_start(...)` usada pela página web
 - perfis administradores podem abrir a porta a qualquer momento, mesmo durante o modo reunião
 
@@ -519,7 +521,8 @@ Constantes relevantes em [`src/storage.c`](./src/storage.c):
 - `USERS_JSON_CHUNK_SIZE = 512`
 - `USERS_JSON_OBJECT_SIZE = 1024`
 - `ACCESS_LOG_BUFFER_SIZE = 4096`
-- `ACCESS_LOG_ROTATE_SIZE = 64 KB`
+- `ACCESS_LOG_PENDING_SIZE = 128`
+- `METRICS_PENDING_SIZE = 128`
 
 ## 9.2 Arquivos persistidos
 
@@ -575,9 +578,9 @@ unix_utc|tipo_evento|dado|usuario
 Observacoes:
 
 - a gravacao e incremental, em append
-- o arquivo ativo gira por tamanho e usa `access.bak` como arquivo de rotacao
-- o boot recarrega o final do log persistido, lendo `access.bak` antes de `access.log` para preservar a ordem dos eventos mais recentes
-- as entradas com timestamp UTC valido sao mantidas por 7 dias; quando o relogio ainda nao sincronizou, o firmware preserva as entradas para evitar apagar dados sem referencia de tempo
+- o arquivo não gira por tamanho; a limpeza é temporal para preservar os eventos dos últimos 7 dias enquanto houver espaço na QSPI
+- o boot recarrega o final do log persistido
+- entradas sem timestamp UTC válido são descartadas na próxima limpeza após sincronização do relógio, pois não há como comprovar que ainda estão dentro da janela de 7 dias
 
 ### `metrics.log`
 
@@ -591,10 +594,9 @@ unix_utc|duracao_ticks|sucesso|tipo_metrica|caso
 
 Observacoes:
 
-- a gravacao reescreve o snapshot atual de metricas, ja filtrado pela retencao
+- a gravacao é incremental, em append, a partir de uma fila pendente de metricas
 - as entradas com timestamp UTC valido sao mantidas por 7 dias
-- se todas as metricas estiverem vencidas, o arquivo e truncado na proxima persistencia
-- sem horario UTC sincronizado, a limpeza fica suspensa para nao descartar entradas por engano
+- entradas sem timestamp UTC válido são descartadas na próxima limpeza após sincronização do relógio
 
 ### `meeting.json`
 
@@ -611,7 +613,7 @@ Formato atual aproximado:
     "recurrence": 2,
     "weekdays_mask": 42,
     "meeting_chapter": "RAS",
-    "profiles": [0, 4, 12]
+    "profile_keys": ["E35C051C", "858A28BE", "7D2FE2D4"]
   }
 ]
 ```
@@ -623,8 +625,9 @@ Observacoes:
 - `recurrence` usa `0=unico`, `1=diario` e `2=semanal`
 - `weekdays_mask` usa bits de domingo a sabado; por exemplo, `42` representa segunda, quarta e sexta
 - `end_unix` define o fim da janela de acesso da ocorrencia
-- agendamentos unicos sao removidos da fila quando chegam ao horario de inicio
-- agendamentos recorrentes permanecem na fila e avancam para a proxima ocorrencia futura
+- `profile_keys` guarda uma identidade estável derivada do UID de cartão do perfil; o campo legado `profiles` por índice ainda é aceito na leitura
+- agendamentos unicos sao removidos da fila somente depois que o modo reunião ativo foi salvo com sucesso
+- agendamentos recorrentes permanecem na fila e avançam para a próxima ocorrência futura somente depois que a ocorrência atual foi iniciada
 
 ### `meeting_active.json`
 
@@ -637,7 +640,7 @@ Formato atual aproximado:
   "start_unix": 1893456000,
   "end_unix": 1893459600,
   "meeting_chapter": "RAS",
-  "profiles": [0, 4, 12]
+  "profile_keys": ["E35C051C", "858A28BE", "7D2FE2D4"]
 }
 ```
 
@@ -646,6 +649,7 @@ Observacoes:
 - é salvo quando a reunião começa pela web ou por agendamento
 - é removido quando o modo reunião é encerrado manualmente ou quando `end_unix` expira
 - permite restaurar o modo reunião depois de reboot, desde que o relógio UTC sincronize antes do fim da reunião
+- usa `profile_keys`, e não a posição atual do perfil na lista, para evitar liberação incorreta após remoções ou reordenações
 
 ### `photo_XXXXXXXX.bin`
 

@@ -32,11 +32,10 @@ typedef enum
 
 /* Tipos de evento */
 typedef enum {
-    EVENT_RFID_AUTH_OK,
+    EVENT_RFID_AUTH_OK = 0,
     EVENT_RFID_AUTH_FAIL,
     EVENT_DOOR_OPEN,
-    EVENT_DOOR_CLOSE,
-    EVENT_LIGHT_ON,
+    EVENT_LIGHT_ON = 4,
     EVENT_LIGHT_OFF,
     EVENT_USER_ADDED,
     EVENT_USER_REMOVED,

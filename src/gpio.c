@@ -222,7 +222,8 @@ void thread_gpio_entry(ULONG arg)
             last_door_open_command_seq = g_door_open_command_seq;
         } else if (current_door && is_door_pulsing) {
             if ((tx_time_get() - door_open_tick) >= DOOR_PULSE_TICKS) {
-                app_post_event(EVENT_DOOR_CLOSE, NULL);
+                app_set_door(false);
+                app_metric_finish_door(true);
                 is_door_pulsing = false;
             }
         } else if (!current_door) {
