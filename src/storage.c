@@ -39,6 +39,9 @@ extern ssp_err_t fx_media_init0_format(void);
 #define MEETING_SCHEDULE_FILE_NAME "meeting.json"
 #define MEETING_SCHEDULE_TEMP_FILE_NAME "meeting.tmp"
 #define MEETING_SCHEDULE_BACKUP_FILE_NAME "meeting.bak"
+#define MEETING_ACTIVE_FILE_NAME "meeting_active.json"
+#define MEETING_ACTIVE_TEMP_FILE_NAME "meeting_active.tmp"
+#define MEETING_ACTIVE_BACKUP_FILE_NAME "meeting_active.bak"
 #define MEETING_SCHEDULE_BUFFER_SIZE 3072U
 #define METRICS_LOG_BUFFER_SIZE 6144
 #define STORAGE_RETENTION_READ_BUFFER_SIZE 512U
@@ -90,6 +93,7 @@ static FX_FILE g_access_log_file;
 static FX_FILE g_metrics_file;
 static FX_FILE g_photo_file;
 static FX_FILE g_meeting_schedule_file;
+static FX_FILE g_meeting_active_file;
 static FX_FILE g_retention_source_file;
 static FX_FILE g_retention_temp_file;
 static user_t g_storage_recent_io_snapshot;
@@ -98,6 +102,7 @@ static char g_storage_users_json_object[USERS_JSON_OBJECT_SIZE];
 static app_access_log_entry_t g_storage_access_log_pending[ACCESS_LOG_PENDING_SIZE];
 static app_access_log_entry_t g_storage_access_log_work_entries[ACCESS_LOG_PENDING_SIZE];
 static char g_storage_meeting_mode_allowed_cards[STORAGE_MEETING_MODE_MAX_ALLOWED_CARDS][UID_MAX_LEN];
+static uint8_t g_storage_meeting_mode_profile_indices[STORAGE_MAX_USERS];
 static char g_storage_meeting_mode_chapter[STORAGE_CHAPTER_MAX_LEN];
 static char g_storage_access_log_work_text[ACCESS_LOG_BUFFER_SIZE];
 static char g_storage_metrics_text[METRICS_LOG_BUFFER_SIZE];
@@ -112,6 +117,8 @@ static size_t g_storage_metrics_text_size = 0U;
 static unsigned int g_storage_access_log_pending_count = 0U;
 static unsigned int g_storage_meeting_mode_selected_profiles = 0U;
 static unsigned int g_storage_meeting_mode_allowed_count = 0U;
+static ULONG g_storage_meeting_mode_start_unix = 0U;
+static ULONG g_storage_meeting_mode_end_unix = 0U;
 static int g_storage_users_io_count = 0;
 static bool g_storage_recent_io_valid = false;
 static volatile ULONG g_storage_persist_status = STORAGE_PERSIST_STATUS_IDLE;
@@ -155,6 +162,10 @@ static bool storage_prune_log_file_retention(const char *filename, const char *t
 static bool storage_prune_access_logs_open_media(void);
 static bool storage_prune_metrics_log_open_media(void);
 static bool storage_save_meeting_schedules_json(const storage_meeting_schedule_t *schedules, int schedule_count);
+static bool storage_format_meeting_active_json(const storage_meeting_active_t *state, char *out, size_t out_size, size_t *out_len);
+static bool storage_save_meeting_active_json(const storage_meeting_active_t *state);
+static int storage_parse_meeting_active_json(const char *json_text, storage_meeting_active_t *out_state);
+static bool storage_clear_meeting_active_file(void);
 static int storage_parse_meeting_schedules_json(const char *json_text,
                                                 storage_meeting_schedule_t *out_schedules,
                                                 int max_schedules);
@@ -1741,10 +1752,13 @@ static const user_t *storage_find_profile_by_uid_locked(const char *uid_str)
 static void storage_meeting_mode_clear_locked(void)
 {
     memset(g_storage_meeting_mode_allowed_cards, 0, sizeof(g_storage_meeting_mode_allowed_cards));
+    memset(g_storage_meeting_mode_profile_indices, 0, sizeof(g_storage_meeting_mode_profile_indices));
     g_storage_meeting_mode_chapter[0] = '\0';
     g_storage_meeting_mode_active = false;
     g_storage_meeting_mode_selected_profiles = 0U;
     g_storage_meeting_mode_allowed_count = 0U;
+    g_storage_meeting_mode_start_unix = 0U;
+    g_storage_meeting_mode_end_unix = 0U;
 }
 
 static bool storage_meeting_mode_uid_allowed_locked(const char *uid_str)
@@ -2631,10 +2645,11 @@ static bool storage_format_meeting_schedules_json(const storage_meeting_schedule
         if (!storage_appendf(out,
                              out_size,
                              &offset,
-                             "%s{\"id\":%lu,\"start_unix\":%lu,\"recurrence\":%u,\"weekdays_mask\":%u",
+                             "%s{\"id\":%lu,\"start_unix\":%lu,\"end_unix\":%lu,\"recurrence\":%u,\"weekdays_mask\":%u",
                              (i > 0) ? "," : "",
                              (unsigned long) schedules[i].id,
                              (unsigned long) schedules[i].start_unix,
+                             (unsigned long) schedules[i].end_unix,
                              (unsigned int) schedules[i].recurrence,
                              (unsigned int) schedules[i].weekdays_mask))
         {
@@ -2799,6 +2814,220 @@ static bool storage_save_meeting_schedules_json(const storage_meeting_schedule_t
 
     storage_media_unlock();
     app_metric_add_no_persist("Storage persist latency", "meeting.json", tx_time_get() - start_tick, (FX_SUCCESS == status));
+    return (FX_SUCCESS == status);
+}
+
+static bool storage_format_meeting_active_json(const storage_meeting_active_t *state,
+                                               char *out,
+                                               size_t out_size,
+                                               size_t *out_len)
+{
+    size_t offset = 0U;
+    unsigned int profile_count;
+
+    if ((NULL == state) || (NULL == out) || (0U == out_size) || (NULL == out_len) ||
+        (0U == state->start_unix) || (state->end_unix <= state->start_unix) ||
+        (0U == state->profile_count) || (state->profile_count > STORAGE_MAX_USERS))
+    {
+        return false;
+    }
+
+    out[0] = '\0';
+    *out_len = 0U;
+    profile_count = state->profile_count;
+
+    if (!storage_appendf(out,
+                         out_size,
+                         &offset,
+                         "{\"start_unix\":%lu,\"end_unix\":%lu",
+                         (unsigned long) state->start_unix,
+                         (unsigned long) state->end_unix))
+    {
+        return false;
+    }
+
+    if (!storage_append_json_string_field(out,
+                                          out_size,
+                                          &offset,
+                                          "meeting_chapter",
+                                          state->meeting_chapter,
+                                          true))
+    {
+        return false;
+    }
+
+    if (!storage_appendf(out, out_size, &offset, ",\"profiles\":["))
+    {
+        return false;
+    }
+
+    for (unsigned int profile_index = 0U; profile_index < profile_count; profile_index++)
+    {
+        if (!storage_appendf(out,
+                             out_size,
+                             &offset,
+                             "%s%u",
+                             (profile_index > 0U) ? "," : "",
+                             (unsigned int) state->profile_indices[profile_index]))
+        {
+            return false;
+        }
+    }
+
+    if (!storage_appendf(out, out_size, &offset, "]}"))
+    {
+        return false;
+    }
+
+    *out_len = offset;
+    return true;
+}
+
+static bool storage_save_meeting_active_json(const storage_meeting_active_t *state)
+{
+    UINT status;
+    bool file_opened = false;
+    size_t json_size = 0U;
+    ULONG start_tick = tx_time_get();
+
+    if (!storage_format_meeting_active_json(state,
+                                            g_storage_meeting_schedule_text,
+                                            sizeof(g_storage_meeting_schedule_text),
+                                            &json_size))
+    {
+        return false;
+    }
+
+    storage_media_lock();
+    if (!storage_media_open())
+    {
+        storage_media_unlock();
+        return false;
+    }
+
+    (void) fx_file_delete(&g_fx_media0, MEETING_ACTIVE_TEMP_FILE_NAME);
+    status = fx_file_create(&g_fx_media0, MEETING_ACTIVE_TEMP_FILE_NAME);
+    if ((FX_SUCCESS != status) && (FX_ALREADY_CREATED != status))
+    {
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+        storage_media_unlock();
+        app_metric_add_no_persist("Storage persist latency", "meeting_active.json", tx_time_get() - start_tick, false);
+        return false;
+    }
+
+    status = fx_file_open(&g_fx_media0, &g_meeting_active_file, MEETING_ACTIVE_TEMP_FILE_NAME, FX_OPEN_FOR_WRITE);
+    if (FX_SUCCESS == status)
+    {
+        file_opened = true;
+        status = fx_file_truncate(&g_meeting_active_file, 0U);
+    }
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_seek(&g_meeting_active_file, 0U);
+    }
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_write(&g_meeting_active_file, (VOID *) g_storage_meeting_schedule_text, (ULONG) json_size);
+    }
+
+    if (file_opened)
+    {
+        UINT close_status = fx_file_close(&g_meeting_active_file);
+        if (FX_SUCCESS == status)
+        {
+            status = close_status;
+        }
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        status = fx_media_flush(&g_fx_media0);
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        bool old_file_renamed = false;
+        UINT rename_status;
+
+        (void) fx_file_delete(&g_fx_media0, MEETING_ACTIVE_BACKUP_FILE_NAME);
+        rename_status = fx_file_rename(&g_fx_media0, MEETING_ACTIVE_FILE_NAME, MEETING_ACTIVE_BACKUP_FILE_NAME);
+        if (FX_SUCCESS == rename_status)
+        {
+            old_file_renamed = true;
+        }
+        else
+        {
+            FX_FILE probe_file;
+            if (FX_SUCCESS == fx_file_open(&g_fx_media0, &probe_file, MEETING_ACTIVE_FILE_NAME, FX_OPEN_FOR_READ))
+            {
+                (void) fx_file_close(&probe_file);
+                status = rename_status;
+            }
+        }
+
+        if (FX_SUCCESS == status)
+        {
+            status = fx_file_rename(&g_fx_media0, MEETING_ACTIVE_TEMP_FILE_NAME, MEETING_ACTIVE_FILE_NAME);
+            if ((FX_SUCCESS != status) && old_file_renamed)
+            {
+                (void) fx_file_rename(&g_fx_media0, MEETING_ACTIVE_BACKUP_FILE_NAME, MEETING_ACTIVE_FILE_NAME);
+            }
+        }
+
+        if (FX_SUCCESS == status)
+        {
+            (void) fx_file_delete(&g_fx_media0, MEETING_ACTIVE_BACKUP_FILE_NAME);
+            status = fx_media_flush(&g_fx_media0);
+        }
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        status = fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+    }
+    else
+    {
+        (void) fx_file_delete(&g_fx_media0, MEETING_ACTIVE_TEMP_FILE_NAME);
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+    }
+
+    storage_media_unlock();
+    app_metric_add_no_persist("Storage persist latency", "meeting_active.json", tx_time_get() - start_tick, (FX_SUCCESS == status));
+    return (FX_SUCCESS == status);
+}
+
+static bool storage_clear_meeting_active_file(void)
+{
+    UINT status = FX_SUCCESS;
+    ULONG start_tick = tx_time_get();
+
+    storage_media_lock();
+    if (!storage_media_open())
+    {
+        storage_media_unlock();
+        return false;
+    }
+
+    (void) fx_file_delete(&g_fx_media0, MEETING_ACTIVE_TEMP_FILE_NAME);
+    (void) fx_file_delete(&g_fx_media0, MEETING_ACTIVE_BACKUP_FILE_NAME);
+    (void) fx_file_delete(&g_fx_media0, MEETING_ACTIVE_FILE_NAME);
+    status = fx_media_flush(&g_fx_media0);
+    if (FX_SUCCESS == status)
+    {
+        status = fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+    }
+    else
+    {
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+    }
+
+    storage_media_unlock();
+    app_metric_add_no_persist("Storage persist latency", "meeting_active.json", tx_time_get() - start_tick, (FX_SUCCESS == status));
     return (FX_SUCCESS == status);
 }
 
@@ -2972,6 +3201,63 @@ static const char *storage_meeting_json_object_end(const char *object_start, con
     return NULL;
 }
 
+static int storage_parse_meeting_active_json(const char *json_text, storage_meeting_active_t *out_state)
+{
+    const char *object_start;
+    const char *object_end;
+    storage_meeting_schedule_t schedule;
+
+    if ((NULL == json_text) || (NULL == out_state))
+    {
+        return -1;
+    }
+
+    object_start = strchr(json_text, '{');
+    if (NULL == object_start)
+    {
+        return 0;
+    }
+
+    object_end = storage_meeting_json_object_end(object_start, json_text + strlen(json_text));
+    if (NULL == object_end)
+    {
+        return -1;
+    }
+
+    memset(&schedule, 0, sizeof(schedule));
+    if (!storage_meeting_json_get_ulong(object_start, object_end, "start_unix", &schedule.start_unix) ||
+        !storage_meeting_json_get_ulong(object_start, object_end, "end_unix", &schedule.end_unix) ||
+        (schedule.end_unix <= schedule.start_unix) ||
+        !storage_meeting_json_get_profiles(object_start, object_end, &schedule))
+    {
+        return -1;
+    }
+
+    memset(out_state, 0, sizeof(*out_state));
+    out_state->start_unix = schedule.start_unix;
+    out_state->end_unix = schedule.end_unix;
+    out_state->profile_count = schedule.profile_count;
+    for (unsigned int i = 0U; i < schedule.profile_count; i++)
+    {
+        out_state->profile_indices[i] = schedule.profile_indices[i];
+    }
+
+    if (!storage_extract_json_string(object_start,
+                                     object_end,
+                                     "meeting_chapter",
+                                     out_state->meeting_chapter,
+                                     sizeof(out_state->meeting_chapter)))
+    {
+        (void) storage_extract_json_string(object_start,
+                                           object_end,
+                                           "chapter",
+                                           out_state->meeting_chapter,
+                                           sizeof(out_state->meeting_chapter));
+    }
+
+    return 1;
+}
+
 static int storage_parse_meeting_schedules_json(const char *json_text,
                                                 storage_meeting_schedule_t *out_schedules,
                                                 int max_schedules)
@@ -3010,6 +3296,13 @@ static int storage_parse_meeting_schedules_json(const char *json_text,
             storage_meeting_json_get_profiles(object_start, object_end, &schedule))
         {
             ULONG value = 0U;
+            ULONG duration = STORAGE_MEETING_DEFAULT_DURATION_SECONDS;
+
+            if (!storage_meeting_json_get_ulong(object_start, object_end, "end_unix", &schedule.end_unix) ||
+                (schedule.end_unix <= schedule.start_unix))
+            {
+                schedule.end_unix = schedule.start_unix + duration;
+            }
 
             if (!storage_extract_json_string(object_start,
                                              object_end,
@@ -4443,6 +4736,7 @@ storage_access_result_t storage_authorize_uid(const char *uid_str, char *out_nam
 
         result = STORAGE_ACCESS_RESULT_GRANTED;
         if (g_storage_meeting_mode_active &&
+            !profile->is_admin &&
             !storage_meeting_mode_uid_allowed_locked(cleaned_uid))
         {
             result = STORAGE_ACCESS_RESULT_DENIED_MEETING_MODE;
@@ -4826,6 +5120,8 @@ bool storage_profile_remove(int index)
 bool storage_meeting_mode_start(const int *profile_indices,
                                 int profile_count,
                                 const char *meeting_chapter,
+                                ULONG start_unix,
+                                ULONG end_unix,
                                 unsigned int *out_selected_profiles,
                                 unsigned int *out_allowed_cards)
 {
@@ -4833,8 +5129,25 @@ bool storage_meeting_mode_start(const int *profile_indices,
     unsigned int allowed_cards = 0U;
     unsigned int valid_cards = 0U;
     bool seen_profiles[STORAGE_MAX_USERS];
+    storage_meeting_active_t active_state;
+    bool persist_active_state = false;
+    bool active_saved = true;
 
     memset(seen_profiles, 0, sizeof(seen_profiles));
+    memset(&active_state, 0, sizeof(active_state));
+
+    if ((0U == start_unix) || (end_unix <= start_unix))
+    {
+        if (NULL != out_selected_profiles)
+        {
+            *out_selected_profiles = 0U;
+        }
+        if (NULL != out_allowed_cards)
+        {
+            *out_allowed_cards = 0U;
+        }
+        return false;
+    }
 
     storage_init();
     storage_lock();
@@ -4910,6 +5223,10 @@ bool storage_meeting_mode_start(const int *profile_indices,
             continue;
         }
 
+        if (selected_profiles < STORAGE_MAX_USERS)
+        {
+            g_storage_meeting_mode_profile_indices[selected_profiles] = (uint8_t) index;
+        }
         selected_profiles++;
         for (unsigned int card_index = 0U; card_index < profile->card_count; card_index++)
         {
@@ -4950,10 +5267,27 @@ bool storage_meeting_mode_start(const int *profile_indices,
                       sizeof(g_storage_meeting_mode_chapter),
                       (NULL != meeting_chapter) ? meeting_chapter : "",
                       (NULL != meeting_chapter) ? strlen(meeting_chapter) : 0U);
+    g_storage_meeting_mode_start_unix = start_unix;
+    g_storage_meeting_mode_end_unix = end_unix;
     g_storage_meeting_mode_active = ((selected_profiles > 0U) && (allowed_cards > 0U));
     if (!g_storage_meeting_mode_active)
     {
         storage_meeting_mode_clear_locked();
+    }
+    else
+    {
+        active_state.start_unix = g_storage_meeting_mode_start_unix;
+        active_state.end_unix = g_storage_meeting_mode_end_unix;
+        active_state.profile_count = g_storage_meeting_mode_selected_profiles;
+        for (unsigned int i = 0U; i < active_state.profile_count; i++)
+        {
+            active_state.profile_indices[i] = g_storage_meeting_mode_profile_indices[i];
+        }
+        storage_copy_text(active_state.meeting_chapter,
+                          sizeof(active_state.meeting_chapter),
+                          g_storage_meeting_mode_chapter,
+                          strlen(g_storage_meeting_mode_chapter));
+        persist_active_state = true;
     }
 
     if (NULL != out_selected_profiles)
@@ -4966,6 +5300,23 @@ bool storage_meeting_mode_start(const int *profile_indices,
     }
 
     storage_unlock();
+    if (persist_active_state)
+    {
+        storage_io_lock();
+        active_saved = storage_save_meeting_active_json(&active_state);
+        storage_io_unlock();
+        if (!active_saved)
+        {
+            storage_io_lock();
+            (void) storage_clear_meeting_active_file();
+            storage_io_unlock();
+            storage_lock();
+            storage_meeting_mode_clear_locked();
+            storage_unlock();
+            return false;
+        }
+    }
+
     return g_storage_meeting_mode_active;
 }
 
@@ -4975,6 +5326,7 @@ void storage_meeting_mode_stop(void)
     storage_lock();
     storage_meeting_mode_clear_locked();
     storage_unlock();
+    (void) storage_meeting_active_clear();
 }
 
 bool storage_meeting_mode_is_active(void)
@@ -5008,6 +5360,23 @@ bool storage_meeting_mode_chapter(char *out_chapter, size_t out_size)
     return has_chapter;
 }
 
+bool storage_meeting_mode_end_utc(ULONG *out_end_unix)
+{
+    bool active;
+
+    if (NULL == out_end_unix)
+    {
+        return false;
+    }
+
+    storage_init();
+    storage_lock();
+    active = g_storage_meeting_mode_active;
+    *out_end_unix = active ? g_storage_meeting_mode_end_unix : 0U;
+    storage_unlock();
+    return active && (0U != *out_end_unix);
+}
+
 unsigned int storage_meeting_mode_selected_profile_count(void)
 {
     unsigned int count;
@@ -5039,6 +5408,103 @@ bool storage_meeting_mode_profile_selected(const storage_user_profile_t *profile
     selected = storage_meeting_mode_profile_selected_locked(profile);
     storage_unlock();
     return selected;
+}
+
+int storage_meeting_active_load(storage_meeting_active_t *out_state)
+{
+    UINT status;
+    ULONG actual_bytes = 0U;
+    int parsed_count = 0;
+    bool file_opened = false;
+    ULONG start_tick = tx_time_get();
+
+    if (NULL == out_state)
+    {
+        return -1;
+    }
+
+    memset(out_state, 0, sizeof(*out_state));
+    storage_init();
+    if (!storage_media_access_allowed())
+    {
+        return -1;
+    }
+
+    storage_io_lock();
+    storage_media_lock();
+    if (!storage_media_open())
+    {
+        storage_media_unlock();
+        storage_io_unlock();
+        return -1;
+    }
+
+    status = fx_file_open(&g_fx_media0, &g_meeting_active_file, MEETING_ACTIVE_FILE_NAME, FX_OPEN_FOR_READ);
+    if (FX_SUCCESS == status)
+    {
+        file_opened = true;
+        if (g_meeting_active_file.fx_file_current_file_size >= sizeof(g_storage_meeting_schedule_text))
+        {
+            status = FX_BUFFER_ERROR;
+        }
+    }
+
+    if (FX_SUCCESS == status)
+    {
+        status = fx_file_read(&g_meeting_active_file,
+                              g_storage_meeting_schedule_text,
+                              sizeof(g_storage_meeting_schedule_text) - 1U,
+                              &actual_bytes);
+        if (actual_bytes < sizeof(g_storage_meeting_schedule_text))
+        {
+            g_storage_meeting_schedule_text[actual_bytes] = '\0';
+        }
+        else
+        {
+            g_storage_meeting_schedule_text[sizeof(g_storage_meeting_schedule_text) - 1U] = '\0';
+        }
+    }
+
+    if (file_opened)
+    {
+        (void) fx_file_close(&g_meeting_active_file);
+    }
+    (void) fx_media_close(&g_fx_media0);
+    g_storage_media_ready = false;
+    storage_media_unlock();
+
+    if (FX_SUCCESS == status)
+    {
+        parsed_count = storage_parse_meeting_active_json(g_storage_meeting_schedule_text, out_state);
+    }
+    else if (!file_opened)
+    {
+        parsed_count = 0;
+    }
+    else
+    {
+        parsed_count = -1;
+    }
+
+    storage_io_unlock();
+    app_metric_add_no_persist("Storage load latency", "meeting_active.json", tx_time_get() - start_tick, (parsed_count >= 0));
+    return parsed_count;
+}
+
+bool storage_meeting_active_clear(void)
+{
+    bool ok;
+
+    storage_init();
+    if (!storage_media_access_allowed())
+    {
+        return false;
+    }
+
+    storage_io_lock();
+    ok = storage_clear_meeting_active_file();
+    storage_io_unlock();
+    return ok;
 }
 
 int storage_meeting_schedule_load(storage_meeting_schedule_t *out_schedules, int max_schedules)

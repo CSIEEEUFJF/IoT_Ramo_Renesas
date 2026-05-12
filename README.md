@@ -309,6 +309,7 @@ Rotas de acao:
 - `/portaon`
 - `/lampadatoggle`
 - `POST /api/door/open`
+- `GET /api/meeting/active`
 - `/upload_photo_begin`
 - `/upload_photo_chunk`
 - `/upload_photo_commit`
@@ -375,8 +376,9 @@ O modo reunião também pode ser agendado por API. As rotas usam a mesma autenti
 - `POST /api/meeting/schedule`
 - `POST /api/meeting/cancel`
 - `GET /api/meeting/status`
+- `GET /api/meeting/active`
 
-O agendamento aceita JSON ou formulário `application/x-www-form-urlencoded`. Envie sempre um horário absoluto em UTC pelo campo `start_utc`, no formato ISO `YYYY-MM-DDTHH:MM:SSZ`, e a lista `profile_indices` com os índices dos perfis autorizados:
+O agendamento aceita JSON ou formulário `application/x-www-form-urlencoded`. Envie sempre horários absolutos em UTC pelos campos `start_utc` e `end_utc`, no formato ISO `YYYY-MM-DDTHH:MM:SSZ`, e a lista `profile_indices` com os índices dos perfis autorizados:
 
 ```js
 await fetch("http://192.168.11.2/api/meeting/schedule", {
@@ -388,6 +390,7 @@ await fetch("http://192.168.11.2/api/meeting/schedule", {
   body: JSON.stringify({
     meeting_chapter: "RAS",
     start_utc: "2030-01-01T00:00:00Z",
+    end_utc: "2030-01-01T01:00:00Z",
     profile_indices: [0, 4, 12]
   })
 });
@@ -396,7 +399,7 @@ await fetch("http://192.168.11.2/api/meeting/schedule", {
 O agendamento depende do NTP estar sincronizado antes do horário chegar:
 
 ```json
-{"meeting_chapter":"RAS","start_utc":"2030-01-01T00:00:00Z","profile_indices":[0,4,12]}
+{"meeting_chapter":"RAS","start_utc":"2030-01-01T00:00:00Z","end_utc":"2030-01-01T01:00:00Z","profile_indices":[0,4,12]}
 ```
 
 Também é possível enviar os participantes por `name` + `chapter`, quando o sistema externo já faz a filtragem da reunião. Nesse modo, o firmware resolve cada par para o perfil cadastrado e salva internamente os índices, mantendo o mesmo formato persistido em QSPI:
@@ -405,6 +408,7 @@ Também é possível enviar os participantes por `name` + `chapter`, quando o si
 {
   "meeting_chapter": "RAS",
   "start_utc": "2030-01-01T00:00:00Z",
+  "end_utc": "2030-01-01T01:00:00Z",
   "profile_names": [
     {"name": "Rafael Lago", "chapter": "CS"},
     {"name": "Maria Eduarda de Sá", "chapter": "RAS"}
@@ -417,16 +421,16 @@ O campo `profiles` também aceita a mesma lista de objetos, mas `profile_indices
 Para recorrência diária, adicione `recurrence: "daily"`:
 
 ```json
-{"meeting_chapter":"RAS","start_utc":"2030-01-01T00:00:00Z","profile_indices":[0,4,12],"recurrence":"daily"}
+{"meeting_chapter":"RAS","start_utc":"2030-01-01T00:00:00Z","end_utc":"2030-01-01T01:00:00Z","profile_indices":[0,4,12],"recurrence":"daily"}
 ```
 
 Para recorrência semanal, adicione `recurrence: "weekly"` e, opcionalmente, `weekdays`. Os dias usam `0=domingo`, `1=segunda`, ..., `6=sábado`:
 
 ```json
-{"meeting_chapter":"RAS","start_utc":"2030-01-01T00:00:00Z","profile_indices":[0,4,12],"recurrence":"weekly","weekdays":[1,3,5]}
+{"meeting_chapter":"RAS","start_utc":"2030-01-01T00:00:00Z","end_utc":"2030-01-01T01:00:00Z","profile_indices":[0,4,12],"recurrence":"weekly","weekdays":[1,3,5]}
 ```
 
-Se `recurrence` for `"weekly"` e `weekdays` não for enviado, o firmware usa automaticamente o dia da semana de `start_utc`.
+Se `recurrence` for `"weekly"` e `weekdays` não for enviado, o firmware usa automaticamente o dia da semana de `start_utc`. Em agendamentos recorrentes, a duração é preservada: o firmware avança `start_utc` e recalcula `end_utc` mantendo o intervalo original.
 
 Cada chamada de agendamento retorna um `id`. Esse `id` pode ser usado para cancelar apenas uma reunião pendente:
 
@@ -443,18 +447,35 @@ await fetch("http://192.168.11.2/api/meeting/cancel", {
 
 Se `POST /api/meeting/cancel` for chamado sem `id`, todos os agendamentos pendentes são removidos.
 
+Para o aplicativo checar rapidamente se o modo reunião está ativo, use:
+
+```bash
+curl -H "X-API-KEY: <sua-chave-da-placa>" http://192.168.11.2/api/meeting/active
+```
+
+Resposta aproximada:
+
+```json
+{"ok":true,"active":true,"time_synced":true,"meeting_chapter":"RAS","end_utc":"2030-01-01T01:00:00Z","remaining_seconds":1800}
+```
+
 Regras importantes:
 
 - cada perfil selecionado precisa existir e ter ao menos um cartão cadastrado
 - `meeting_chapter` é obrigatório e é o texto exibido no LCD abaixo de `MODO REUNIAO`
 - quando a seleção vier por nome, cada item precisa ter `name` e `chapter`
 - `start_utc` deve estar em UTC, por exemplo `2030-01-01T00:00:00Z`
+- `end_utc` deve estar em UTC e precisa ser maior que `start_utc`
+- a duração aceita vai de 1 minuto a 24 horas
 - `start_unix` ainda é aceito apenas por compatibilidade
+- `end_unix` ainda é aceito apenas por compatibilidade
 - `delay_seconds` não é aceito para agendamento de reunião; use sempre data e hora absolutas
 - até 8 agendamentos pendentes podem ficar salvos ao mesmo tempo
 - os agendamentos pendentes são persistidos em QSPI no arquivo `meeting.json`
+- uma reunião ativa é persistida em QSPI no arquivo `meeting_active.json`; se a placa reiniciar antes de `end_utc`, o firmware restaura o modo reunião após sincronizar o relógio
 - agendamentos recorrentes mantêm o mesmo `id` e atualizam o próximo horário após cada execução
 - no horário marcado, o firmware chama a mesma lógica de `storage_meeting_mode_start(...)` usada pela página web
+- perfis administradores podem abrir a porta a qualquer momento, mesmo durante o modo reunião
 
 ## 8. Modelo de dados de usuario
 
@@ -476,7 +497,7 @@ typedef struct
 
 Limites atuais:
 
-- maximo de usuarios: `50`
+- maximo de usuarios: `100`
 - maximo de cartoes por usuario: `4`
 - foto runtime: ate `160x160`
 
@@ -586,6 +607,7 @@ Formato atual aproximado:
   {
     "id": 1,
     "start_unix": 1893456000,
+    "end_unix": 1893459600,
     "recurrence": 2,
     "weekdays_mask": 42,
     "meeting_chapter": "RAS",
@@ -600,8 +622,30 @@ Observacoes:
 - o limite operacional e `STORAGE_MEETING_SCHEDULE_MAX_ITEMS`, atualmente `8`
 - `recurrence` usa `0=unico`, `1=diario` e `2=semanal`
 - `weekdays_mask` usa bits de domingo a sabado; por exemplo, `42` representa segunda, quarta e sexta
+- `end_unix` define o fim da janela de acesso da ocorrencia
 - agendamentos unicos sao removidos da fila quando chegam ao horario de inicio
 - agendamentos recorrentes permanecem na fila e avancam para a proxima ocorrencia futura
+
+### `meeting_active.json`
+
+Guarda a reunião que está ativa no momento.
+
+Formato atual aproximado:
+
+```json
+{
+  "start_unix": 1893456000,
+  "end_unix": 1893459600,
+  "meeting_chapter": "RAS",
+  "profiles": [0, 4, 12]
+}
+```
+
+Observacoes:
+
+- é salvo quando a reunião começa pela web ou por agendamento
+- é removido quando o modo reunião é encerrado manualmente ou quando `end_unix` expira
+- permite restaurar o modo reunião depois de reboot, desde que o relógio UTC sincronize antes do fim da reunião
 
 ### `photo_XXXXXXXX.bin`
 

@@ -16,6 +16,9 @@
 #define STORAGE_MEETING_RECURRENCE_DAILY  1U
 #define STORAGE_MEETING_RECURRENCE_WEEKLY 2U
 #define STORAGE_MEETING_WEEKDAY_MASK_ALL  0x7FU
+#define STORAGE_MEETING_MIN_DURATION_SECONDS (1UL * 60UL)
+#define STORAGE_MEETING_MAX_DURATION_SECONDS (24UL * 60UL * 60UL)
+#define STORAGE_MEETING_DEFAULT_DURATION_SECONDS (60UL * 60UL)
 
 typedef struct
 {
@@ -41,12 +44,22 @@ typedef struct
 {
     ULONG id;
     ULONG start_unix;
+    ULONG end_unix;
     unsigned int profile_count;
     uint8_t profile_indices[STORAGE_MAX_USERS];
     uint8_t recurrence;
     uint8_t weekdays_mask;
     char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
 } storage_meeting_schedule_t;
+
+typedef struct
+{
+    ULONG start_unix;
+    ULONG end_unix;
+    unsigned int profile_count;
+    uint8_t profile_indices[STORAGE_MAX_USERS];
+    char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
+} storage_meeting_active_t;
 
 typedef enum
 {
@@ -96,14 +109,19 @@ bool storage_profile_remove(int index);
 bool storage_meeting_mode_start(const int *profile_indices,
                                 int profile_count,
                                 const char *meeting_chapter,
+                                ULONG start_unix,
+                                ULONG end_unix,
                                 unsigned int *out_selected_profiles,
                                 unsigned int *out_allowed_cards);
 void storage_meeting_mode_stop(void);
 bool storage_meeting_mode_is_active(void);
 bool storage_meeting_mode_chapter(char *out_chapter, size_t out_size);
+bool storage_meeting_mode_end_utc(ULONG *out_end_unix);
 unsigned int storage_meeting_mode_selected_profile_count(void);
 unsigned int storage_meeting_mode_allowed_card_count(void);
 bool storage_meeting_mode_profile_selected(const storage_user_profile_t *profile);
+int storage_meeting_active_load(storage_meeting_active_t *out_state);
+bool storage_meeting_active_clear(void);
 int storage_meeting_schedule_load(storage_meeting_schedule_t *out_schedules, int max_schedules);
 bool storage_meeting_schedule_save(const storage_meeting_schedule_t *schedules, int schedule_count);
 bool storage_admin_pin_valid(const char *pin);

@@ -112,7 +112,7 @@ volatile char  g_net_debug_last_path[64] = {0};
 #define PROFILE_OPTIONS_BUFFER_SIZE 4096
 #define METRIC_BUFFER_SIZE 8192
 #define METRIC_GROUP_MAX 24
-#define NET_API_JSON_BUFFER_SIZE 1536
+#define NET_API_JSON_BUFFER_SIZE 2048
 #define NET_MEETING_SCHEDULE_STATUS_LEN 32
 #define UPLOAD_IMAGE_DIM        160U
 #define UPLOAD_TILE_DIM         40U
@@ -181,8 +181,10 @@ static int g_net_meeting_schedule_count = 0;
 static ULONG g_net_meeting_schedule_next_id = 1U;
 static ULONG g_net_meeting_schedule_last_id = 0U;
 static ULONG g_net_meeting_schedule_last_start_utc = 0U;
+static ULONG g_net_meeting_schedule_last_end_utc = 0U;
 static unsigned int g_net_meeting_schedule_last_selected = 0U;
 static unsigned int g_net_meeting_schedule_last_allowed = 0U;
+static bool g_net_meeting_active_restore_done = false;
 static char g_net_meeting_schedule_last_status[NET_MEETING_SCHEDULE_STATUS_LEN] = "idle";
 static app_metric_entry_t g_net_metric_snapshot[APP_METRIC_LOG_SIZE];
 static net_metric_group_t g_net_metric_groups[METRIC_GROUP_MAX];
@@ -210,6 +212,7 @@ static UINT handle_api_door_open(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_p
 static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body);
 static UINT handle_api_meeting_cancel(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body, const char *query);
 static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr);
+static UINT handle_api_meeting_active(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr);
 static void net_process_meeting_schedule(void);
 static void net_html_escape(const char *src, char *out, size_t out_size);
 
@@ -4393,6 +4396,28 @@ static void net_meeting_weekdays_text(uint8_t weekdays_mask, char *out, size_t o
     }
 }
 
+static void net_format_duration_seconds(ULONG seconds, char *out, size_t out_size)
+{
+    ULONG hours;
+    ULONG minutes;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    hours = seconds / 3600UL;
+    minutes = (seconds % 3600UL) / 60UL;
+    if (hours > 0U)
+    {
+        snprintf(out, out_size, "%luh%02lumin", (unsigned long) hours, (unsigned long) minutes);
+    }
+    else
+    {
+        snprintf(out, out_size, "%lumin", (unsigned long) minutes);
+    }
+}
+
 static bool net_meeting_parse_recurrence_text(const char *text, uint8_t *out_recurrence)
 {
     char normalized[16];
@@ -4824,7 +4849,7 @@ static bool net_meeting_schedule_validate_profiles(const int *profiles, int prof
 
 static bool net_meeting_schedule_parse_request(const char *body,
                                                ULONG *out_start_utc,
-                                               ULONG *out_delay_seconds,
+                                               ULONG *out_end_utc,
                                                uint8_t *out_recurrence,
                                                uint8_t *out_weekdays_mask,
                                                char *out_meeting_chapter,
@@ -4839,13 +4864,19 @@ static bool net_meeting_schedule_parse_request(const char *body,
     bool has_start_unix;
     bool has_start_utc;
     bool start_utc_present;
+    bool has_end_unix;
+    bool has_end_utc;
+    bool end_utc_present;
     ULONG start_utc = 0U;
     ULONG start_unix = 0U;
+    ULONG end_utc = 0U;
+    ULONG end_unix = 0U;
     uint8_t recurrence = STORAGE_MEETING_RECURRENCE_NONE;
     uint8_t weekdays_mask = 0U;
     bool recurrence_found = false;
     bool weekdays_found = false;
     char start_utc_probe[32];
+    char end_utc_probe[32];
     char delay_seconds_probe[24];
     char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
     int profile_count = 0;
@@ -4855,7 +4886,7 @@ static bool net_meeting_schedule_parse_request(const char *body,
         *out_error = "bad_request";
     }
 
-    if ((NULL == body) || (NULL == out_start_utc) || (NULL == out_delay_seconds) ||
+    if ((NULL == body) || (NULL == out_start_utc) || (NULL == out_end_utc) ||
         (NULL == out_recurrence) || (NULL == out_weekdays_mask) ||
         (NULL == out_meeting_chapter) || (0U == out_meeting_chapter_size) ||
         (NULL == out_profiles) || (NULL == out_profile_count))
@@ -4890,6 +4921,15 @@ static bool net_meeting_schedule_parse_request(const char *body,
     has_start_unix = is_json
                          ? net_json_get_ulong_value(cursor, "start_unix", &start_unix)
                          : net_form_get_ulong_value(cursor, "start_unix", &start_unix);
+    has_end_utc = is_json
+                      ? net_json_get_utc_time_value(cursor, "end_utc", &end_utc)
+                      : net_form_get_utc_time_value(cursor, "end_utc", &end_utc);
+    end_utc_present = is_json
+                          ? (NULL != json_find_key(cursor, cursor + strlen(cursor), "end_utc"))
+                          : query_get_value(cursor, "end_utc", end_utc_probe, sizeof(end_utc_probe));
+    has_end_unix = is_json
+                       ? net_json_get_ulong_value(cursor, "end_unix", &end_unix)
+                       : net_form_get_ulong_value(cursor, "end_unix", &end_unix);
 
     if (!net_get_meeting_chapter_value(cursor, is_json, meeting_chapter, sizeof(meeting_chapter)))
     {
@@ -4914,6 +4954,15 @@ static bool net_meeting_schedule_parse_request(const char *body,
         if (NULL != out_error)
         {
             *out_error = "invalid_start_utc";
+        }
+        return false;
+    }
+
+    if (end_utc_present && !has_end_utc)
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_end_utc";
         }
         return false;
     }
@@ -4961,13 +5010,52 @@ static bool net_meeting_schedule_parse_request(const char *body,
         }
 
         *out_start_utc = start_utc;
-        *out_delay_seconds = 0U;
     }
     else
     {
         if (NULL != out_error)
         {
             *out_error = "missing_start";
+        }
+        return false;
+    }
+
+    if (has_end_utc || has_end_unix)
+    {
+        ULONG duration_seconds;
+
+        if (!has_end_utc)
+        {
+            end_utc = end_unix;
+        }
+
+        if (end_utc <= start_utc)
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "end_before_start";
+            }
+            return false;
+        }
+
+        duration_seconds = end_utc - start_utc;
+        if ((duration_seconds < STORAGE_MEETING_MIN_DURATION_SECONDS) ||
+            (duration_seconds > STORAGE_MEETING_MAX_DURATION_SECONDS))
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "invalid_duration";
+            }
+            return false;
+        }
+
+        *out_end_utc = end_utc;
+    }
+    else
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "missing_end";
         }
         return false;
     }
@@ -5040,11 +5128,16 @@ static bool net_meeting_schedule_parse_request(const char *body,
 static bool net_meeting_schedule_advance_recurring(storage_meeting_schedule_t *schedule, ULONG now_utc)
 {
     uint64_t next_unix = 0ULL;
+    uint64_t duration_seconds;
 
     if (NULL == schedule)
     {
         return false;
     }
+
+    duration_seconds = (schedule->end_unix > schedule->start_unix)
+                           ? ((uint64_t) schedule->end_unix - (uint64_t) schedule->start_unix)
+                           : (uint64_t) STORAGE_MEETING_DEFAULT_DURATION_SECONDS;
 
     if (STORAGE_MEETING_RECURRENCE_DAILY == schedule->recurrence)
     {
@@ -5099,8 +5192,84 @@ static bool net_meeting_schedule_advance_recurring(storage_meeting_schedule_t *s
         return false;
     }
 
+    if ((next_unix + duration_seconds) > 0xFFFFFFFFULL)
+    {
+        return false;
+    }
     schedule->start_unix = (ULONG) next_unix;
+    schedule->end_unix = (ULONG) (next_unix + duration_seconds);
     return true;
+}
+
+static void net_process_meeting_active_state(ULONG now_utc)
+{
+    storage_meeting_active_t active_state;
+    ULONG active_end_utc = 0U;
+    int active_profile_indices[STORAGE_MAX_USERS];
+    unsigned int selected_profiles = 0U;
+    unsigned int allowed_cards = 0U;
+    bool started;
+    int load_result;
+
+    if (storage_meeting_mode_end_utc(&active_end_utc))
+    {
+        if ((0U != now_utc) && (now_utc >= active_end_utc))
+        {
+            storage_meeting_mode_stop();
+            g_net_meeting_draft_initialized = false;
+            net_action_lock();
+            net_meeting_schedule_set_status_locked("active_ended");
+            net_action_unlock();
+        }
+        return;
+    }
+
+    if (g_net_meeting_active_restore_done)
+    {
+        return;
+    }
+
+    load_result = storage_meeting_active_load(&active_state);
+    if (load_result < 0)
+    {
+        return;
+    }
+
+    g_net_meeting_active_restore_done = true;
+    if (0 == load_result)
+    {
+        return;
+    }
+
+    if ((0U == now_utc) || (now_utc >= active_state.end_unix) || (now_utc < active_state.start_unix))
+    {
+        (void) storage_meeting_active_clear();
+        net_action_lock();
+        net_meeting_schedule_set_status_locked("active_expired");
+        net_action_unlock();
+        return;
+    }
+
+    for (unsigned int i = 0U; i < active_state.profile_count; i++)
+    {
+        active_profile_indices[i] = (int) active_state.profile_indices[i];
+    }
+
+    started = storage_meeting_mode_start(active_profile_indices,
+                                         (int) active_state.profile_count,
+                                         active_state.meeting_chapter,
+                                         active_state.start_unix,
+                                         active_state.end_unix,
+                                         &selected_profiles,
+                                         &allowed_cards);
+
+    net_action_lock();
+    g_net_meeting_schedule_last_start_utc = active_state.start_unix;
+    g_net_meeting_schedule_last_end_utc = active_state.end_unix;
+    g_net_meeting_schedule_last_selected = selected_profiles;
+    g_net_meeting_schedule_last_allowed = allowed_cards;
+    net_meeting_schedule_set_status_locked(started ? "active_restored" : "active_restore_failed");
+    net_action_unlock();
 }
 
 static void net_process_meeting_schedule(void)
@@ -5118,10 +5287,43 @@ static void net_process_meeting_schedule(void)
         return;
     }
 
+    net_process_meeting_active_state(now_utc);
+    if (storage_meeting_mode_is_active())
+    {
+        return;
+    }
+
     memset(&due_schedule, 0, sizeof(due_schedule));
     net_action_lock();
     for (int i = 0; i < g_net_meeting_schedule_count; i++)
     {
+        if (g_net_meeting_schedules[i].end_unix <= g_net_meeting_schedules[i].start_unix)
+        {
+            g_net_meeting_schedules[i].end_unix = g_net_meeting_schedules[i].start_unix + STORAGE_MEETING_DEFAULT_DURATION_SECONDS;
+        }
+
+        if (now_utc >= g_net_meeting_schedules[i].end_unix)
+        {
+            if (net_meeting_schedule_advance_recurring(&g_net_meeting_schedules[i], now_utc))
+            {
+                (void) net_meeting_schedule_save_locked();
+                continue;
+            }
+
+            for (int move_index = i; move_index < (g_net_meeting_schedule_count - 1); move_index++)
+            {
+                g_net_meeting_schedules[move_index] = g_net_meeting_schedules[move_index + 1];
+            }
+            g_net_meeting_schedule_count--;
+            if (g_net_meeting_schedule_count < 0)
+            {
+                g_net_meeting_schedule_count = 0;
+            }
+            (void) net_meeting_schedule_save_locked();
+            i--;
+            continue;
+        }
+
         if (now_utc >= g_net_meeting_schedules[i].start_unix)
         {
             due_schedule = g_net_meeting_schedules[i];
@@ -5144,6 +5346,7 @@ static void net_process_meeting_schedule(void)
 
             g_net_meeting_schedule_last_id = due_schedule.id;
             g_net_meeting_schedule_last_start_utc = due_schedule.start_unix;
+            g_net_meeting_schedule_last_end_utc = due_schedule.end_unix;
             net_meeting_schedule_set_status_locked("starting");
             (void) net_meeting_schedule_save_locked();
             should_start = true;
@@ -5165,6 +5368,8 @@ static void net_process_meeting_schedule(void)
     started = storage_meeting_mode_start(due_profile_indices,
                                          (int) due_schedule.profile_count,
                                          due_schedule.meeting_chapter,
+                                         due_schedule.start_unix,
+                                         due_schedule.end_unix,
                                          &selected_profiles,
                                          &allowed_cards);
 
@@ -6503,6 +6708,8 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
     unsigned int selected_profiles;
     unsigned int allowed_cards;
     unsigned int draft_selected_profiles;
+    ULONG active_end_utc = 0U;
+    char active_end_text[24];
     char prev_button[96];
     char next_button[96];
 
@@ -6520,6 +6727,8 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
     active = storage_meeting_mode_is_active();
     selected_profiles = storage_meeting_mode_selected_profile_count();
     allowed_cards = storage_meeting_mode_allowed_card_count();
+    (void) storage_meeting_mode_end_utc(&active_end_utc);
+    net_format_utc_datetime(active_end_utc, active_end_text, sizeof(active_end_text));
     net_meeting_mode_draft_sync_from_active();
     draft_selected_profiles = net_meeting_mode_draft_profile_count();
     user_count = storage_user_count_nowait();
@@ -6600,6 +6809,7 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
                      "%s"
                      "<p class='%s'><strong>Modo reuniao %s.</strong></p>"
                      "<p class='muted'>Perfis liberados agora: <strong>%u</strong> | Cartoes liberados: <strong>%u</strong></p>"
+                     "<p class='muted'>Fim maximo da reuniao ativa: <strong>%s</strong></p>"
                      "<p class='muted'>Selecao preparada para iniciar: <strong>%u</strong> perfil(is).</p>"
                      "<p class='muted'>Mostrando %d a %d de %d perfis com cartao RFID.</p>"
                      "%s"
@@ -6609,6 +6819,7 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
                      active ? "ativo" : "desativado",
                      selected_profiles,
                      allowed_cards,
+                     active ? active_end_text : "-",
                      draft_selected_profiles,
                      (selectable_total > 0) ? (page_start + 1) : 0,
                      page_end,
@@ -6691,6 +6902,8 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
                       "<form action='/meeting_mode_start' method='post'>"
                       "<label for='meeting_chapter'>Capitulo da reuniao exibido no LCD</label>"
                       "<input id='meeting_chapter' name='meeting_chapter' maxlength='%u' placeholder='Ex.: RAS' required>"
+                      "<label for='duration_minutes'>Duracao maxima da reuniao (minutos)</label>"
+                      "<input id='duration_minutes' name='duration_minutes' type='number' min='1' max='1440' value='60' required>"
                       "<div class='actions'>%s%s<a class='small secondary' href='/meeting_mode_clear?page=%d'>Limpar selecao</a><button class='btn' type='submit'>Iniciar modo reuniao</button><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
                       "</form>"
                       "</div></div></body></html>",
@@ -6712,6 +6925,9 @@ static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const ch
     unsigned int selected_profiles = 0U;
     unsigned int allowed_cards = 0U;
     char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
+    ULONG duration_minutes = 0U;
+    ULONG now_utc = 0U;
+    ULONG end_utc = 0U;
     int user_count;
 
     if (!net_admin_is_authenticated())
@@ -6723,6 +6939,17 @@ static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const ch
     {
         return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Informe o capitulo da reuniao para exibir no LCD.</div>");
     }
+    if (!net_form_get_ulong_value(form_data, "duration_minutes", &duration_minutes) ||
+        (duration_minutes < (STORAGE_MEETING_MIN_DURATION_SECONDS / 60UL)) ||
+        (duration_minutes > (STORAGE_MEETING_MAX_DURATION_SECONDS / 60UL)))
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Informe uma duracao maxima entre 1 e 1440 minutos.</div>");
+    }
+    if (!app_time_get_utc(&now_utc))
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Aguarde a sincronizacao NTP antes de iniciar uma reuniao com duracao persistente.</div>");
+    }
+    end_utc = now_utc + (duration_minutes * 60UL);
 
     net_meeting_mode_draft_sync_from_active();
     selected_count = 0;
@@ -6757,7 +6984,7 @@ static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const ch
         return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Selecione ao menos um perfil com cartao para iniciar a reuniao.</div>");
     }
 
-    if (!storage_meeting_mode_start(selected_indices, selected_count, meeting_chapter, &selected_profiles, &allowed_cards))
+    if (!storage_meeting_mode_start(selected_indices, selected_count, meeting_chapter, now_utc, end_utc, &selected_profiles, &allowed_cards))
     {
         return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Nao foi possivel iniciar o modo reuniao. Verifique se os perfis escolhidos possuem cartoes validos.</div>");
     }
@@ -6765,13 +6992,19 @@ static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const ch
     {
         char message[384];
         char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6U];
+        char end_text[24];
+        char duration_text[24];
 
         g_net_meeting_draft_initialized = false;
         net_html_escape(meeting_chapter, chapter_html, sizeof(chapter_html));
+        net_format_utc_datetime(end_utc, end_text, sizeof(end_text));
+        net_format_duration_seconds(duration_minutes * 60UL, duration_text, sizeof(duration_text));
         snprintf(message,
                  sizeof(message),
-                 "<div class='card ok'>Modo reuniao %s ativado com %u perfil(is) e %u cartao(oes) liberado(s). Apenas os membros selecionados entram por RFID.</div>",
+                 "<div class='card ok'>Modo reuniao %s ativado por ate %s, ate %s UTC, com %u perfil(is) e %u cartao(oes) liberado(s). Apenas os membros selecionados entram por RFID; administradores continuam liberados.</div>",
                  chapter_html,
+                 duration_text,
+                 end_text,
                  selected_profiles,
                  allowed_cards);
         return light_redirect_with_flash(server_ptr, "/meeting_mode", message);
@@ -6887,7 +7120,7 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
                      &offset,
                      "<p class='muted'>Agendamentos pendentes salvos em QSPI. Horarios abaixo estao em UTC.</p>"
                      "<div class='actions'><a class='small' href='/meeting_mode'>Configurar modo reuniao</a><a class='small secondary' href='/meeting_schedules'>Atualizar</a></div>"
-                     "<div class='table-wrap'><table><tr><th>ID</th><th>Inicio UTC</th><th>Capitulo LCD</th><th>Perfis</th><th>Recorrencia</th><th>Dias</th></tr>"))
+                     "<div class='table-wrap'><table><tr><th>ID</th><th>Inicio UTC</th><th>Fim UTC</th><th>Duracao</th><th>Capitulo LCD</th><th>Perfis</th><th>Recorrencia</th><th>Dias</th></tr>"))
     {
         return render_light_shell(server_ptr,
                                   packet_ptr,
@@ -6901,17 +7134,24 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
         (void) net_appendf(g_net_metric_buffer,
                            sizeof(g_net_metric_buffer),
                            &offset,
-                           "<tr><td colspan='6'>Nenhuma reuniao agendada.</td></tr>");
+                           "<tr><td colspan='8'>Nenhuma reuniao agendada.</td></tr>");
     }
     else
     {
         for (int i = 0; i < schedule_count; i++)
         {
             char start_text[24];
+            char end_text[24];
+            char duration_text[24];
             char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6U];
             char weekdays_text[48];
+            ULONG duration_seconds = (schedules[i].end_unix > schedules[i].start_unix)
+                                         ? (schedules[i].end_unix - schedules[i].start_unix)
+                                         : STORAGE_MEETING_DEFAULT_DURATION_SECONDS;
 
             net_format_utc_datetime(schedules[i].start_unix, start_text, sizeof(start_text));
+            net_format_utc_datetime(schedules[i].end_unix, end_text, sizeof(end_text));
+            net_format_duration_seconds(duration_seconds, duration_text, sizeof(duration_text));
             net_html_escape(('\0' != schedules[i].meeting_chapter[0]) ? schedules[i].meeting_chapter : "-",
                             chapter_html,
                             sizeof(chapter_html));
@@ -6920,9 +7160,11 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
             if (!net_appendf(g_net_metric_buffer,
                              sizeof(g_net_metric_buffer),
                              &offset,
-                             "<tr><td>%lu</td><td>%s</td><td>%s</td><td>%u</td><td>%s</td><td>%s</td></tr>",
+                             "<tr><td>%lu</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%u</td><td>%s</td><td>%s</td></tr>",
                              (unsigned long) schedules[i].id,
                              start_text,
+                             end_text,
+                             duration_text,
                              chapter_html,
                              schedules[i].profile_count,
                              net_meeting_recurrence_text(schedules[i].recurrence),
@@ -7433,7 +7675,7 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     int profiles[STORAGE_MAX_USERS];
     int profile_count = 0;
     ULONG start_utc = 0U;
-    ULONG delay_seconds = 0U;
+    ULONG end_utc = 0U;
     ULONG schedule_id = 0U;
     uint8_t recurrence = STORAGE_MEETING_RECURRENCE_NONE;
     uint8_t weekdays_mask = 0U;
@@ -7443,6 +7685,7 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     ULONG now_utc = 0U;
     char now_utc_text[24];
     char start_utc_text[24];
+    char end_utc_text[24];
     char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
     char meeting_chapter_json[STORAGE_CHAPTER_MAX_LEN * 6U];
     bool saved = false;
@@ -7454,7 +7697,7 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
 
     if (!net_meeting_schedule_parse_request(body,
                                             &start_utc,
-                                            &delay_seconds,
+                                            &end_utc,
                                              &recurrence,
                                              &weekdays_mask,
                                              meeting_chapter,
@@ -7487,6 +7730,7 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     memset(&g_net_meeting_schedules[g_net_meeting_schedule_count], 0, sizeof(g_net_meeting_schedules[g_net_meeting_schedule_count]));
     g_net_meeting_schedules[g_net_meeting_schedule_count].id = schedule_id;
     g_net_meeting_schedules[g_net_meeting_schedule_count].start_unix = start_utc;
+    g_net_meeting_schedules[g_net_meeting_schedule_count].end_unix = end_utc;
     g_net_meeting_schedules[g_net_meeting_schedule_count].profile_count = (unsigned int) profile_count;
     g_net_meeting_schedules[g_net_meeting_schedule_count].recurrence = recurrence;
     g_net_meeting_schedules[g_net_meeting_schedule_count].weekdays_mask = weekdays_mask;
@@ -7500,6 +7744,7 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     g_net_meeting_schedule_count++;
     g_net_meeting_schedule_last_id = schedule_id;
     g_net_meeting_schedule_last_start_utc = start_utc;
+    g_net_meeting_schedule_last_end_utc = end_utc;
     g_net_meeting_schedule_last_selected = 0U;
     g_net_meeting_schedule_last_allowed = 0U;
     net_meeting_schedule_set_status_locked("scheduled");
@@ -7524,12 +7769,14 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     time_synced = app_time_get_utc(&now_utc);
     net_format_utc_datetime(time_synced ? now_utc : 0U, now_utc_text, sizeof(now_utc_text));
     net_format_utc_datetime(start_utc, start_utc_text, sizeof(start_utc_text));
+    net_format_utc_datetime(end_utc, end_utc_text, sizeof(end_utc_text));
     net_json_escape(meeting_chapter, meeting_chapter_json, sizeof(meeting_chapter_json));
     snprintf(g_net_api_json,
              sizeof(g_net_api_json),
              "{\"ok\":true,\"id\":%lu,\"pending_count\":%d,\"active\":%s,"
              "\"time_synced\":%s,\"now_utc\":\"%s\",\"now_unix\":%lu,"
              "\"start_utc\":\"%s\",\"start_unix\":%lu,"
+             "\"end_utc\":\"%s\",\"end_unix\":%lu,"
              "\"meeting_chapter\":\"%s\","
              "\"profile_count\":%d,"
              "\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
@@ -7541,6 +7788,8 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
              (unsigned long) (time_synced ? now_utc : 0U),
              start_utc_text,
              (unsigned long) start_utc,
+             end_utc_text,
+             (unsigned long) end_utc,
              meeting_chapter_json,
              profile_count,
              net_meeting_recurrence_text(recurrence),
@@ -7648,11 +7897,75 @@ static UINT handle_api_meeting_cancel(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
                                        "application/json");
 }
 
+static UINT handle_api_meeting_active(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
+{
+    bool active;
+    bool time_synced;
+    ULONG now_utc = 0U;
+    ULONG end_utc = 0U;
+    ULONG remaining_seconds = 0U;
+    char now_utc_text[24];
+    char end_utc_text[24];
+    char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
+    char meeting_chapter_json[STORAGE_CHAPTER_MAX_LEN * 6U];
+    unsigned int selected_profiles;
+    unsigned int allowed_cards;
+
+    if (!net_api_request_is_authorized(packet_ptr))
+    {
+        return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_UNAUTHORIZED, "unauthorized");
+    }
+
+    time_synced = app_time_get_utc(&now_utc);
+    active = storage_meeting_mode_is_active();
+    selected_profiles = storage_meeting_mode_selected_profile_count();
+    allowed_cards = storage_meeting_mode_allowed_card_count();
+    (void) storage_meeting_mode_end_utc(&end_utc);
+    if (!storage_meeting_mode_chapter(meeting_chapter, sizeof(meeting_chapter)))
+    {
+        meeting_chapter[0] = '\0';
+    }
+    if (active && time_synced && (end_utc > now_utc))
+    {
+        remaining_seconds = end_utc - now_utc;
+    }
+
+    net_format_utc_datetime(time_synced ? now_utc : 0U, now_utc_text, sizeof(now_utc_text));
+    net_format_utc_datetime(end_utc, end_utc_text, sizeof(end_utc_text));
+    net_json_escape(meeting_chapter, meeting_chapter_json, sizeof(meeting_chapter_json));
+
+    snprintf(g_net_api_json,
+             sizeof(g_net_api_json),
+             "{\"ok\":true,\"active\":%s,\"time_synced\":%s,"
+             "\"now_utc\":\"%s\",\"now_unix\":%lu,"
+             "\"meeting_chapter\":\"%s\",\"end_utc\":\"%s\",\"end_unix\":%lu,"
+             "\"remaining_seconds\":%lu,\"selected_profiles\":%u,\"allowed_cards\":%u}",
+             active ? "true" : "false",
+             time_synced ? "true" : "false",
+             now_utc_text,
+             (unsigned long) (time_synced ? now_utc : 0U),
+             meeting_chapter_json,
+             end_utc_text,
+             (unsigned long) end_utc,
+             (unsigned long) remaining_seconds,
+             selected_profiles,
+             allowed_cards);
+
+    return send_buffer_status_response(server_ptr,
+                                       packet_ptr,
+                                       NX_HTTP_STATUS_OK,
+                                       g_net_api_json,
+                                       strlen(g_net_api_json),
+                                       "application/json");
+}
+
 static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
 {
     int pending_count;
     ULONG last_id;
     ULONG last_start_utc;
+    ULONG last_end_utc;
+    ULONG active_end_utc = 0U;
     unsigned int last_selected;
     unsigned int last_allowed;
     char last_status[NET_MEETING_SCHEDULE_STATUS_LEN];
@@ -7660,6 +7973,8 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     ULONG now_utc = 0U;
     char now_utc_text[24];
     char last_start_utc_text[24];
+    char last_end_utc_text[24];
+    char active_end_utc_text[24];
     char active_meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
     char active_meeting_chapter_json[STORAGE_CHAPTER_MAX_LEN * 6U];
     bool active;
@@ -7679,6 +7994,7 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     active = storage_meeting_mode_is_active();
     active_selected = storage_meeting_mode_selected_profile_count();
     active_allowed = storage_meeting_mode_allowed_card_count();
+    (void) storage_meeting_mode_end_utc(&active_end_utc);
     if (!storage_meeting_mode_chapter(active_meeting_chapter, sizeof(active_meeting_chapter)))
     {
         active_meeting_chapter[0] = '\0';
@@ -7686,16 +8002,19 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     net_json_escape(active_meeting_chapter, active_meeting_chapter_json, sizeof(active_meeting_chapter_json));
     time_synced = app_time_get_utc(&now_utc);
     net_format_utc_datetime(time_synced ? now_utc : 0U, now_utc_text, sizeof(now_utc_text));
+    net_format_utc_datetime(active_end_utc, active_end_utc_text, sizeof(active_end_utc_text));
 
     net_action_lock();
     pending_count = g_net_meeting_schedule_count;
     last_id = g_net_meeting_schedule_last_id;
     last_start_utc = g_net_meeting_schedule_last_start_utc;
+    last_end_utc = g_net_meeting_schedule_last_end_utc;
     last_selected = g_net_meeting_schedule_last_selected;
     last_allowed = g_net_meeting_schedule_last_allowed;
     strncpy(last_status, g_net_meeting_schedule_last_status, sizeof(last_status) - 1U);
     last_status[sizeof(last_status) - 1U] = '\0';
     net_format_utc_datetime(last_start_utc, last_start_utc_text, sizeof(last_start_utc_text));
+    net_format_utc_datetime(last_end_utc, last_end_utc_text, sizeof(last_end_utc_text));
 
     {
         size_t offset = 0U;
@@ -7706,8 +8025,10 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
                            "{\"ok\":true,\"active\":%s,\"pending_count\":%d,"
                            "\"time_synced\":%s,\"now_utc\":\"%s\",\"now_unix\":%lu,"
                            "\"active_meeting_chapter\":\"%s\","
+                           "\"active_end_utc\":\"%s\",\"active_end_unix\":%lu,"
                            "\"active_selected_profiles\":%u,\"active_allowed_cards\":%u,"
                            "\"last_id\":%lu,\"last_start_utc\":\"%s\",\"last_start_unix\":%lu,"
+                           "\"last_end_utc\":\"%s\",\"last_end_unix\":%lu,"
                            "\"last_selected_profiles\":%u,\"last_allowed_cards\":%u,"
                            "\"last_status\":\"%s\",\"schedules\":[",
                            active ? "true" : "false",
@@ -7716,11 +8037,15 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
                            now_utc_text,
                            (unsigned long) (time_synced ? now_utc : 0U),
                            active_meeting_chapter_json,
+                           active_end_utc_text,
+                           (unsigned long) active_end_utc,
                            active_selected,
                            active_allowed,
                            (unsigned long) last_id,
                            last_start_utc_text,
                            (unsigned long) last_start_utc,
+                           last_end_utc_text,
+                           (unsigned long) last_end_utc,
                            last_selected,
                            last_allowed,
                            last_status);
@@ -7728,22 +8053,28 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
         for (int i = 0; i < g_net_meeting_schedule_count; i++)
         {
             char schedule_start_utc_text[24];
+            char schedule_end_utc_text[24];
             char schedule_chapter_json[STORAGE_CHAPTER_MAX_LEN * 6U];
 
             net_format_utc_datetime(g_net_meeting_schedules[i].start_unix,
                                     schedule_start_utc_text,
                                     sizeof(schedule_start_utc_text));
+            net_format_utc_datetime(g_net_meeting_schedules[i].end_unix,
+                                    schedule_end_utc_text,
+                                    sizeof(schedule_end_utc_text));
             net_json_escape(g_net_meeting_schedules[i].meeting_chapter,
                             schedule_chapter_json,
                             sizeof(schedule_chapter_json));
             (void) net_appendf(g_net_api_json,
                                sizeof(g_net_api_json),
                                &offset,
-                               "%s{\"id\":%lu,\"start_utc\":\"%s\",\"start_unix\":%lu,\"meeting_chapter\":\"%s\",\"profile_count\":%u,\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
+                               "%s{\"id\":%lu,\"start_utc\":\"%s\",\"start_unix\":%lu,\"end_utc\":\"%s\",\"end_unix\":%lu,\"meeting_chapter\":\"%s\",\"profile_count\":%u,\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
                                (i > 0) ? "," : "",
                                (unsigned long) g_net_meeting_schedules[i].id,
                                schedule_start_utc_text,
                                (unsigned long) g_net_meeting_schedules[i].start_unix,
+                               schedule_end_utc_text,
+                               (unsigned long) g_net_meeting_schedules[i].end_unix,
                                schedule_chapter_json,
                                g_net_meeting_schedules[i].profile_count,
                                net_meeting_recurrence_text(g_net_meeting_schedules[i].recurrence),
@@ -7843,6 +8174,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         if (0 == strcmp(path, "/api/meeting/status"))
         {
             return handle_api_meeting_status(server_ptr, packet_ptr);
+        }
+        if (0 == strcmp(path, "/api/meeting/active"))
+        {
+            return handle_api_meeting_active(server_ptr, packet_ptr);
         }
         if (0 == strcmp(path, "/"))
         {
