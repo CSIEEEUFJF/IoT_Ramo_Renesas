@@ -17,6 +17,10 @@
 #define UI_STATUS_HOLD_TICKS   (TX_TIMER_TICKS_PER_SECOND * 10U)
 #define UI_BACKLIGHT_TIMEOUT_TICKS (TX_TIMER_TICKS_PER_SECOND * 60U)
 #define UI_DIM_BRIGHTNESS_PERCENT 30U
+#define UI_WAIT_LINE1             "AGUARDANDO USUARIO"
+#define UI_WAIT_LINE2             "APROXIME O CARTAO"
+#define UI_MEETING_WAIT_LINE1     "MODO REUNIAO"
+#define UI_MEETING_WAIT_LINE2     "CAPITULO"
 #define UI_TOUCH_DEBOUNCE_TICKS (TX_TIMER_TICKS_PER_SECOND / 20U)
 #define UI_PIN_LENGTH          4U
 #define UI_ADMIN_PIN           "1234"
@@ -198,6 +202,7 @@ static bool ui_enroll_back_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_enroll_save_hit_test(int32_t touch_x, int32_t touch_y);
 static bool ui_touch_accept_action(void);
 static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_gear);
+static void ui_draw_idle_wait_screen(bool show_gear);
 static void ui_ip_to_string(ULONG ip_address, char *out, size_t out_size);
 static void ui_show_ip_status(ui_status_t *status);
 static void ui_draw_pixel_text_centered(int32_t y, const char *text, uint16_t color, uint32_t scale);
@@ -2385,7 +2390,7 @@ static void ui_draw_hero_panel(int32_t x,
         SSP_PARAMETER_NOT_USED(width);
         SSP_PARAMETER_NOT_USED(height);
         SSP_PARAMETER_NOT_USED(accent);
-        ui_draw_wait_screen("AGUARDANDO USUARIO", "APROXIME O CARTAO", true);
+        ui_draw_idle_wait_screen(true);
         return;
     }
 
@@ -2481,6 +2486,17 @@ static void ui_draw_wait_screen(const char *line1, const char *line2, bool show_
     }
 }
 
+static void ui_draw_idle_wait_screen(bool show_gear)
+{
+    if (storage_meeting_mode_is_active())
+    {
+        ui_draw_wait_screen(UI_MEETING_WAIT_LINE1, UI_MEETING_WAIT_LINE2, show_gear);
+        return;
+    }
+
+    ui_draw_wait_screen(UI_WAIT_LINE1, UI_WAIT_LINE2, show_gear);
+}
+
 static void ui_ip_to_string(ULONG ip_address, char *out, size_t out_size)
 {
     if ((NULL == out) || (0U == out_size))
@@ -2532,7 +2548,7 @@ static void ui_show_ip_status(ui_status_t *status)
 
 static void ui_show_splash(void)
 {
-    ui_draw_wait_screen("AGUARDANDO USUARIO", "APROXIME O CARTAO", false);
+    ui_draw_idle_wait_screen(false);
     tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
 }
 
@@ -2982,7 +2998,7 @@ static void ui_render_screen(const ui_status_t *status, const ui_snapshot_t *sna
 
     if (UI_VIEW_IDLE == status->view)
     {
-        ui_draw_wait_screen("AGUARDANDO USUARIO", "APROXIME O CARTAO", true);
+        ui_draw_idle_wait_screen(true);
         return;
     }
 
@@ -3015,6 +3031,7 @@ void thread_ui_entry(ULONG arg)
     ui_snapshot_t previous_snapshot = { 0 };
     bool force_redraw = true;
     ULONG last_activity_tick = 0U;
+    bool previous_meeting_mode_active = false;
 
     SSP_PARAMETER_NOT_USED(arg);
 
@@ -3024,10 +3041,12 @@ void thread_ui_entry(ULONG arg)
     ui_capture_snapshot(&previous_snapshot);
     ui_capture_snapshot(&current_snapshot);
     last_activity_tick = tx_time_get();
+    previous_meeting_mode_active = storage_meeting_mode_is_active();
 
     while (1)
     {
         ui_touch_event_t touch_event = { 0 };
+        bool meeting_mode_active;
         g_ui_debug_loop_count++;
         g_ui_debug_last_view = (uint32_t) status.view;
         g_ui_debug_last_tick = tx_time_get();
@@ -3066,6 +3085,24 @@ void thread_ui_entry(ULONG arg)
             g_ui_debug_expire_count++;
         }
 
+        meeting_mode_active = storage_meeting_mode_is_active();
+        if ((meeting_mode_active != previous_meeting_mode_active) ||
+            (meeting_mode_active && g_ui_display_dimmed))
+        {
+            previous_meeting_mode_active = meeting_mode_active;
+            force_redraw = true;
+
+            if (meeting_mode_active)
+            {
+                last_activity_tick = tx_time_get();
+                g_ui_display_dimmed = false;
+                if (!g_ui_backlight_on)
+                {
+                    ui_set_backlight(true);
+                }
+            }
+        }
+
         ui_capture_snapshot(&current_snapshot);
 
         if (force_redraw || ui_snapshot_changed(&previous_snapshot, &current_snapshot))
@@ -3087,6 +3124,7 @@ void thread_ui_entry(ULONG arg)
         if (status.sticky &&
             g_ui_backlight_on &&
             !g_ui_display_dimmed &&
+            !meeting_mode_active &&
             ((tx_time_get() - last_activity_tick) >= UI_BACKLIGHT_TIMEOUT_TICKS))
         {
             g_ui_display_dimmed = true;
