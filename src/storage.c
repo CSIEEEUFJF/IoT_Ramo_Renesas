@@ -1630,6 +1630,44 @@ static bool storage_profile_key_from_profile_locked(const user_t *profile, char 
     return false;
 }
 
+static uint32_t storage_meeting_profile_key_hash_from_text(const char *key)
+{
+    uint32_t hash = 2166136261UL;
+
+    if ((NULL == key) || ('\0' == key[0]))
+    {
+        return 0U;
+    }
+
+    while ('\0' != *key)
+    {
+        hash ^= (uint8_t) *key;
+        hash *= 16777619UL;
+        key++;
+    }
+
+    return (0U != hash) ? hash : 1U;
+}
+
+static bool storage_profile_key_hash_from_profile_locked(const user_t *profile, uint32_t *out_hash)
+{
+    char key[UID_MAX_LEN];
+
+    if (NULL == out_hash)
+    {
+        return false;
+    }
+
+    *out_hash = 0U;
+    if (!storage_profile_key_from_profile_locked(profile, key, sizeof(key)))
+    {
+        return false;
+    }
+
+    *out_hash = storage_meeting_profile_key_hash_from_text(key);
+    return (0U != *out_hash);
+}
+
 static void storage_set_recent_user_locked(const user_t *profile)
 {
     if ((NULL == profile) || !storage_profile_has_cards(profile))
@@ -2740,17 +2778,18 @@ static bool storage_format_meeting_schedules_json(const storage_meeting_schedule
 
         if (profile_key_count > 0U)
         {
-            if (!storage_appendf(out, out_size, &offset, ",\"profile_keys\":["))
+            if (!storage_appendf(out, out_size, &offset, ",\"profile_key_hashes\":["))
             {
                 return false;
             }
 
             for (unsigned int profile_index = 0U; profile_index < profile_key_count; profile_index++)
             {
-                if (!storage_append_json_escaped_string(out,
-                                                        out_size,
-                                                        &offset,
-                                                        schedules[i].profile_keys[profile_index]))
+                if (!storage_appendf(out,
+                                     out_size,
+                                     &offset,
+                                     "%lu",
+                                     (unsigned long) schedules[i].profile_key_hashes[profile_index]))
                 {
                     return false;
                 }
@@ -2969,17 +3008,18 @@ static bool storage_format_meeting_active_json(const storage_meeting_active_t *s
 
     if (profile_key_count > 0U)
     {
-        if (!storage_appendf(out, out_size, &offset, ",\"profile_keys\":["))
+        if (!storage_appendf(out, out_size, &offset, ",\"profile_key_hashes\":["))
         {
             return false;
         }
 
         for (unsigned int profile_index = 0U; profile_index < profile_key_count; profile_index++)
         {
-            if (!storage_append_json_escaped_string(out,
-                                                    out_size,
-                                                    &offset,
-                                                    state->profile_keys[profile_index]))
+            if (!storage_appendf(out,
+                                 out_size,
+                                 &offset,
+                                 "%lu",
+                                 (unsigned long) state->profile_key_hashes[profile_index]))
             {
                 return false;
             }
@@ -3318,23 +3358,29 @@ static bool storage_meeting_json_get_profiles(const char *object_start,
     return (profile_count > 0U);
 }
 
-static bool storage_meeting_json_get_profile_keys(const char *object_start,
-                                                  const char *object_end,
-                                                  char keys[][UID_MAX_LEN],
-                                                  unsigned int *key_count)
+static bool storage_meeting_json_get_profile_key_hashes(const char *object_start,
+                                                        const char *object_end,
+                                                        uint32_t *hashes,
+                                                        unsigned int *key_count)
 {
     const char *found;
     const char *colon;
     const char *cursor;
     unsigned int count = 0U;
+    bool legacy_string_keys = false;
 
-    if ((NULL == object_start) || (NULL == object_end) || (NULL == keys) || (NULL == key_count))
+    if ((NULL == object_start) || (NULL == object_end) || (NULL == hashes) || (NULL == key_count))
     {
         return false;
     }
 
     *key_count = 0U;
-    found = storage_meeting_json_find_key(object_start, object_end, "profile_keys");
+    found = storage_meeting_json_find_key(object_start, object_end, "profile_key_hashes");
+    if (NULL == found)
+    {
+        found = storage_meeting_json_find_key(object_start, object_end, "profile_keys");
+        legacy_string_keys = (NULL != found);
+    }
     if (NULL == found)
     {
         return false;
@@ -3363,9 +3409,6 @@ static bool storage_meeting_json_get_profile_keys(const char *object_start,
     cursor++;
     while (cursor < object_end)
     {
-        char raw_key[UID_MAX_LEN];
-        size_t raw_len = 0U;
-
         while ((cursor < object_end) && (isspace((unsigned char) *cursor) || (',' == *cursor)))
         {
             cursor++;
@@ -3375,39 +3418,98 @@ static bool storage_meeting_json_get_profile_keys(const char *object_start,
         {
             break;
         }
-        if (('"' != *cursor) || (count >= STORAGE_MAX_USERS))
+        if (count >= STORAGE_MAX_USERS)
         {
             return false;
         }
 
-        cursor++;
-        while ((cursor < object_end) && ('"' != *cursor))
+        if (legacy_string_keys)
         {
-            if ('\\' == *cursor)
+            char raw_key[UID_MAX_LEN];
+            char cleaned_key[UID_MAX_LEN];
+            size_t raw_len = 0U;
+
+            if ('"' != *cursor)
             {
-                cursor++;
-                if (cursor >= object_end)
-                {
-                    return false;
-                }
+                return false;
             }
-            if ((raw_len + 1U) < sizeof(raw_key))
+
+            cursor++;
+            while ((cursor < object_end) && ('"' != *cursor))
             {
-                raw_key[raw_len++] = *cursor;
+                if ('\\' == *cursor)
+                {
+                    cursor++;
+                    if (cursor >= object_end)
+                    {
+                        return false;
+                    }
+                }
+                if ((raw_len + 1U) < sizeof(raw_key))
+                {
+                    raw_key[raw_len++] = *cursor;
+                }
+                cursor++;
+            }
+            if ((cursor >= object_end) || ('"' != *cursor))
+            {
+                return false;
+            }
+            raw_key[raw_len] = '\0';
+            storage_copy_clean_uid(cleaned_key, sizeof(cleaned_key), raw_key);
+            if ('\0' != cleaned_key[0])
+            {
+                hashes[count] = storage_meeting_profile_key_hash_from_text(cleaned_key);
+                if (0U != hashes[count])
+                {
+                    count++;
+                }
             }
             cursor++;
         }
-        if ((cursor >= object_end) || ('"' != *cursor))
+        else
         {
-            return false;
+            char *end_ptr;
+            unsigned long value;
+
+            if ('"' == *cursor)
+            {
+                char raw_hash[16];
+                size_t raw_len = 0U;
+
+                cursor++;
+                while ((cursor < object_end) && ('"' != *cursor))
+                {
+                    if ((raw_len + 1U) < sizeof(raw_hash))
+                    {
+                        raw_hash[raw_len++] = *cursor;
+                    }
+                    cursor++;
+                }
+                if ((cursor >= object_end) || ('"' != *cursor))
+                {
+                    return false;
+                }
+                raw_hash[raw_len] = '\0';
+                value = strtoul(raw_hash, &end_ptr, 10);
+                cursor++;
+            }
+            else
+            {
+                value = strtoul(cursor, &end_ptr, 10);
+                if (end_ptr == cursor)
+                {
+                    return false;
+                }
+                cursor = end_ptr;
+            }
+
+            if ((0UL == value) || (value > 0xFFFFFFFFUL))
+            {
+                return false;
+            }
+            hashes[count++] = (uint32_t) value;
         }
-        raw_key[raw_len] = '\0';
-        storage_copy_clean_uid(keys[count], UID_MAX_LEN, raw_key);
-        if ('\0' != keys[count][0])
-        {
-            count++;
-        }
-        cursor++;
     }
 
     *key_count = count;
@@ -3466,10 +3568,10 @@ static int storage_parse_meeting_active_json(const char *json_text, storage_meet
     {
         return -1;
     }
-    if (!storage_meeting_json_get_profile_keys(object_start,
-                                               object_end,
-                                               schedule.profile_keys,
-                                               &schedule.profile_key_count) &&
+    if (!storage_meeting_json_get_profile_key_hashes(object_start,
+                                                     object_end,
+                                                     schedule.profile_key_hashes,
+                                                     &schedule.profile_key_count) &&
         !storage_meeting_json_get_profiles(object_start, object_end, &schedule))
     {
         return -1;
@@ -3486,10 +3588,7 @@ static int storage_parse_meeting_active_json(const char *json_text, storage_meet
     }
     for (unsigned int i = 0U; i < schedule.profile_key_count; i++)
     {
-        storage_copy_text(out_state->profile_keys[i],
-                          sizeof(out_state->profile_keys[i]),
-                          schedule.profile_keys[i],
-                          strlen(schedule.profile_keys[i]));
+        out_state->profile_key_hashes[i] = schedule.profile_key_hashes[i];
     }
 
     if (!storage_extract_json_string(object_start,
@@ -3543,10 +3642,10 @@ static int storage_parse_meeting_schedules_json(const char *json_text,
         memset(&schedule, 0, sizeof(schedule));
         if (storage_meeting_json_get_ulong(object_start, object_end, "id", &schedule.id) &&
             storage_meeting_json_get_ulong(object_start, object_end, "start_unix", &schedule.start_unix) &&
-            (storage_meeting_json_get_profile_keys(object_start,
-                                                   object_end,
-                                                   schedule.profile_keys,
-                                                   &schedule.profile_key_count) ||
+            (storage_meeting_json_get_profile_key_hashes(object_start,
+                                                         object_end,
+                                                         schedule.profile_key_hashes,
+                                                         &schedule.profile_key_count) ||
              storage_meeting_json_get_profiles(object_start, object_end, &schedule)))
         {
             ULONG value = 0U;
@@ -5242,23 +5341,23 @@ bool storage_profile_get_nowait(int index, storage_user_profile_t *out_profile)
     return ok;
 }
 
-bool storage_meeting_profile_key_for_index(int index, char *out_key, size_t out_size)
+bool storage_meeting_profile_key_hash_for_index(int index, uint32_t *out_hash)
 {
     bool ok = false;
 
-    if ((NULL == out_key) || (0U == out_size))
+    if (NULL == out_hash)
     {
         return false;
     }
 
-    out_key[0] = '\0';
+    *out_hash = 0U;
     storage_init();
     storage_lock();
     storage_ensure_loaded_locked();
 
     if ((index >= 0) && (index < g_user_count))
     {
-        ok = storage_profile_key_from_profile_locked(&g_users[index], out_key, out_size);
+        ok = storage_profile_key_hash_from_profile_locked(&g_users[index], out_hash);
     }
 
     storage_unlock();
@@ -5637,12 +5736,14 @@ static bool storage_meeting_mode_start_internal(const int *profile_indices,
         active_state.profile_count = g_storage_meeting_mode_selected_profiles;
         for (unsigned int i = 0U; i < active_state.profile_count; i++)
         {
+            uint32_t profile_key_hash = 0U;
+
             active_state.profile_indices[i] = g_storage_meeting_mode_profile_indices[i];
             if ((i < STORAGE_MAX_USERS) &&
-                storage_profile_key_from_profile_locked(&g_users[g_storage_meeting_mode_profile_indices[i]],
-                                                        active_state.profile_keys[i],
-                                                        sizeof(active_state.profile_keys[i])))
+                storage_profile_key_hash_from_profile_locked(&g_users[g_storage_meeting_mode_profile_indices[i]],
+                                                             &profile_key_hash))
             {
+                active_state.profile_key_hashes[active_state.profile_key_count] = profile_key_hash;
                 active_state.profile_key_count++;
             }
         }

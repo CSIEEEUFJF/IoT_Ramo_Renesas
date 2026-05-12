@@ -168,7 +168,7 @@ Use `profile_indices` quando o integrador ja conhece os indices atuais dos perfi
 
 Compatibilidade: o campo `profiles` tambem e aceito para lista de indices.
 
-Mesmo quando a entrada usa indices, o firmware salva internamente `profile_keys`, derivadas dos cartoes dos usuarios. Isso evita liberar a pessoa errada caso a ordem da lista de perfis mude depois do agendamento.
+Mesmo quando a entrada usa indices, o firmware salva internamente `profile_key_hashes`, derivadas dos cartoes dos usuarios. Isso evita liberar a pessoa errada caso a ordem da lista de perfis mude depois do agendamento, sem manter listas grandes de UIDs em RAM.
 
 ### Participantes por nome e capitulo
 
@@ -508,7 +508,7 @@ curl.exe -i "http://192.168.15.125/api/meeting/status" `
 - O limite atual e de 8 agendamentos pendentes.
 - O limite atual e de 100 usuarios.
 - Cada usuario pode ter ate 4 cartoes.
-- Agendamentos novos sao persistidos em QSPI com `profile_keys`, derivadas dos UIDs dos cartoes, para evitar dependencia da posicao do perfil na lista.
-- O campo legado `profiles` por indice ainda e aceito na leitura dos arquivos persistidos e nas chamadas de agendamento.
+- Agendamentos novos sao persistidos em QSPI com `profile_key_hashes`, derivadas dos UIDs dos cartoes, para evitar dependencia da posicao do perfil na lista.
+- Os campos legados `profile_keys` e `profiles` ainda sao aceitos na leitura dos arquivos persistidos; `profiles` por indice tambem segue aceito nas chamadas de agendamento.
 - Logs de acesso e metricas sao gravados de forma incremental em QSPI e passam por retencao temporal de 7 dias.
 - Administradores podem abrir a porta mesmo com modo reuniao ativo.

@@ -48,7 +48,7 @@ typedef struct
     unsigned int profile_count;
     uint8_t profile_indices[STORAGE_MAX_USERS];
     unsigned int profile_key_count;
-    char profile_keys[STORAGE_MAX_USERS][UID_MAX_LEN];
+    uint32_t profile_key_hashes[STORAGE_MAX_USERS];
     uint8_t recurrence;
     uint8_t weekdays_mask;
     char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
@@ -61,7 +61,7 @@ typedef struct
     unsigned int profile_count;
     uint8_t profile_indices[STORAGE_MAX_USERS];
     unsigned int profile_key_count;
-    char profile_keys[STORAGE_MAX_USERS][UID_MAX_LEN];
+    uint32_t profile_key_hashes[STORAGE_MAX_USERS];
     char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
 } storage_meeting_active_t;
 
@@ -110,7 +110,7 @@ bool storage_profile_get_nowait(int index, storage_user_profile_t *out_profile);
 bool storage_profile_find_by_uid(const char *uid_str, storage_user_profile_t *out_profile);
 bool storage_profile_upsert(const storage_user_profile_t *profile, int edit_index);
 bool storage_profile_remove(int index);
-bool storage_meeting_profile_key_for_index(int index, char *out_key, size_t out_size);
+bool storage_meeting_profile_key_hash_for_index(int index, uint32_t *out_hash);
 bool storage_meeting_mode_start(const int *profile_indices,
                                 int profile_count,
                                 const char *meeting_chapter,

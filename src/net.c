@@ -4771,7 +4771,6 @@ static void net_meeting_schedule_rebuild_next_id_locked(void)
 
 static bool net_meeting_schedule_ensure_loaded(void)
 {
-    storage_meeting_schedule_t loaded_schedules[STORAGE_MEETING_SCHEDULE_MAX_ITEMS];
     int loaded_count;
     bool already_loaded;
 
@@ -4783,19 +4782,25 @@ static bool net_meeting_schedule_ensure_loaded(void)
         return true;
     }
 
-    loaded_count = storage_meeting_schedule_load(loaded_schedules, STORAGE_MEETING_SCHEDULE_MAX_ITEMS);
+    net_action_lock();
+    if (g_net_meeting_schedules_loaded)
+    {
+        net_action_unlock();
+        return true;
+    }
+
+    loaded_count = storage_meeting_schedule_load(g_net_meeting_schedules, STORAGE_MEETING_SCHEDULE_MAX_ITEMS);
     if (loaded_count < 0)
     {
+        net_action_unlock();
         return false;
     }
 
-    net_action_lock();
     if (!g_net_meeting_schedules_loaded)
     {
         g_net_meeting_schedule_count = loaded_count;
         for (int i = 0; i < loaded_count; i++)
         {
-            g_net_meeting_schedules[i] = loaded_schedules[i];
             if ((0U == g_net_meeting_schedules[i].profile_key_count) &&
                 (g_net_meeting_schedules[i].profile_count > 0U))
             {
@@ -4872,20 +4877,20 @@ static bool net_meeting_schedule_set_keys_from_profiles(storage_meeting_schedule
     }
 
     schedule->profile_key_count = 0U;
-    memset(schedule->profile_keys, 0, sizeof(schedule->profile_keys));
+    memset(schedule->profile_key_hashes, 0, sizeof(schedule->profile_key_hashes));
     for (int i = 0; i < profile_count; i++)
     {
-        char profile_key[UID_MAX_LEN];
+        uint32_t profile_key_hash = 0U;
         bool duplicate = false;
 
-        if (!storage_meeting_profile_key_for_index(profiles[i], profile_key, sizeof(profile_key)))
+        if (!storage_meeting_profile_key_hash_for_index(profiles[i], &profile_key_hash))
         {
             return false;
         }
 
         for (unsigned int existing = 0U; existing < schedule->profile_key_count; existing++)
         {
-            if (0 == strcmp(schedule->profile_keys[existing], profile_key))
+            if (schedule->profile_key_hashes[existing] == profile_key_hash)
             {
                 duplicate = true;
                 break;
@@ -4898,12 +4903,7 @@ static bool net_meeting_schedule_set_keys_from_profiles(storage_meeting_schedule
             {
                 return false;
             }
-            memset(schedule->profile_keys[schedule->profile_key_count],
-                   0,
-                   sizeof(schedule->profile_keys[schedule->profile_key_count]));
-            memcpy(schedule->profile_keys[schedule->profile_key_count],
-                   profile_key,
-                   strlen(profile_key));
+            schedule->profile_key_hashes[schedule->profile_key_count] = profile_key_hash;
             schedule->profile_key_count++;
         }
     }
@@ -4911,11 +4911,11 @@ static bool net_meeting_schedule_set_keys_from_profiles(storage_meeting_schedule
     return (schedule->profile_key_count > 0U);
 }
 
-static bool net_meeting_profile_index_from_key(const char *profile_key, int *out_index)
+static bool net_meeting_profile_index_from_key_hash(uint32_t profile_key_hash, int *out_index)
 {
     int user_count;
 
-    if ((NULL == profile_key) || ('\0' == profile_key[0]) || (NULL == out_index))
+    if ((0U == profile_key_hash) || (NULL == out_index))
     {
         return false;
     }
@@ -4923,20 +4923,13 @@ static bool net_meeting_profile_index_from_key(const char *profile_key, int *out
     user_count = storage_user_count();
     for (int index = 0; index < user_count; index++)
     {
-        storage_user_profile_t profile;
+        uint32_t current_hash = 0U;
 
-        if (!storage_profile_get(index, &profile))
+        if (storage_meeting_profile_key_hash_for_index(index, &current_hash) &&
+            (current_hash == profile_key_hash))
         {
-            continue;
-        }
-
-        for (unsigned int card_index = 0U; card_index < profile.card_count; card_index++)
-        {
-            if (0 == strcmp(profile.cards[card_index], profile_key))
-            {
-                *out_index = index;
-                return true;
-            }
+            *out_index = index;
+            return true;
         }
     }
 
@@ -4960,7 +4953,7 @@ static int net_meeting_schedule_resolve_profiles(const storage_meeting_schedule_
         {
             int profile_index = -1;
 
-            if (net_meeting_profile_index_from_key(schedule->profile_keys[key_index], &profile_index))
+            if (net_meeting_profile_index_from_key_hash(schedule->profile_key_hashes[key_index], &profile_index))
             {
                 (void) net_profile_index_add_unique(out_profiles, max_profiles, &profile_count, profile_index);
             }
@@ -5391,10 +5384,7 @@ static void net_process_meeting_active_state(ULONG now_utc)
     }
     for (unsigned int i = 0U; i < active_state.profile_key_count; i++)
     {
-        memset(active_schedule.profile_keys[i], 0, sizeof(active_schedule.profile_keys[i]));
-        memcpy(active_schedule.profile_keys[i],
-               active_state.profile_keys[i],
-               strlen(active_state.profile_keys[i]));
+        active_schedule.profile_key_hashes[i] = active_state.profile_key_hashes[i];
     }
 
     active_profile_count = net_meeting_schedule_resolve_profiles(&active_schedule,
@@ -7242,7 +7232,16 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
                                                 NX_PACKET *packet_ptr,
                                                 const char *message)
 {
-    storage_meeting_schedule_t schedules[STORAGE_MEETING_SCHEDULE_MAX_ITEMS];
+    struct st_meeting_schedule_row
+    {
+        ULONG id;
+        ULONG start_unix;
+        ULONG end_unix;
+        unsigned int participant_count;
+        uint8_t recurrence;
+        uint8_t weekdays_mask;
+        char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
+    } schedules[STORAGE_MEETING_SCHEDULE_MAX_ITEMS];
     const char *message_to_render = message;
     int schedule_count;
     size_t offset = 0U;
@@ -7275,7 +7274,18 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
     }
     for (int i = 0; i < schedule_count; i++)
     {
-        schedules[i] = g_net_meeting_schedules[i];
+        schedules[i].id = g_net_meeting_schedules[i].id;
+        schedules[i].start_unix = g_net_meeting_schedules[i].start_unix;
+        schedules[i].end_unix = g_net_meeting_schedules[i].end_unix;
+        schedules[i].participant_count = (g_net_meeting_schedules[i].profile_key_count > 0U)
+                                             ? g_net_meeting_schedules[i].profile_key_count
+                                             : g_net_meeting_schedules[i].profile_count;
+        schedules[i].recurrence = g_net_meeting_schedules[i].recurrence;
+        schedules[i].weekdays_mask = g_net_meeting_schedules[i].weekdays_mask;
+        strncpy(schedules[i].meeting_chapter,
+                g_net_meeting_schedules[i].meeting_chapter,
+                sizeof(schedules[i].meeting_chapter) - 1U);
+        schedules[i].meeting_chapter[sizeof(schedules[i].meeting_chapter) - 1U] = '\0';
     }
     net_action_unlock();
 
@@ -7310,9 +7320,6 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
             char duration_text[24];
             char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6U];
             char weekdays_text[48];
-            unsigned int participant_count = (schedules[i].profile_key_count > 0U)
-                                                 ? schedules[i].profile_key_count
-                                                 : schedules[i].profile_count;
             ULONG duration_seconds = (schedules[i].end_unix > schedules[i].start_unix)
                                          ? (schedules[i].end_unix - schedules[i].start_unix)
                                          : STORAGE_MEETING_DEFAULT_DURATION_SECONDS;
@@ -7334,7 +7341,7 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
                              end_text,
                              duration_text,
                              chapter_html,
-                             participant_count,
+                             schedules[i].participant_count,
                              net_meeting_recurrence_text(schedules[i].recurrence),
                              weekdays_text))
             {
@@ -7980,8 +7987,6 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
 
 static UINT handle_api_meeting_cancel(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body, const char *query)
 {
-    storage_meeting_schedule_t backup_schedules[STORAGE_MEETING_SCHEDULE_MAX_ITEMS];
-    int backup_count = 0;
     ULONG id = 0U;
     bool has_id = false;
     int canceled_count = 0;
@@ -8004,12 +8009,6 @@ static UINT handle_api_meeting_cancel(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     }
 
     net_action_lock();
-    backup_count = g_net_meeting_schedule_count;
-    for (int i = 0; i < backup_count; i++)
-    {
-        backup_schedules[i] = g_net_meeting_schedules[i];
-    }
-
     if (has_id)
     {
         for (int i = 0; i < g_net_meeting_schedule_count; i++)
@@ -8038,11 +8037,8 @@ static UINT handle_api_meeting_cancel(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     }
     if (!saved)
     {
-        g_net_meeting_schedule_count = backup_count;
-        for (int i = 0; i < backup_count; i++)
-        {
-            g_net_meeting_schedules[i] = backup_schedules[i];
-        }
+        g_net_meeting_schedules_loaded = false;
+        g_net_meeting_schedule_count = 0;
         net_meeting_schedule_set_status_locked("save_failed");
     }
     else

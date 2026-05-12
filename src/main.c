@@ -19,7 +19,7 @@ const char * API_KEY       = "SuperStrongKey123!";
 
 #define STACK_SIZE_RFID      2048
 #define STACK_SIZE_UI        4096
-#define STACK_SIZE_NET       4096
+#define STACK_SIZE_NET       8192
 #define STACK_SIZE_TUNNEL    2048
 #define STACK_SIZE_GPIO      1024
 #define STACK_SIZE_STATUS    1024

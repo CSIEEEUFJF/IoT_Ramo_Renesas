@@ -477,7 +477,7 @@ Regras importantes:
 - uma reunião ativa é persistida em QSPI no arquivo `meeting_active.json`; se a placa reiniciar antes de `end_utc`, o firmware restaura o modo reunião após sincronizar o relógio
 - agendamentos recorrentes mantêm o mesmo `id` e atualizam o próximo horário após cada execução
 - no horário marcado, o firmware só remove ou avança o agendamento depois que a reunião ativa é gravada com sucesso em `meeting_active.json`
-- os agendamentos novos salvam `profile_keys`, derivados dos cartões dos perfis, para evitar liberar a pessoa errada caso a ordem da lista de usuários mude
+- os agendamentos novos salvam `profile_key_hashes`, derivados dos cartões dos perfis, para evitar liberar a pessoa errada caso a ordem da lista de usuários mude sem criar estruturas grandes em RAM
 - no horário marcado, o firmware chama a mesma lógica de `storage_meeting_mode_start(...)` usada pela página web
 - perfis administradores podem abrir a porta a qualquer momento, mesmo durante o modo reunião
 
@@ -615,7 +615,7 @@ Formato atual aproximado:
     "recurrence": 2,
     "weekdays_mask": 42,
     "meeting_chapter": "RAS",
-    "profile_keys": ["E35C051C", "858A28BE", "7D2FE2D4"]
+    "profile_key_hashes": [2944794251, 3484519674, 2361120941]
   }
 ]
 ```
@@ -627,7 +627,7 @@ Observacoes:
 - `recurrence` usa `0=unico`, `1=diario` e `2=semanal`
 - `weekdays_mask` usa bits de domingo a sabado; por exemplo, `42` representa segunda, quarta e sexta
 - `end_unix` define o fim da janela de acesso da ocorrencia
-- `profile_keys` guarda uma identidade estável derivada do UID de cartão do perfil; o campo legado `profiles` por índice ainda é aceito na leitura
+- `profile_key_hashes` guarda identidades estáveis derivadas dos UIDs de cartão dos perfis; os campos legados `profile_keys` e `profiles` ainda são aceitos na leitura
 - agendamentos unicos sao removidos da fila somente depois que o modo reunião ativo foi salvo com sucesso
 - agendamentos recorrentes permanecem na fila e avançam para a próxima ocorrência futura somente depois que a ocorrência atual foi iniciada
 
@@ -642,7 +642,7 @@ Formato atual aproximado:
   "start_unix": 1893456000,
   "end_unix": 1893459600,
   "meeting_chapter": "RAS",
-  "profile_keys": ["E35C051C", "858A28BE", "7D2FE2D4"]
+  "profile_key_hashes": [2944794251, 3484519674, 2361120941]
 }
 ```
 
@@ -651,7 +651,7 @@ Observacoes:
 - é salvo quando a reunião começa pela web ou por agendamento
 - é removido quando o modo reunião é encerrado manualmente ou quando `end_unix` expira
 - permite restaurar o modo reunião depois de reboot, desde que o relógio UTC sincronize antes do fim da reunião
-- usa `profile_keys`, e não a posição atual do perfil na lista, para evitar liberação incorreta após remoções ou reordenações
+- usa `profile_key_hashes`, e não a posição atual do perfil na lista, para evitar liberação incorreta após remoções ou reordenações
 
 ### `photo_XXXXXXXX.bin`
 
