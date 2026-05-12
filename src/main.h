@@ -21,6 +21,7 @@ extern const char * API_KEY;
 #define EVENT_QUEUE_SIZE 16
 #define ACCESS_LOG_SIZE  32
 #define APP_METRIC_LOG_SIZE 128
+#define APP_HISTORY_RETENTION_SECONDS (7UL * 24UL * 60UL * 60UL)
 
 typedef enum
 {

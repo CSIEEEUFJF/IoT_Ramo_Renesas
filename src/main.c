@@ -83,6 +83,9 @@ volatile UINT g_app_debug_event_queue_status = TX_SUCCESS;
 volatile ULONG g_app_debug_event_queue_fail_count = 0U;
 
 static void app_format_unix_timestamp_local(ULONG unix_utc, char *out, size_t out_size);
+static bool app_history_entry_is_retained(ULONG entry_unix_utc, ULONG now_unix_utc);
+static void app_access_log_prune_locked(void);
+static void app_metric_log_prune_locked(void);
 
 static void app_store_last_uid(const char *uid)
 {
@@ -174,6 +177,98 @@ static void app_metric_log_push_locked(const app_metric_entry_t *entry)
     if (g_metric_log_count < APP_METRIC_LOG_SIZE)
     {
         g_metric_log_count++;
+    }
+}
+
+static bool app_history_entry_is_retained(ULONG entry_unix_utc, ULONG now_unix_utc)
+{
+    if ((0U == entry_unix_utc) || (0U == now_unix_utc) || (entry_unix_utc >= now_unix_utc))
+    {
+        return true;
+    }
+
+    return ((now_unix_utc - entry_unix_utc) <= APP_HISTORY_RETENTION_SECONDS);
+}
+
+static void app_access_log_prune_locked(void)
+{
+    static app_access_log_entry_t retained_entries[ACCESS_LOG_SIZE];
+    ULONG now_unix_utc = 0U;
+    int retained_count = 0;
+
+    if (!app_time_get_utc_locked(&now_unix_utc))
+    {
+        return;
+    }
+
+    for (int i = 0; i < g_access_log_count; i++)
+    {
+        int source_index = (g_access_log_next - g_access_log_count + i);
+        while (source_index < 0)
+        {
+            source_index += ACCESS_LOG_SIZE;
+        }
+        source_index %= ACCESS_LOG_SIZE;
+
+        if (app_history_entry_is_retained(g_access_log[source_index].unix_utc, now_unix_utc))
+        {
+            retained_entries[retained_count++] = g_access_log[source_index];
+        }
+    }
+
+    if (retained_count == g_access_log_count)
+    {
+        return;
+    }
+
+    memset(g_access_log, 0, sizeof(g_access_log));
+    g_access_log_next = 0;
+    g_access_log_count = 0;
+
+    for (int i = 0; i < retained_count; i++)
+    {
+        app_access_log_push_locked(&retained_entries[i]);
+    }
+}
+
+static void app_metric_log_prune_locked(void)
+{
+    static app_metric_entry_t retained_entries[APP_METRIC_LOG_SIZE];
+    ULONG now_unix_utc = 0U;
+    int retained_count = 0;
+
+    if (!app_time_get_utc_locked(&now_unix_utc))
+    {
+        return;
+    }
+
+    for (int i = 0; i < g_metric_log_count; i++)
+    {
+        int source_index = (g_metric_log_next - g_metric_log_count + i);
+        while (source_index < 0)
+        {
+            source_index += APP_METRIC_LOG_SIZE;
+        }
+        source_index %= APP_METRIC_LOG_SIZE;
+
+        if (app_history_entry_is_retained(g_metric_log[source_index].unix_utc, now_unix_utc))
+        {
+            retained_entries[retained_count++] = g_metric_log[source_index];
+        }
+    }
+
+    if (retained_count == g_metric_log_count)
+    {
+        return;
+    }
+
+    memset(g_metric_log, 0, sizeof(g_metric_log));
+    g_metric_log_next = 0;
+    g_metric_log_count = 0;
+
+    for (int i = 0; i < retained_count; i++)
+    {
+        app_metric_log_push_locked(&retained_entries[i]);
     }
 }
 
@@ -661,6 +756,7 @@ int app_access_log_snapshot(app_access_log_entry_t *out_entries, int max_entries
     (void) storage_access_log_ensure_loaded();
 
     app_state_lock();
+    app_access_log_prune_locked();
     count = g_access_log_count;
     if (count > max_entries)
     {
@@ -715,6 +811,7 @@ int app_metric_snapshot(app_metric_entry_t *out_entries, int max_entries)
     (void) storage_metrics_ensure_loaded();
 
     app_state_lock();
+    app_metric_log_prune_locked();
     count = g_metric_log_count;
     if (count > max_entries)
     {
@@ -785,6 +882,7 @@ void app_access_log_restore(const app_access_log_entry_t *entries, int entry_cou
         app_access_log_push_locked(&current_entries[i]);
     }
 
+    app_access_log_prune_locked();
     app_state_unlock();
 }
 
@@ -837,6 +935,7 @@ void app_metric_restore(const app_metric_entry_t *entries, int entry_count)
         app_metric_log_push_locked(&current_entries[i]);
     }
 
+    app_metric_log_prune_locked();
     app_state_unlock();
 }
 

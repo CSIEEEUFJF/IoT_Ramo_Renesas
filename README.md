@@ -556,6 +556,24 @@ Observacoes:
 - a gravacao e incremental, em append
 - o arquivo ativo gira por tamanho e usa `access.bak` como arquivo de rotacao
 - o boot recarrega o final do log persistido, lendo `access.bak` antes de `access.log` para preservar a ordem dos eventos mais recentes
+- as entradas com timestamp UTC valido sao mantidas por 7 dias; quando o relogio ainda nao sincronizou, o firmware preserva as entradas para evitar apagar dados sem referencia de tempo
+
+### `metrics.log`
+
+Guarda as metricas persistidas.
+
+Cada linha e serializada como:
+
+```text
+unix_utc|duracao_ticks|sucesso|tipo_metrica|caso
+```
+
+Observacoes:
+
+- a gravacao reescreve o snapshot atual de metricas, ja filtrado pela retencao
+- as entradas com timestamp UTC valido sao mantidas por 7 dias
+- se todas as metricas estiverem vencidas, o arquivo e truncado na proxima persistencia
+- sem horario UTC sincronizado, a limpeza fica suspensa para nao descartar entradas por engano
 
 ### `meeting.json`
 
@@ -790,6 +808,7 @@ Persistencia:
 - salva em `access.log` na QSPI com append incremental
 - gira para `access.bak` quando o arquivo ativo atinge o limite configurado
 - recarrega no boot com atraso seguro, lendo o final dos arquivos persistidos
+- remove automaticamente entradas com mais de 7 dias quando ha horario UTC sincronizado
 
 ## 14. Rede
 
