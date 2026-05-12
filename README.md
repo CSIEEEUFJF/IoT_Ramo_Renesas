@@ -314,6 +314,8 @@ Rotas de acao:
 - `/upload_photo_chunk`
 - `/upload_photo_commit`
 
+Documentacao detalhada da API HTTP: [`docs/API.md`](./docs/API.md).
+
 ## 7.3 Caracteristicas da interface web
 
 - separada em paginas pequenas para reduzir carga no servidor HTTP embarcado
