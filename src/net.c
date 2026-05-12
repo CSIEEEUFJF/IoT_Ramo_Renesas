@@ -4364,7 +4364,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
     {
         snprintf(storage_debug_line,
                  sizeof(storage_debug_line),
-                 "<p class='muted'>QSPI diag: <strong>stage=%lu media=%lu save=%lu load=%lu bytes=%lu users=%lu runs=%lu loaded=%u failed=%u direct=%lu/%lu fmt=%lu erase=%lu</strong></p>",
+                 "<p class='muted'>QSPI diag: <strong>stage=%lu media=%lu save=%lu load=%lu bytes=%lu users=%lu runs=%lu loaded=%u failed=%u direct=%lu/%lu fmt=%lu erase=%lu estep=%lu</strong></p>",
                  (unsigned long) storage_debug.last_stage,
                  (unsigned long) storage_debug.last_media_status,
                  (unsigned long) storage_debug.last_save_status,
@@ -4377,7 +4377,8 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
                  (unsigned long) storage_debug.direct_persist_successes,
                  (unsigned long) storage_debug.direct_persist_requests,
                  (unsigned long) storage_debug.format_status,
-                 (unsigned long) storage_debug.erase_status);
+                 (unsigned long) storage_debug.erase_status,
+                 (unsigned long) storage_debug.erase_step);
     }
     else
     {

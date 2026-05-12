@@ -73,6 +73,7 @@ typedef struct
     ULONG direct_persist_successes;
     ULONG format_status;
     ULONG erase_status;
+    ULONG erase_step;
 } storage_debug_info_t;
 
 void storage_init(void);

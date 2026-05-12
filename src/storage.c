@@ -117,6 +117,7 @@ volatile ULONG g_storage_debug_direct_persist_requests = 0U;
 volatile ULONG g_storage_debug_direct_persist_successes = 0U;
 volatile ULONG g_storage_debug_last_format_status = 0U;
 volatile ULONG g_storage_debug_last_erase_status = 0U;
+volatile ULONG g_storage_debug_last_erase_step = 0U;
 
 typedef struct st_storage_photo_file_header
 {
@@ -129,6 +130,7 @@ typedef struct st_storage_photo_file_header
 static void storage_thread_entry(ULONG initial_input);
 static void storage_refresh_metrics_snapshot(void);
 static void storage_ensure_loaded_locked(void);
+static void storage_release_qspi_stack_locked(void);
 static bool storage_erase_qspi_now_locked(void);
 static bool storage_format_media_now(void);
 static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_user_count);
@@ -199,6 +201,43 @@ static bool storage_media_open(void)
     return (FX_SUCCESS == storage_media_open_internal());
 }
 
+static void storage_release_qspi_stack_locked(void)
+{
+    sf_block_media_lx_nor_instance_ctrl_t *block_ctrl;
+    sf_memory_qspi_nor_instance_ctrl_t *memory_ctrl;
+
+    g_storage_debug_last_erase_step = 1U;
+    if (FX_MEDIA_ID == g_fx_media0.fx_media_id)
+    {
+        (void) fx_media_close(&g_fx_media0);
+    }
+    g_storage_media_ready = false;
+
+    block_ctrl = (sf_block_media_lx_nor_instance_ctrl_t *) g_sf_block_media_lx_nor0.p_ctrl;
+    if ((NULL != block_ctrl) && (0U != block_ctrl->open) && (NULL != block_ctrl->p_nor_flash))
+    {
+        g_storage_debug_last_erase_step = 2U;
+        (void) g_sf_block_media_lx_nor0.p_api->close(g_sf_block_media_lx_nor0.p_ctrl);
+    }
+    else if ((NULL != block_ctrl) && (NULL != block_ctrl->close))
+    {
+        g_storage_debug_last_erase_step = 3U;
+        (void) block_ctrl->close();
+        block_ctrl->open = 0U;
+    }
+
+    memory_ctrl = (sf_memory_qspi_nor_instance_ctrl_t *) g_sf_memory_qspi_nor0.p_ctrl;
+    if ((NULL != memory_ctrl) && (0U != memory_ctrl->open) && (NULL != memory_ctrl->p_qspi))
+    {
+        g_storage_debug_last_erase_step = 4U;
+        (void) g_sf_memory_qspi_nor0.p_api->close(g_sf_memory_qspi_nor0.p_ctrl);
+    }
+
+    g_storage_debug_last_erase_step = 5U;
+    (void) g_qspi0.p_api->close(g_qspi0.p_ctrl);
+    tx_thread_sleep(2U);
+}
+
 static bool storage_erase_qspi_now_locked(void)
 {
     ssp_err_t status;
@@ -207,7 +246,11 @@ static bool storage_erase_qspi_now_locked(void)
 
     g_storage_debug_last_stage = 26U;
     g_storage_debug_last_erase_status = SSP_SUCCESS;
+    g_storage_debug_last_erase_step = 0U;
 
+    storage_release_qspi_stack_locked();
+
+    g_storage_debug_last_erase_step = 6U;
     status = g_qspi0.p_api->open(g_qspi0.p_ctrl, g_qspi0.p_cfg);
     if ((SSP_SUCCESS != status) && (SSP_ERR_ALREADY_OPEN != status))
     {
@@ -215,6 +258,7 @@ static bool storage_erase_qspi_now_locked(void)
         return false;
     }
 
+    g_storage_debug_last_erase_step = 7U;
     status = g_qspi0.p_api->erase(g_qspi0.p_ctrl,
                                   STORAGE_QSPI_BASE_ADDRESS,
                                   STORAGE_QSPI_ERASE_SIZE_BYTES);
@@ -228,6 +272,7 @@ static bool storage_erase_qspi_now_locked(void)
     start_tick = tx_time_get();
     while (in_progress)
     {
+        g_storage_debug_last_erase_step = 8U;
         status = g_qspi0.p_api->statusGet(g_qspi0.p_ctrl, &in_progress);
         if (SSP_SUCCESS != status)
         {
@@ -248,6 +293,7 @@ static bool storage_erase_qspi_now_locked(void)
         tx_thread_sleep(1U);
     }
 
+    g_storage_debug_last_erase_step = 9U;
     status = g_qspi0.p_api->close(g_qspi0.p_ctrl);
     if ((SSP_SUCCESS != status) && (SSP_ERR_NOT_OPEN != status))
     {
@@ -256,6 +302,7 @@ static bool storage_erase_qspi_now_locked(void)
     }
 
     g_storage_debug_last_erase_status = SSP_SUCCESS;
+    g_storage_debug_last_erase_step = 10U;
     return true;
 }
 
@@ -4830,6 +4877,7 @@ void storage_debug_snapshot(storage_debug_info_t *out_info)
     out_info->direct_persist_successes = g_storage_debug_direct_persist_successes;
     out_info->format_status = g_storage_debug_last_format_status;
     out_info->erase_status = g_storage_debug_last_erase_status;
+    out_info->erase_step = g_storage_debug_last_erase_step;
 }
 
 bool storage_access_log_enqueue(const app_access_log_entry_t *entry)
