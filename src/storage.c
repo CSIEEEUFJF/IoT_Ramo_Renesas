@@ -3182,7 +3182,7 @@ static bool storage_load_users_file(const char *filename, bool commit_profiles)
     {
         g_storage_users_load_failed = false;
     }
-    else if ((FX_SUCCESS != status) && file_opened)
+    else if ((FX_SUCCESS != status) && file_opened && (commit_profiles || !g_storage_loaded))
     {
         g_storage_users_load_failed = true;
     }
@@ -3584,11 +3584,15 @@ static void storage_thread_entry(ULONG initial_input)
                 storage_lock();
                 if (g_storage_users_load_failed)
                 {
-                    storage_unlock();
-                    storage_io_unlock();
-                    g_storage_persist_status = STORAGE_PERSIST_STATUS_FAILED;
-                    g_storage_debug_last_save_status = FX_INVALID_NAME;
-                    continue;
+                    if (!g_storage_loaded || ((g_user_count <= 0) && !g_recent_user_valid))
+                    {
+                        storage_unlock();
+                        storage_io_unlock();
+                        g_storage_persist_status = STORAGE_PERSIST_STATUS_FAILED;
+                        g_storage_debug_last_save_status = FX_INVALID_NAME;
+                        continue;
+                    }
+                    g_storage_users_load_failed = false;
                 }
                 storage_capture_users_io_snapshot_locked();
                 storage_unlock();
