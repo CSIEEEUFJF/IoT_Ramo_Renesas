@@ -1573,30 +1573,70 @@ static bool storage_parse_user_object_locked(const char *object_start, const cha
     return true;
 }
 
-static bool storage_write_users_json_fragment(const char *fragment, size_t fragment_size, size_t *json_size)
+static UINT storage_flush_users_json_buffer(size_t *buffer_len, size_t *json_size)
 {
     UINT status;
 
-    if ((NULL == fragment) || (0U == fragment_size) || (NULL == json_size))
+    if ((NULL == buffer_len) || (NULL == json_size))
     {
-        return false;
+        return FX_PTR_ERROR;
+    }
+    if (0U == *buffer_len)
+    {
+        return FX_SUCCESS;
     }
 
-    status = fx_file_write(&g_users_file, (VOID *) fragment, (ULONG) fragment_size);
+    status = fx_file_write(&g_users_file, (VOID *) g_storage_users_json_chunk, (ULONG) *buffer_len);
     if (FX_SUCCESS == status)
     {
-        *json_size += fragment_size;
+        *json_size += *buffer_len;
+        *buffer_len = 0U;
     }
 
-    return (FX_SUCCESS == status);
+    return status;
+}
+
+static UINT storage_write_users_json_fragment(const char *fragment,
+                                              size_t fragment_size,
+                                              size_t *buffer_len,
+                                              size_t *json_size)
+{
+    if ((NULL == fragment) || (NULL == buffer_len) || (NULL == json_size))
+    {
+        return FX_PTR_ERROR;
+    }
+
+    while (fragment_size > 0U)
+    {
+        size_t buffer_space = sizeof(g_storage_users_json_chunk) - *buffer_len;
+        size_t copy_size;
+
+        if (0U == buffer_space)
+        {
+            UINT flush_status = storage_flush_users_json_buffer(buffer_len, json_size);
+            if (FX_SUCCESS != flush_status)
+            {
+                return flush_status;
+            }
+            buffer_space = sizeof(g_storage_users_json_chunk);
+        }
+
+        copy_size = (fragment_size < buffer_space) ? fragment_size : buffer_space;
+        memcpy(&g_storage_users_json_chunk[*buffer_len], fragment, copy_size);
+        *buffer_len += copy_size;
+        fragment += copy_size;
+        fragment_size -= copy_size;
+    }
+
+    return FX_SUCCESS;
 }
 
 static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_user_count)
 {
     UINT status;
     bool file_opened = false;
-    bool ok = false;
     bool prepend_comma = false;
+    size_t write_buffer_len = 0U;
     size_t json_size = 0U;
     int count_to_write = g_storage_users_io_count;
     ULONG start_tick = tx_time_get();
@@ -1669,8 +1709,7 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
     }
     if (FX_SUCCESS == status)
     {
-        ok = storage_write_users_json_fragment("[", 1U, &json_size);
-        status = ok ? FX_SUCCESS : FX_INVALID_NAME;
+        status = storage_write_users_json_fragment("[", 1U, &write_buffer_len, &json_size);
     }
 
     if ((FX_SUCCESS == status) && (0 == count_to_write) && g_storage_recent_io_valid)
@@ -1683,9 +1722,14 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
                                             sizeof(g_storage_users_json_object),
                                             &object_size))
         {
-            ok = storage_write_users_json_fragment(g_storage_users_json_object, object_size, &json_size);
-            status = ok ? FX_SUCCESS : FX_INVALID_NAME;
-            prepend_comma = true;
+            status = storage_write_users_json_fragment(g_storage_users_json_object,
+                                                       object_size,
+                                                       &write_buffer_len,
+                                                       &json_size);
+            if (FX_SUCCESS == status)
+            {
+                prepend_comma = true;
+            }
         }
         else
         {
@@ -1714,15 +1758,23 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
             break;
         }
 
-        ok = storage_write_users_json_fragment(g_storage_users_json_object, object_size, &json_size);
-        status = ok ? FX_SUCCESS : FX_INVALID_NAME;
-        prepend_comma = true;
+        status = storage_write_users_json_fragment(g_storage_users_json_object,
+                                                   object_size,
+                                                   &write_buffer_len,
+                                                   &json_size);
+        if (FX_SUCCESS == status)
+        {
+            prepend_comma = true;
+        }
     }
 
     if (FX_SUCCESS == status)
     {
-        ok = storage_write_users_json_fragment("]", 1U, &json_size);
-        status = ok ? FX_SUCCESS : FX_INVALID_NAME;
+        status = storage_write_users_json_fragment("]", 1U, &write_buffer_len, &json_size);
+    }
+    if (FX_SUCCESS == status)
+    {
+        status = storage_flush_users_json_buffer(&write_buffer_len, &json_size);
     }
 
     if (file_opened)

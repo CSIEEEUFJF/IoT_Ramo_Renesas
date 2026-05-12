@@ -6102,7 +6102,6 @@ static UINT handle_light_add_user(NX_HTTP_SERVER *server_ptr, const char *query)
     char primary_uid[UID_MAX_LEN];
     char location[64];
     int edit_index = -1;
-    bool persist_requested = false;
     bool persist_ok = false;
     bool has_existing_profile = false;
 
@@ -6180,18 +6179,12 @@ static UINT handle_light_add_user(NX_HTTP_SERVER *server_ptr, const char *query)
             app_post_event(EVENT_USER_ADDED, primary_uid);
         }
 
-        persist_requested = storage_persist_now();
-        if (persist_requested)
-        {
-            persist_ok = storage_persist_wait(5U * TX_TIMER_TICKS_PER_SECOND);
-        }
+        persist_ok = storage_persist_now_direct();
         return light_redirect_with_flash(server_ptr,
                                          "/admin_profiles",
                                          persist_ok
                                              ? "<div class='card ok'>Perfil salvo e gravado automaticamente na QSPI.</div>"
-                                             : (persist_requested
-                                                    ? "<div class='card warn'>Perfil salvo, mas a gravacao automatica na memória interna ainda não foi confirmada.</div>"
-                                                    : "<div class='card warn'>Perfil salvo, mas não foi possivel iniciar a gravacao automatica na memória interna.</div>"));
+                                             : "<div class='card warn'>Perfil salvo, mas a gravacao direta na QSPI falhou. Verifique o diagnóstico QSPI.</div>");
     }
 
     if (edit_index >= 0)
@@ -6210,8 +6203,6 @@ static UINT handle_light_add_user(NX_HTTP_SERVER *server_ptr, const char *query)
 static UINT handle_light_remove_user(NX_HTTP_SERVER *server_ptr, const char *query)
 {
     int index = query_get_int(query, "index", -1);
-    bool persist_requested = false;
-
     if (!net_admin_is_authenticated())
     {
         return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para remover perfis.</div>");
@@ -6227,18 +6218,12 @@ static UINT handle_light_remove_user(NX_HTTP_SERVER *server_ptr, const char *que
         bool persist_ok = false;
 
         app_post_event(EVENT_USER_REMOVED, NULL);
-        persist_requested = storage_persist_now();
-        if (persist_requested)
-        {
-            persist_ok = storage_persist_wait(5U * TX_TIMER_TICKS_PER_SECOND);
-        }
+        persist_ok = storage_persist_now_direct();
         return light_redirect_with_flash(server_ptr,
                                          "/admin_profiles",
                                          persist_ok
                                              ? "<div class='card ok'>Perfil removido e gravado automaticamente na QSPI.</div>"
-                                             : (persist_requested
-                                                    ? "<div class='card warn'>Perfil removido, mas a gravacao automatica na QSPI ainda nao foi confirmada.</div>"
-                                                    : "<div class='card warn'>Perfil removido, mas nao foi possivel iniciar a gravacao automatica na QSPI.</div>"));
+                                             : "<div class='card warn'>Perfil removido, mas a gravacao direta na QSPI falhou. Verifique o diagnóstico QSPI.</div>");
     }
 
     return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card warn'>Perfil não encontrado.</div>");
