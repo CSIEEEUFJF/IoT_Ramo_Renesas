@@ -213,6 +213,9 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
 static UINT handle_api_meeting_cancel(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body, const char *query);
 static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr);
 static UINT handle_api_meeting_active(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr);
+static UINT render_light_meeting_schedule_edit_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *query, const char *message);
+static UINT handle_light_meeting_schedule_save(NX_HTTP_SERVER *server_ptr, const char *form_data);
+static UINT handle_light_meeting_schedule_cancel(NX_HTTP_SERVER *server_ptr, const char *query);
 static void net_process_meeting_schedule(void);
 static bool net_meeting_schedule_set_keys_from_profiles(storage_meeting_schedule_t *schedule,
                                                         const int *profiles,
@@ -4398,6 +4401,69 @@ static void net_meeting_weekdays_text(uint8_t weekdays_mask, char *out, size_t o
     }
 }
 
+static void net_meeting_weekdays_csv(uint8_t weekdays_mask, char *out, size_t out_size)
+{
+    size_t offset = 0U;
+    bool first = true;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    out[0] = '\0';
+    weekdays_mask = (uint8_t) (weekdays_mask & STORAGE_MEETING_WEEKDAY_MASK_ALL);
+    for (unsigned int day = 0U; day < 7U; day++)
+    {
+        if (0U != (weekdays_mask & (uint8_t) (1U << day)))
+        {
+            int written = snprintf(&out[offset],
+                                   out_size - offset,
+                                   "%s%u",
+                                   first ? "" : ",",
+                                   day);
+            if ((written <= 0) || ((size_t) written >= (out_size - offset)))
+            {
+                break;
+            }
+
+            offset += (size_t) written;
+            first = false;
+        }
+    }
+}
+
+static void net_profile_indices_csv(const int *profiles, int profile_count, char *out, size_t out_size)
+{
+    size_t offset = 0U;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    out[0] = '\0';
+    if ((NULL == profiles) || (profile_count <= 0))
+    {
+        return;
+    }
+
+    for (int i = 0; i < profile_count; i++)
+    {
+        int written = snprintf(&out[offset],
+                               out_size - offset,
+                               "%s%d",
+                               (i > 0) ? "," : "",
+                               profiles[i]);
+        if ((written <= 0) || ((size_t) written >= (out_size - offset)))
+        {
+            break;
+        }
+
+        offset += (size_t) written;
+    }
+}
+
 static void net_format_duration_seconds(ULONG seconds, char *out, size_t out_size)
 {
     ULONG hours;
@@ -7295,7 +7361,7 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
                      &offset,
                      "<p class='muted'>Agendamentos pendentes salvos em QSPI. Horarios abaixo estao em UTC.</p>"
                      "<div class='actions'><a class='small' href='/meeting_mode'>Configurar modo reuniao</a><a class='small secondary' href='/meeting_schedules'>Atualizar</a></div>"
-                     "<div class='table-wrap'><table><tr><th>ID</th><th>Inicio UTC</th><th>Fim UTC</th><th>Duracao</th><th>Capitulo LCD</th><th>Perfis</th><th>Recorrencia</th><th>Dias</th></tr>"))
+                     "<div class='table-wrap'><table><tr><th>ID</th><th>Inicio UTC</th><th>Fim UTC</th><th>Duracao</th><th>Capitulo LCD</th><th>Perfis</th><th>Recorrencia</th><th>Dias</th><th>Acao</th></tr>"))
     {
         return render_light_shell(server_ptr,
                                   packet_ptr,
@@ -7309,7 +7375,7 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
         (void) net_appendf(g_net_metric_buffer,
                            sizeof(g_net_metric_buffer),
                            &offset,
-                           "<tr><td colspan='8'>Nenhuma reuniao agendada.</td></tr>");
+                           "<tr><td colspan='9'>Nenhuma reuniao agendada.</td></tr>");
     }
     else
     {
@@ -7335,7 +7401,7 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
             if (!net_appendf(g_net_metric_buffer,
                              sizeof(g_net_metric_buffer),
                              &offset,
-                             "<tr><td>%lu</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%u</td><td>%s</td><td>%s</td></tr>",
+                             "<tr><td>%lu</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%u</td><td>%s</td><td>%s</td><td><a class='small' href='/meeting_schedule_edit?id=%lu'>Editar</a><a class='small danger' href='/meeting_schedule_cancel?id=%lu'>Cancelar</a></td></tr>",
                              (unsigned long) schedules[i].id,
                              start_text,
                              end_text,
@@ -7343,7 +7409,9 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
                              chapter_html,
                              schedules[i].participant_count,
                              net_meeting_recurrence_text(schedules[i].recurrence),
-                             weekdays_text))
+                             weekdays_text,
+                             (unsigned long) schedules[i].id,
+                             (unsigned long) schedules[i].id))
             {
                 break;
             }
@@ -7360,6 +7428,308 @@ static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
                               "Reunioes agendadas",
                               g_net_metric_buffer,
                               message_to_render);
+}
+
+static UINT render_light_meeting_schedule_edit_page(NX_HTTP_SERVER *server_ptr,
+                                                    NX_PACKET *packet_ptr,
+                                                    const char *query,
+                                                    const char *message)
+{
+    storage_meeting_schedule_t schedule;
+    int profiles[STORAGE_MAX_USERS];
+    int profile_count;
+    int id = query_get_int(query, "id", -1);
+    int found_index = -1;
+    char start_text[24];
+    char end_text[24];
+    char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6U];
+    char profiles_csv[384];
+    char weekdays_csv[32];
+    const char *none_selected;
+    const char *daily_selected;
+    const char *weekly_selected;
+
+    if (!net_admin_is_authenticated())
+    {
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para editar agendamentos.</div>");
+    }
+
+    if (id <= 0)
+    {
+        return render_light_shell(server_ptr,
+                                  packet_ptr,
+                                  "Editar agendamento",
+                                  "<p class='warn'>Agendamento invalido.</p><div class='actions'><a class='small secondary' href='/meeting_schedules'>Voltar</a></div>",
+                                  message);
+    }
+
+    if (!net_meeting_schedule_ensure_loaded())
+    {
+        return render_light_shell(server_ptr,
+                                  packet_ptr,
+                                  "Editar agendamento",
+                                  "<p class='warn'>Nao foi possivel carregar os agendamentos salvos.</p><div class='actions'><a class='small secondary' href='/meeting_schedules'>Voltar</a></div>",
+                                  message);
+    }
+
+    memset(&schedule, 0, sizeof(schedule));
+    net_action_lock();
+    for (int i = 0; i < g_net_meeting_schedule_count; i++)
+    {
+        if (g_net_meeting_schedules[i].id == (ULONG) id)
+        {
+            schedule = g_net_meeting_schedules[i];
+            found_index = i;
+            break;
+        }
+    }
+    net_action_unlock();
+
+    if (found_index < 0)
+    {
+        return render_light_shell(server_ptr,
+                                  packet_ptr,
+                                  "Editar agendamento",
+                                  "<p class='warn'>Agendamento nao encontrado.</p><div class='actions'><a class='small secondary' href='/meeting_schedules'>Voltar</a></div>",
+                                  message);
+    }
+
+    profile_count = net_meeting_schedule_resolve_profiles(&schedule, profiles, STORAGE_MAX_USERS);
+    if ((profile_count <= 0) && (schedule.profile_count > 0U))
+    {
+        profile_count = 0;
+        for (unsigned int i = 0U; (i < schedule.profile_count) && (profile_count < STORAGE_MAX_USERS); i++)
+        {
+            profiles[profile_count++] = (int) schedule.profile_indices[i];
+        }
+    }
+
+    net_format_utc_datetime(schedule.start_unix, start_text, sizeof(start_text));
+    net_format_utc_datetime(schedule.end_unix, end_text, sizeof(end_text));
+    net_html_escape(schedule.meeting_chapter, chapter_html, sizeof(chapter_html));
+    net_profile_indices_csv(profiles, profile_count, profiles_csv, sizeof(profiles_csv));
+    net_meeting_weekdays_csv(schedule.weekdays_mask, weekdays_csv, sizeof(weekdays_csv));
+
+    none_selected = (STORAGE_MEETING_RECURRENCE_NONE == schedule.recurrence) ? " selected" : "";
+    daily_selected = (STORAGE_MEETING_RECURRENCE_DAILY == schedule.recurrence) ? " selected" : "";
+    weekly_selected = (STORAGE_MEETING_RECURRENCE_WEEKLY == schedule.recurrence) ? " selected" : "";
+
+    snprintf(g_net_metric_buffer,
+             sizeof(g_net_metric_buffer),
+             "<p class='muted'>Edite os dados do agendamento. Horarios devem estar em UTC no formato <strong>YYYY-MM-DDTHH:MM:SSZ</strong>.</p>"
+             "<form action='/meeting_schedule_save' method='post'>"
+             "<input type='hidden' name='id' value='%lu'>"
+             "<label>Capitulo exibido no LCD</label><input name='meeting_chapter' maxlength='%u' value='%s' required>"
+             "<label>Inicio UTC</label><input name='start_utc' maxlength='23' value='%s' required>"
+             "<label>Fim UTC</label><input name='end_utc' maxlength='23' value='%s' required>"
+             "<label>Indices dos perfis autorizados, separados por virgula</label><input name='profile_indices' maxlength='191' value='%s' required>"
+             "<p class='muted'>Veja os indices na pagina de perfis. Cada perfil precisa ter ao menos um cartao RFID.</p>"
+             "<label>Recorrencia</label><select name='recurrence'>"
+             "<option value='none'%s>Unica</option>"
+             "<option value='daily'%s>Diaria</option>"
+             "<option value='weekly'%s>Semanal</option>"
+             "</select>"
+             "<label>Dias da semana para recorrencia semanal (0=domingo ... 6=sabado)</label><input name='weekdays' maxlength='31' value='%s' placeholder='Ex.: 1,3,5'>"
+             "<div class='actions'><button class='btn' type='submit'>Salvar agendamento</button><a class='small danger' href='/meeting_schedule_cancel?id=%lu'>Cancelar agendamento</a><a class='small secondary' href='/meeting_schedules'>Voltar</a></div>"
+             "</form>",
+             (unsigned long) schedule.id,
+             (unsigned int) (STORAGE_CHAPTER_MAX_LEN - 1U),
+             chapter_html,
+             start_text,
+             end_text,
+             profiles_csv,
+             none_selected,
+             daily_selected,
+             weekly_selected,
+             weekdays_csv,
+             (unsigned long) schedule.id);
+
+    return render_light_shell(server_ptr, packet_ptr, "Editar agendamento", g_net_metric_buffer, message);
+}
+
+static UINT handle_light_meeting_schedule_cancel(NX_HTTP_SERVER *server_ptr, const char *query)
+{
+    storage_meeting_schedule_t removed_schedule;
+    int id = query_get_int(query, "id", -1);
+    int removed_index = -1;
+    bool saved = true;
+
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para cancelar agendamentos.</div>");
+    }
+
+    if (id <= 0)
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_schedules", "<div class='card warn'>Agendamento invalido.</div>");
+    }
+
+    if (!net_meeting_schedule_ensure_loaded())
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_schedules", "<div class='card warn'>Nao foi possivel carregar os agendamentos salvos.</div>");
+    }
+
+    memset(&removed_schedule, 0, sizeof(removed_schedule));
+    net_action_lock();
+    for (int i = 0; i < g_net_meeting_schedule_count; i++)
+    {
+        if (g_net_meeting_schedules[i].id == (ULONG) id)
+        {
+            removed_schedule = g_net_meeting_schedules[i];
+            removed_index = i;
+            for (int move_index = i; move_index < (g_net_meeting_schedule_count - 1); move_index++)
+            {
+                g_net_meeting_schedules[move_index] = g_net_meeting_schedules[move_index + 1];
+            }
+            g_net_meeting_schedule_count--;
+            break;
+        }
+    }
+
+    if (removed_index >= 0)
+    {
+        saved = net_meeting_schedule_save_locked();
+        if (!saved)
+        {
+            for (int move_index = g_net_meeting_schedule_count; move_index > removed_index; move_index--)
+            {
+                g_net_meeting_schedules[move_index] = g_net_meeting_schedules[move_index - 1];
+            }
+            g_net_meeting_schedules[removed_index] = removed_schedule;
+            g_net_meeting_schedule_count++;
+            net_meeting_schedule_set_status_locked("save_failed");
+        }
+        else
+        {
+            net_meeting_schedule_set_status_locked("canceled");
+        }
+    }
+    net_action_unlock();
+
+    if (removed_index < 0)
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_schedules", "<div class='card warn'>Agendamento nao encontrado.</div>");
+    }
+
+    if (!saved)
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_schedules", "<div class='card warn'>Nao foi possivel gravar o cancelamento na QSPI.</div>");
+    }
+
+    return light_redirect_with_flash(server_ptr, "/meeting_schedules", "<div class='card ok'>Agendamento cancelado.</div>");
+}
+
+static UINT handle_light_meeting_schedule_save(NX_HTTP_SERVER *server_ptr, const char *form_data)
+{
+    storage_meeting_schedule_t edited_schedule;
+    storage_meeting_schedule_t old_schedule;
+    int profiles[STORAGE_MAX_USERS];
+    int profile_count = 0;
+    ULONG schedule_id = 0U;
+    ULONG start_utc = 0U;
+    ULONG end_utc = 0U;
+    uint8_t recurrence = STORAGE_MEETING_RECURRENCE_NONE;
+    uint8_t weekdays_mask = 0U;
+    char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
+    const char *error = "bad_request";
+    int found_index = -1;
+    bool saved = false;
+    char location[64];
+
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para editar agendamentos.</div>");
+    }
+
+    if (!net_form_get_ulong_value(form_data, "id", &schedule_id) || (0U == schedule_id))
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_schedules", "<div class='card warn'>Agendamento invalido.</div>");
+    }
+
+    snprintf(location, sizeof(location), "/meeting_schedule_edit?id=%lu", (unsigned long) schedule_id);
+    if (!net_meeting_schedule_parse_request(form_data,
+                                            &start_utc,
+                                            &end_utc,
+                                            &recurrence,
+                                            &weekdays_mask,
+                                            meeting_chapter,
+                                            sizeof(meeting_chapter),
+                                            profiles,
+                                            &profile_count,
+                                            &error))
+    {
+        char message[192];
+
+        snprintf(message,
+                 sizeof(message),
+                 "<div class='card warn'>Nao foi possivel validar o agendamento: %s.</div>",
+                 error);
+        return light_redirect_with_flash(server_ptr, location, message);
+    }
+
+    memset(&edited_schedule, 0, sizeof(edited_schedule));
+    edited_schedule.id = schedule_id;
+    edited_schedule.start_unix = start_utc;
+    edited_schedule.end_unix = end_utc;
+    edited_schedule.profile_count = (unsigned int) profile_count;
+    edited_schedule.recurrence = recurrence;
+    edited_schedule.weekdays_mask = weekdays_mask;
+    net_copy_trimmed_text(edited_schedule.meeting_chapter,
+                          sizeof(edited_schedule.meeting_chapter),
+                          meeting_chapter);
+    for (int i = 0; i < profile_count; i++)
+    {
+        edited_schedule.profile_indices[i] = (uint8_t) profiles[i];
+    }
+    if (!net_meeting_schedule_set_keys_from_profiles(&edited_schedule, profiles, profile_count))
+    {
+        return light_redirect_with_flash(server_ptr, location, "<div class='card warn'>Nao foi possivel gerar a identidade dos perfis selecionados.</div>");
+    }
+
+    if (!net_meeting_schedule_ensure_loaded())
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_schedules", "<div class='card warn'>Nao foi possivel carregar os agendamentos salvos.</div>");
+    }
+
+    memset(&old_schedule, 0, sizeof(old_schedule));
+    net_action_lock();
+    for (int i = 0; i < g_net_meeting_schedule_count; i++)
+    {
+        if (g_net_meeting_schedules[i].id == schedule_id)
+        {
+            old_schedule = g_net_meeting_schedules[i];
+            g_net_meeting_schedules[i] = edited_schedule;
+            found_index = i;
+            break;
+        }
+    }
+
+    if (found_index >= 0)
+    {
+        g_net_meeting_schedule_last_id = schedule_id;
+        g_net_meeting_schedule_last_start_utc = start_utc;
+        g_net_meeting_schedule_last_end_utc = end_utc;
+        net_meeting_schedule_set_status_locked("edited");
+        saved = net_meeting_schedule_save_locked();
+        if (!saved)
+        {
+            g_net_meeting_schedules[found_index] = old_schedule;
+            net_meeting_schedule_set_status_locked("save_failed");
+        }
+    }
+    net_action_unlock();
+
+    if (found_index < 0)
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_schedules", "<div class='card warn'>Agendamento nao encontrado.</div>");
+    }
+
+    if (!saved)
+    {
+        return light_redirect_with_flash(server_ptr, location, "<div class='card warn'>Nao foi possivel gravar o agendamento editado na QSPI.</div>");
+    }
+
+    return light_redirect_with_flash(server_ptr, "/meeting_schedules", "<div class='card ok'>Agendamento atualizado.</div>");
 }
 
 static UINT render_light_door_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
@@ -8467,6 +8837,14 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         {
             return render_light_meeting_schedules_page(server_ptr, packet_ptr, NULL);
         }
+        if (0 == strcmp(path, "/meeting_schedule_edit"))
+        {
+            return render_light_meeting_schedule_edit_page(server_ptr, packet_ptr, query, NULL);
+        }
+        if (0 == strcmp(path, "/meeting_schedule_cancel"))
+        {
+            return handle_light_meeting_schedule_cancel(server_ptr, query);
+        }
         if (0 == strcmp(path, "/door"))
         {
             return render_light_door_page(server_ptr, packet_ptr, NULL);
@@ -8620,6 +8998,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         if (0 == strcmp(path, "/meeting_mode_start"))
         {
             return handle_light_meeting_mode_start(server_ptr, body);
+        }
+        if (0 == strcmp(path, "/meeting_schedule_save"))
+        {
+            return handle_light_meeting_schedule_save(server_ptr, body);
         }
     }
 

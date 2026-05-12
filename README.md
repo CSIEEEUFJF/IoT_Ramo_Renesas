@@ -298,6 +298,8 @@ Rotas visiveis ao usuario:
 - `/import` - importar perfis por JSON
 - `/access_log` - visualizar log de acesso
 - `/meeting_schedules` - visualizar reunioes agendadas
+- `/meeting_schedule_edit?id=<id>` - editar um agendamento pendente
+- `/meeting_schedule_cancel?id=<id>` - cancelar um agendamento pendente
 - `/door` - controle de porta e luz
 
 Rotas de acao:
@@ -308,6 +310,7 @@ Rotas de acao:
 - `/import_profiles`
 - `/portaon`
 - `/lampadatoggle`
+- `/meeting_schedule_save`
 - `POST /api/door/open`
 - `GET /api/meeting/active`
 - `/upload_photo_begin`

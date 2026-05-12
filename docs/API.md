@@ -487,6 +487,7 @@ curl.exe -i "http://192.168.15.125/api/meeting/status" `
 | `idle` | Sem acao recente. |
 | `loaded` | Agendamentos carregados da QSPI. |
 | `scheduled` | Novo agendamento salvo. |
+| `edited` | Agendamento pendente editado pela interface web. |
 | `starting` | Reuniao pendente esta sendo iniciada. |
 | `started` | Reuniao iniciada com sucesso. |
 | `failed` | Tentativa de iniciar reuniao falhou. |
