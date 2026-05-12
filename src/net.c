@@ -311,18 +311,13 @@ static bool net_admin_is_authenticated(void)
         return false;
     }
 
-    if ((0U == g_net_admin_session_ip) || (0U == g_net_current_request_ip))
-    {
-        return true;
-    }
-
-    return (g_net_current_request_ip == g_net_admin_session_ip);
+    return true;
 }
 
 static void net_admin_begin_session(void)
 {
     g_net_admin_session_deadline = tx_time_get() + WEB_ADMIN_SESSION_TICKS;
-    g_net_admin_session_ip = g_net_current_request_ip;
+    g_net_admin_session_ip = 0U;
 }
 
 static void net_admin_end_session(void)
