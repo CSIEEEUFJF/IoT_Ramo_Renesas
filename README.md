@@ -297,6 +297,7 @@ Rotas visiveis ao usuario:
 - `/upload_photo` - upload de foto para um perfil
 - `/import` - importar perfis por JSON
 - `/access_log` - visualizar log de acesso
+- `/meeting_schedules` - visualizar reunioes agendadas
 - `/door` - controle de porta e luz
 
 Rotas de acao:
@@ -352,15 +353,19 @@ Exemplo em JavaScript:
 await fetch("http://192.168.11.2/api/door/open", {
   method: "POST",
   headers: {
+    "Content-Type": "application/json",
     "X-API-KEY": "<sua-chave-da-placa>"
-  }
+  },
+  body: JSON.stringify({ user_name: "Nome no aplicativo" })
 });
 ```
+
+O campo `user_name` é opcional, mas quando enviado é gravado no log de acesso como o usuário que abriu a porta pelo aplicativo. Também são aceitos os aliases `name` e `user`, em JSON, formulário ou query string.
 
 Resposta de sucesso:
 
 ```json
-{"ok":true,"message":"Door open command sent."}
+{"ok":true,"message":"Door open command sent.","user_name":"Nome no aplicativo"}
 ```
 
 ## 7.6 API HTTP para agendamento do modo reunião

@@ -177,9 +177,13 @@ static void app_metric_log_push_locked(const app_metric_entry_t *entry)
     }
 }
 
-static void app_access_log_add_locked(app_event_type_t type, const char *data, app_access_log_entry_t *out_entry)
+static void app_access_log_add_with_user_locked(app_event_type_t type,
+                                                const char *data,
+                                                const char *user_override,
+                                                app_access_log_entry_t *out_entry)
 {
     app_access_log_entry_t entry;
+    const char *user_text = (const char *) g_app_state.last_user;
 
     memset(&entry, 0, sizeof(entry));
     entry.tick = tx_time_get();
@@ -192,7 +196,12 @@ static void app_access_log_add_locked(app_event_type_t type, const char *data, a
         entry.data[sizeof(entry.data) - 1U] = '\0';
     }
 
-    strncpy(entry.user, (const char *) g_app_state.last_user, sizeof(entry.user) - 1U);
+    if ((NULL != user_override) && ('\0' != user_override[0]))
+    {
+        user_text = user_override;
+    }
+
+    strncpy(entry.user, user_text, sizeof(entry.user) - 1U);
     entry.user[sizeof(entry.user) - 1U] = '\0';
 
     app_access_log_push_locked(&entry);
@@ -201,6 +210,11 @@ static void app_access_log_add_locked(app_event_type_t type, const char *data, a
     {
         *out_entry = entry;
     }
+}
+
+static void app_access_log_add_locked(app_event_type_t type, const char *data, app_access_log_entry_t *out_entry)
+{
+    app_access_log_add_with_user_locked(type, data, NULL, out_entry);
 }
 
 static app_metric_kind_t app_metric_kind_from_text(const char *metric_name)
@@ -601,6 +615,32 @@ void app_post_event(app_event_type_t type, const char * data)
         default:
             break;
     }
+
+    g_app_debug_event_queue_status = tx_queue_send(&g_event_queue, &ev, TX_NO_WAIT);
+    if (TX_SUCCESS != g_app_debug_event_queue_status)
+    {
+        g_app_debug_event_queue_fail_count++;
+    }
+}
+
+void app_post_door_open_event(const char *source, const char *user)
+{
+    app_event_t ev = { .type = EVENT_DOOR_OPEN };
+    app_access_log_entry_t access_log_entry;
+    const char *door_source = ((NULL != source) && ('\0' != source[0])) ? source : "API";
+
+    memset(&access_log_entry, 0, sizeof(access_log_entry));
+
+    app_metric_begin_door(door_source);
+    app_set_door(true);
+
+    strncpy(ev.data, door_source, sizeof(ev.data) - 1U);
+    ev.data[sizeof(ev.data) - 1U] = '\0';
+
+    app_state_lock();
+    app_access_log_add_with_user_locked(EVENT_DOOR_OPEN, door_source, user, &access_log_entry);
+    app_state_unlock();
+    (void) storage_access_log_enqueue(&access_log_entry);
 
     g_app_debug_event_queue_status = tx_queue_send(&g_event_queue, &ev, TX_NO_WAIT);
     if (TX_SUCCESS != g_app_debug_event_queue_status)

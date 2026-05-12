@@ -134,6 +134,7 @@ app_ui_mode_t app_get_ui_mode(void);
 void app_set_enrollment_mode(bool enabled);
 bool app_is_enrollment_mode(void);
 void app_post_event   (app_event_type_t type, const char * data);
+void app_post_door_open_event(const char *source, const char *user);
 int app_access_log_snapshot(app_access_log_entry_t *out_entries, int max_entries);
 void app_access_log_restore(const app_access_log_entry_t *entries, int entry_count);
 void app_time_set_utc(ULONG unix_utc);

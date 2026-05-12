@@ -206,7 +206,7 @@ static int net_format_metric_csv_line(char *out, size_t out_size, const app_metr
 static bool net_request_source_ip(NX_PACKET *packet_ptr, ULONG *out_ip);
 static bool extract_header_from_packet(NX_PACKET *packet_ptr, const char *header_name, char *out, size_t out_size);
 static bool net_api_request_is_authorized(NX_PACKET *packet_ptr);
-static UINT handle_api_door_open(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr);
+static UINT handle_api_door_open(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body, const char *query);
 static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body);
 static UINT handle_api_meeting_cancel(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body, const char *query);
 static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr);
@@ -3759,6 +3759,42 @@ static bool net_get_meeting_chapter_value(const char *data, bool is_json, char *
     return ('\0' != out[0]);
 }
 
+static bool net_get_door_user_value(const char *data, bool is_json, char *out, size_t out_size)
+{
+    char raw_user[NAME_MAX_LEN * 2U];
+    bool found;
+
+    if ((NULL == data) || (NULL == out) || (0U == out_size))
+    {
+        return false;
+    }
+
+    out[0] = '\0';
+    raw_user[0] = '\0';
+
+    if (is_json)
+    {
+        found = net_json_get_string_value(data, "user_name", raw_user, sizeof(raw_user)) ||
+                net_json_get_string_value(data, "name", raw_user, sizeof(raw_user)) ||
+                net_json_get_string_value(data, "user", raw_user, sizeof(raw_user));
+    }
+    else
+    {
+        found = net_form_get_string_value(data, "user_name", raw_user, sizeof(raw_user)) ||
+                net_form_get_string_value(data, "name", raw_user, sizeof(raw_user)) ||
+                net_form_get_string_value(data, "user", raw_user, sizeof(raw_user));
+    }
+
+    if (!found)
+    {
+        return false;
+    }
+
+    net_copy_trimmed_text(out, out_size, raw_user);
+    sanitize_text(out);
+    return ('\0' != out[0]);
+}
+
 static bool net_parse_profile_indices_csv(const char *text, int *profiles, int max_profiles, int *profile_count)
 {
     const char *cursor;
@@ -4311,6 +4347,49 @@ static const char *net_meeting_recurrence_text(uint8_t recurrence)
             return "weekly";
         default:
             return "none";
+    }
+}
+
+static void net_meeting_weekdays_text(uint8_t weekdays_mask, char *out, size_t out_size)
+{
+    static const char *day_names[7] =
+    {
+        "Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"
+    };
+    size_t offset = 0U;
+    bool first = true;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    out[0] = '\0';
+    weekdays_mask = (uint8_t) (weekdays_mask & STORAGE_MEETING_WEEKDAY_MASK_ALL);
+    if (0U == weekdays_mask)
+    {
+        strncpy(out, "-", out_size - 1U);
+        out[out_size - 1U] = '\0';
+        return;
+    }
+
+    for (unsigned int day = 0U; day < 7U; day++)
+    {
+        if (0U != (weekdays_mask & (uint8_t) (1U << day)))
+        {
+            int written = snprintf(&out[offset],
+                                   out_size - offset,
+                                   "%s%s",
+                                   first ? "" : ", ",
+                                   day_names[day]);
+            if ((written <= 0) || ((size_t) written >= (out_size - offset)))
+            {
+                break;
+            }
+
+            offset += (size_t) written;
+            first = false;
+        }
     }
 }
 
@@ -5221,7 +5300,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
              is_admin ? "autenticada" : "bloqueada",
              light_persist_status_text(),
              storage_debug_line,
-             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/import'>Importar</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/meeting_mode'>Reuniao</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
+             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/import'>Importar</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/meeting_mode'>Reuniao</a><a class='small' href='/meeting_schedules'>Agendamentos</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
              is_admin ? "<a class='small secondary' href='/logout'>Sair</a>" : "<a class='small' href='/login'>Entrar</a>",
              (NULL != message_to_render) ? message_to_render : "",
              content_card_open,
@@ -5288,7 +5367,7 @@ static UINT render_light_dashboard_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
              "</div>%s</div></body></html>",
              is_admin ? "autenticada" : "bloqueada",
              light_persist_status_text(),
-             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/meeting_mode'>Reuniao</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
+             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/meeting_mode'>Reuniao</a><a class='small' href='/meeting_schedules'>Agendamentos</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
              is_admin ? "<a class='small secondary' href='/logout'>Sair</a>" : "<a class='small' href='/login'>Entrar</a>",
              (NULL != message_to_render) ? message_to_render : "");
 
@@ -6517,7 +6596,7 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
                      "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.actions{flex-direction:column;align-items:stretch;gap:8px;}.small,.btn{display:block;width:100%%;box-sizing:border-box;text-align:center;}.table-wrap{margin:0 -4px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}th,td{padding:8px;font-size:13px;white-space:nowrap;}}"
                      "</style></head><body><div class='wrap'><div class='card'>"
                      "<h1>Modo reuniao</h1>"
-                     "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/admin_profiles'>Perfis</a><a class='small secondary' href='/logout'>Sair</a></div>"
+                     "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/meeting_schedules'>Agendamentos</a><a class='small secondary' href='/logout'>Sair</a></div>"
                      "%s"
                      "<p class='%s'><strong>Modo reuniao %s.</strong></p>"
                      "<p class='muted'>Perfis liberados agora: <strong>%u</strong> | Cartoes liberados: <strong>%u</strong></p>"
@@ -6759,6 +6838,111 @@ static UINT handle_light_meeting_mode_stop(NX_HTTP_SERVER *server_ptr)
     storage_meeting_mode_stop();
     g_net_meeting_draft_initialized = false;
     return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card ok'>Modo reuniao encerrado. O acesso voltou ao comportamento normal.</div>");
+}
+
+static UINT render_light_meeting_schedules_page(NX_HTTP_SERVER *server_ptr,
+                                                NX_PACKET *packet_ptr,
+                                                const char *message)
+{
+    storage_meeting_schedule_t schedules[STORAGE_MEETING_SCHEDULE_MAX_ITEMS];
+    const char *message_to_render = message;
+    int schedule_count;
+    size_t offset = 0U;
+
+    if (!net_admin_is_authenticated())
+    {
+        return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Autentique-se para ver as reunioes agendadas.</div>");
+    }
+
+    if ((NULL == message_to_render) && ('\0' != g_net_flash_message[0]))
+    {
+        message_to_render = g_net_flash_message;
+        g_net_flash_message[0] = '\0';
+    }
+
+    if (!net_meeting_schedule_ensure_loaded())
+    {
+        return render_light_shell(server_ptr,
+                                  packet_ptr,
+                                  "Reunioes agendadas",
+                                  "<p class='warn'>Nao foi possivel carregar os agendamentos salvos.</p>",
+                                  message_to_render);
+    }
+
+    net_action_lock();
+    schedule_count = g_net_meeting_schedule_count;
+    if (schedule_count > STORAGE_MEETING_SCHEDULE_MAX_ITEMS)
+    {
+        schedule_count = STORAGE_MEETING_SCHEDULE_MAX_ITEMS;
+    }
+    for (int i = 0; i < schedule_count; i++)
+    {
+        schedules[i] = g_net_meeting_schedules[i];
+    }
+    net_action_unlock();
+
+    g_net_metric_buffer[0] = '\0';
+    if (!net_appendf(g_net_metric_buffer,
+                     sizeof(g_net_metric_buffer),
+                     &offset,
+                     "<p class='muted'>Agendamentos pendentes salvos em QSPI. Horarios abaixo estao em UTC.</p>"
+                     "<div class='actions'><a class='small' href='/meeting_mode'>Configurar modo reuniao</a><a class='small secondary' href='/meeting_schedules'>Atualizar</a></div>"
+                     "<div class='table-wrap'><table><tr><th>ID</th><th>Inicio UTC</th><th>Capitulo LCD</th><th>Perfis</th><th>Recorrencia</th><th>Dias</th></tr>"))
+    {
+        return render_light_shell(server_ptr,
+                                  packet_ptr,
+                                  "Reunioes agendadas",
+                                  "<p class='warn'>Nao foi possivel montar a listagem.</p>",
+                                  message_to_render);
+    }
+
+    if (schedule_count <= 0)
+    {
+        (void) net_appendf(g_net_metric_buffer,
+                           sizeof(g_net_metric_buffer),
+                           &offset,
+                           "<tr><td colspan='6'>Nenhuma reuniao agendada.</td></tr>");
+    }
+    else
+    {
+        for (int i = 0; i < schedule_count; i++)
+        {
+            char start_text[24];
+            char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6U];
+            char weekdays_text[48];
+
+            net_format_utc_datetime(schedules[i].start_unix, start_text, sizeof(start_text));
+            net_html_escape(('\0' != schedules[i].meeting_chapter[0]) ? schedules[i].meeting_chapter : "-",
+                            chapter_html,
+                            sizeof(chapter_html));
+            net_meeting_weekdays_text(schedules[i].weekdays_mask, weekdays_text, sizeof(weekdays_text));
+
+            if (!net_appendf(g_net_metric_buffer,
+                             sizeof(g_net_metric_buffer),
+                             &offset,
+                             "<tr><td>%lu</td><td>%s</td><td>%s</td><td>%u</td><td>%s</td><td>%s</td></tr>",
+                             (unsigned long) schedules[i].id,
+                             start_text,
+                             chapter_html,
+                             schedules[i].profile_count,
+                             net_meeting_recurrence_text(schedules[i].recurrence),
+                             weekdays_text))
+            {
+                break;
+            }
+        }
+    }
+
+    (void) net_appendf(g_net_metric_buffer,
+                       sizeof(g_net_metric_buffer),
+                       &offset,
+                       "</table></div>");
+
+    return render_light_shell(server_ptr,
+                              packet_ptr,
+                              "Reunioes agendadas",
+                              g_net_metric_buffer,
+                              message_to_render);
 }
 
 static UINT render_light_door_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *message)
@@ -7106,12 +7290,14 @@ static UINT handle_light_import_profiles(NX_HTTP_SERVER *server_ptr, const char 
     return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card ok'>Importação agendada. Recarregue a página em alguns instantes para ver o resultado.</div>");
 }
 
-static UINT handle_api_door_open(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr)
+static UINT handle_api_door_open(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_ptr, const char *body, const char *query)
 {
-    static const char ok_json[] = "{\"ok\":true,\"message\":\"Door open command sent.\"}";
     static const char unauthorized_json[] = "{\"ok\":false,\"error\":\"unauthorized\"}";
     static const char busy_json[] = "{\"ok\":false,\"error\":\"cooldown\"}";
     ULONG now = tx_time_get();
+    char door_user[NAME_MAX_LEN];
+    char door_user_json[NAME_MAX_LEN * 6U];
+    const char *log_user;
 
     if (!net_api_request_is_authorized(packet_ptr))
     {
@@ -7131,16 +7317,39 @@ static UINT handle_api_door_open(NX_HTTP_SERVER *server_ptr, NX_PACKET *packet_p
                                            NX_HTTP_STATUS_CONFLICT,
                                            busy_json,
                                            sizeof(busy_json) - 1U,
-                                           "application/json");
+                                            "application/json");
     }
 
+    door_user[0] = '\0';
+    if ((NULL != body) && ('\0' != body[0]))
+    {
+        const char *cursor = body;
+
+        while (('\0' != *cursor) && isspace((unsigned char) *cursor))
+        {
+            cursor++;
+        }
+        (void) net_get_door_user_value(cursor, ('{' == *cursor), door_user, sizeof(door_user));
+    }
+    if (('\0' == door_user[0]) && (NULL != query) && ('\0' != query[0]))
+    {
+        (void) net_get_door_user_value(query, false, door_user, sizeof(door_user));
+    }
+
+    log_user = ('\0' != door_user[0]) ? door_user : "Aplicativo";
+    net_json_escape(log_user, door_user_json, sizeof(door_user_json));
+
     g_net_api_door_next_allowed_tick = now + NET_API_DOOR_COOLDOWN_TICKS;
-    app_post_event(EVENT_DOOR_OPEN, "API");
+    app_post_door_open_event("API", log_user);
+    snprintf(g_net_api_json,
+             sizeof(g_net_api_json),
+             "{\"ok\":true,\"message\":\"Door open command sent.\",\"user_name\":\"%s\"}",
+             door_user_json);
     return send_buffer_status_response(server_ptr,
                                        packet_ptr,
                                        NX_HTTP_STATUS_OK,
-                                       ok_json,
-                                       sizeof(ok_json) - 1U,
+                                       g_net_api_json,
+                                       strlen(g_net_api_json),
                                        "application/json");
 }
 
@@ -7736,6 +7945,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         {
             return handle_light_meeting_mode_stop(server_ptr);
         }
+        if (0 == strcmp(path, "/meeting_schedules"))
+        {
+            return render_light_meeting_schedules_page(server_ptr, packet_ptr, NULL);
+        }
         if (0 == strcmp(path, "/door"))
         {
             return render_light_door_page(server_ptr, packet_ptr, NULL);
@@ -7839,7 +8052,7 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         g_net_debug_http_stage = 4U;
         if (0 == strcmp(path, "/api/door/open"))
         {
-            return handle_api_door_open(server_ptr, packet_ptr);
+            return handle_api_door_open(server_ptr, packet_ptr, body, query);
         }
         if (0 == strcmp(path, "/api/meeting/schedule"))
         {
