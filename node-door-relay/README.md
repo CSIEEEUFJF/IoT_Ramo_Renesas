@@ -70,11 +70,32 @@ Exemplo recomendado a partir de outro backend ou script Node.js:
 const response = await fetch("http://127.0.0.1:8080/door/open", {
   method: "POST",
   headers: {
-    "Authorization": "Bearer gere-um-token-longo-e-aleatorio"
-  }
+    "Authorization": "Bearer gere-um-token-longo-e-aleatorio",
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({ user_name: "Nome do usuario" })
 });
 
 console.log(await response.json());
+```
+
+Exemplo no PowerShell, mostrando o nome informado na tela da placa:
+
+```powershell
+$body = '{"user_name":"Nome do usuario"}'
+
+curl.exe -i -X POST "http://127.0.0.1:8080/door/open" `
+  -H "Authorization: Bearer gere-um-token-longo-e-aleatorio" `
+  -H "Content-Type: application/json" `
+  --data-binary $body
+```
+
+Tambem e possivel enviar o nome pela query string:
+
+```powershell
+curl.exe -i -X POST "http://127.0.0.1:8080/door/open?user_name=Nome%20do%20usuario" `
+  -H "Authorization: Bearer gere-um-token-longo-e-aleatorio" `
+  -H "Content-Length: 0"
 ```
 
 Exemplo no navegador, somente se esse navegador fizer parte de uma aplicacao confiavel e `ALLOW_ORIGIN` estiver restrito ao dominio dela:
@@ -88,8 +109,10 @@ ALLOW_ORIGIN=http://origem-exata-do-frontend
 await fetch("http://SEU-PC:8080/door/open", {
   method: "POST",
   headers: {
-    "X-Relay-Token": "gere-um-token-longo-e-aleatorio"
-  }
+    "X-Relay-Token": "gere-um-token-longo-e-aleatorio",
+    "Content-Type": "application/json"
+  },
+  body: JSON.stringify({ user_name: "Nome do usuario" })
 });
 ```
 

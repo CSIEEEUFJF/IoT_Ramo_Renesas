@@ -6,6 +6,8 @@ const https = require("node:https");
 const path = require("node:path");
 const { URL } = require("node:url");
 
+const MAX_DOOR_OPEN_BODY_BYTES = 512;
+
 loadDotEnv();
 
 function loadDotEnv(filePath = path.join(__dirname, ".env")) {
@@ -168,7 +170,64 @@ function requestIsAuthorized(request, relayToken) {
   return false;
 }
 
-function requestHasEmptyBody(request) {
+function readRequestBody(request, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    let receivedBytes = 0;
+
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      receivedBytes += Buffer.byteLength(chunk);
+      if (receivedBytes > maxBytes) {
+        reject(new Error("body_too_large"));
+        request.destroy();
+        return;
+      }
+      body += chunk;
+    });
+    request.on("end", () => resolve(body));
+    request.on("error", reject);
+  });
+}
+
+function parseDoorOpenPayload(body, requestUrl) {
+  const payload = {};
+  const userFromQuery = requestUrl.searchParams.get("user_name") ||
+    requestUrl.searchParams.get("name") ||
+    requestUrl.searchParams.get("user");
+
+  if (userFromQuery) {
+    payload.user_name = userFromQuery.trim();
+  }
+
+  if (!body) {
+    return payload;
+  }
+
+  let parsedBody;
+  try {
+    parsedBody = JSON.parse(body);
+  } catch (error) {
+    throw new Error("invalid_json");
+  }
+
+  if ((typeof parsedBody !== "object") || (parsedBody === null) || Array.isArray(parsedBody)) {
+    throw new Error("invalid_json");
+  }
+
+  const userFromBody = parsedBody.user_name || parsedBody.name || parsedBody.user;
+  if (typeof userFromBody === "string") {
+    payload.user_name = userFromBody.trim();
+  }
+
+  return payload;
+}
+
+function payloadHasBody(payload) {
+  return !!(payload && typeof payload.user_name === "string" && payload.user_name.length > 0);
+}
+
+function requestHasNoBody(request) {
   const contentLength = request.headers["content-length"];
   const transferEncoding = request.headers["transfer-encoding"];
 
@@ -183,10 +242,11 @@ function requestHasEmptyBody(request) {
   return Number.parseInt(contentLength, 10) === 0;
 }
 
-function forwardDoorOpen(config) {
+function forwardDoorOpen(config, payload) {
   return new Promise((resolve, reject) => {
     const target = new URL(config.deviceUrl);
     const transport = target.protocol === "https:" ? https : http;
+    const upstreamBody = payloadHasBody(payload) ? JSON.stringify({ user_name: payload.user_name }) : "";
     const requestOptions = {
       protocol: target.protocol,
       hostname: target.hostname,
@@ -196,9 +256,13 @@ function forwardDoorOpen(config) {
       headers: {
         "X-API-KEY": config.deviceApiKey,
         "Accept": "application/json",
-        "Content-Length": "0"
+        "Content-Length": Buffer.byteLength(upstreamBody)
       }
     };
+
+    if (upstreamBody.length > 0) {
+      requestOptions.headers["Content-Type"] = "application/json";
+    }
 
     const upstreamRequest = transport.request(requestOptions, (upstreamResponse) => {
       let responseBody = "";
@@ -222,7 +286,7 @@ function forwardDoorOpen(config) {
     });
 
     upstreamRequest.on("error", reject);
-    upstreamRequest.end();
+    upstreamRequest.end(upstreamBody);
   });
 }
 
@@ -258,14 +322,21 @@ function createServer(config) {
     }
 
     if ((request.method === "POST") && (requestUrl.pathname === "/door/open")) {
+      let payload;
+
       if (!requestIsAuthorized(request, runtimeConfig.relayToken)) {
         writeJson(request, response, 401, { ok: false, error: "unauthorized" }, runtimeConfig);
         return;
       }
 
-      if (!requestHasEmptyBody(request)) {
-        request.resume();
-        writeJson(request, response, 413, { ok: false, error: "body_not_allowed" }, runtimeConfig);
+      try {
+        const body = requestHasNoBody(request)
+          ? ""
+          : await readRequestBody(request, MAX_DOOR_OPEN_BODY_BYTES);
+        payload = parseDoorOpenPayload(body, requestUrl);
+      } catch (error) {
+        const statusCode = error.message === "body_too_large" ? 413 : 400;
+        writeJson(request, response, statusCode, { ok: false, error: error.message || "invalid_body" }, runtimeConfig);
         return;
       }
 
@@ -281,9 +352,9 @@ function createServer(config) {
 
       doorOpenInFlight = true;
       try {
-        const upstream = await forwardDoorOpen(runtimeConfig);
+        const upstream = await forwardDoorOpen(runtimeConfig, payload);
         const success = upstream.statusCode >= 200 && upstream.statusCode < 300;
-        const payload = {
+        const responsePayload = {
           ok: success,
           upstreamStatus: upstream.statusCode
         };
@@ -293,10 +364,10 @@ function createServer(config) {
         }
 
         if (runtimeConfig.exposeUpstreamBody) {
-          payload.upstreamBody = upstream.body;
+          responsePayload.upstreamBody = upstream.body;
         }
 
-        writeJson(request, response, success ? 200 : 502, payload, runtimeConfig);
+        writeJson(request, response, success ? 200 : 502, responsePayload, runtimeConfig);
       } catch (error) {
         console.warn(`[node-door-relay] falha ao chamar a placa: ${error.message}`);
         writeJson(request, response, 502, { ok: false, error: "relay_failed" }, runtimeConfig);
