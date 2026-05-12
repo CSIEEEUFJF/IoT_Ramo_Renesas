@@ -884,6 +884,57 @@ static void net_html_escape(const char *src, char *out, size_t out_size)
     out[offset] = '\0';
 }
 
+static void net_json_escape(const char *src, char *out, size_t out_size)
+{
+    size_t offset = 0U;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    out[0] = '\0';
+    if (NULL == src)
+    {
+        return;
+    }
+
+    while (('\0' != *src) && (offset + 1U < out_size))
+    {
+        const char *replacement = NULL;
+
+        switch (*src)
+        {
+            case '"': replacement = "\\\""; break;
+            case '\\': replacement = "\\\\"; break;
+            case '\n': replacement = "\\n"; break;
+            case '\r': replacement = "\\r"; break;
+            case '\t': replacement = "\\t"; break;
+            default: break;
+        }
+
+        if (NULL != replacement)
+        {
+            size_t replacement_len = strlen(replacement);
+            if ((offset + replacement_len) >= out_size)
+            {
+                break;
+            }
+
+            memcpy(&out[offset], replacement, replacement_len);
+            offset += replacement_len;
+        }
+        else if (((unsigned char) *src) >= 0x20U)
+        {
+            out[offset++] = *src;
+        }
+
+        src++;
+    }
+
+    out[offset] = '\0';
+}
+
 static bool query_get_value(const char *query, const char *key, char *out, size_t out_size)
 {
     size_t key_len = strlen(key);
@@ -3290,6 +3341,53 @@ static bool net_form_get_ulong_value(const char *form, const char *key, ULONG *o
     return net_parse_ulong_strict(text, out_value);
 }
 
+static bool net_json_get_string_value(const char *json, const char *key, char *out, size_t out_size)
+{
+    const char *limit;
+    const char *found;
+    const char *colon;
+    const char *cursor;
+    const char *end_quote;
+
+    if ((NULL == json) || (NULL == key) || (NULL == out) || (0U == out_size))
+    {
+        return false;
+    }
+
+    out[0] = '\0';
+    limit = json + strlen(json);
+    found = json_find_key(json, limit, key);
+    if (NULL == found)
+    {
+        return false;
+    }
+
+    colon = json_skip_whitespace(found, limit);
+    if ((NULL == colon) || (colon >= limit) || (':' != *colon))
+    {
+        return false;
+    }
+
+    cursor = json_skip_whitespace(colon + 1, limit);
+    if ((NULL == cursor) || (cursor >= limit) || ('"' != *cursor))
+    {
+        return false;
+    }
+
+    return json_copy_string_value(out, out_size, cursor + 1, limit, &end_quote);
+}
+
+static bool net_form_get_string_value(const char *form, const char *key, char *out, size_t out_size)
+{
+    if ((NULL == form) || (NULL == key) || (NULL == out) || (0U == out_size))
+    {
+        return false;
+    }
+
+    out[0] = '\0';
+    return query_get_value(form, key, out, out_size);
+}
+
 static bool net_is_leap_year(unsigned int year)
 {
     return (((year % 4U) == 0U) && (((year % 100U) != 0U) || ((year % 400U) == 0U)));
@@ -3630,6 +3728,36 @@ static void net_copy_trimmed_text(char *out, size_t out_size, const char *text)
 
     memcpy(out, start, copy_len);
     out[copy_len] = '\0';
+}
+
+static bool net_get_meeting_chapter_value(const char *data, bool is_json, char *out, size_t out_size)
+{
+    char raw_chapter[STORAGE_CHAPTER_MAX_LEN * 2U];
+    bool found;
+
+    if ((NULL == data) || (NULL == out) || (0U == out_size))
+    {
+        return false;
+    }
+
+    out[0] = '\0';
+    found = is_json
+                ? net_json_get_string_value(data, "meeting_chapter", raw_chapter, sizeof(raw_chapter))
+                : net_form_get_string_value(data, "meeting_chapter", raw_chapter, sizeof(raw_chapter));
+
+    if (!found && !is_json)
+    {
+        found = net_form_get_string_value(data, "chapter", raw_chapter, sizeof(raw_chapter));
+    }
+
+    if (!found)
+    {
+        return false;
+    }
+
+    net_copy_trimmed_text(out, out_size, raw_chapter);
+    sanitize_text(out);
+    return ('\0' != out[0]);
 }
 
 static bool net_parse_profile_indices_csv(const char *text, int *profiles, int max_profiles, int *profile_count)
@@ -4621,6 +4749,8 @@ static bool net_meeting_schedule_parse_request(const char *body,
                                                ULONG *out_delay_seconds,
                                                uint8_t *out_recurrence,
                                                uint8_t *out_weekdays_mask,
+                                               char *out_meeting_chapter,
+                                               size_t out_meeting_chapter_size,
                                                int *out_profiles,
                                                int *out_profile_count,
                                                const char **out_error)
@@ -4639,6 +4769,7 @@ static bool net_meeting_schedule_parse_request(const char *body,
     bool recurrence_found = false;
     bool weekdays_found = false;
     char start_utc_probe[32];
+    char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
     int profile_count = 0;
 
     if (NULL != out_error)
@@ -4648,6 +4779,7 @@ static bool net_meeting_schedule_parse_request(const char *body,
 
     if ((NULL == body) || (NULL == out_start_utc) || (NULL == out_delay_seconds) ||
         (NULL == out_recurrence) || (NULL == out_weekdays_mask) ||
+        (NULL == out_meeting_chapter) || (0U == out_meeting_chapter_size) ||
         (NULL == out_profiles) || (NULL == out_profile_count))
     {
         return false;
@@ -4680,6 +4812,15 @@ static bool net_meeting_schedule_parse_request(const char *body,
     has_start_unix = is_json
                          ? net_json_get_ulong_value(cursor, "start_unix", &start_unix)
                          : net_form_get_ulong_value(cursor, "start_unix", &start_unix);
+
+    if (!net_get_meeting_chapter_value(cursor, is_json, meeting_chapter, sizeof(meeting_chapter)))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "missing_meeting_chapter";
+        }
+        return false;
+    }
 
     if (start_utc_present && !has_start_utc)
     {
@@ -4838,6 +4979,7 @@ static bool net_meeting_schedule_parse_request(const char *body,
 
     *out_recurrence = recurrence;
     *out_weekdays_mask = weekdays_mask;
+    net_copy_trimmed_text(out_meeting_chapter, out_meeting_chapter_size, meeting_chapter);
     *out_profile_count = profile_count;
     return true;
 }
@@ -4969,6 +5111,7 @@ static void net_process_meeting_schedule(void)
 
     started = storage_meeting_mode_start(due_profile_indices,
                                          (int) due_schedule.profile_count,
+                                         due_schedule.meeting_chapter,
                                          &selected_profiles,
                                          &allowed_cards);
 
@@ -6393,9 +6536,10 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
                      ".wrap{max-width:980px;margin:0 auto;}"
                      ".card{background:#fff;border-radius:16px;padding:18px;margin-bottom:16px;box-shadow:0 8px 26px rgba(0,0,0,.08);}"
                      ".actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px;}"
-                     ".small,.btn{display:inline-block;text-decoration:none;border:none;border-radius:10px;padding:12px 16px;background:#0b6ef3;color:#fff;cursor:pointer;}"
-                     ".secondary{background:#6b7a90;}.danger{background:#d64545;}.muted{color:#607086;font-size:14px;}.warn{color:#b26a00;}.ok{color:#137333;}"
-                     ".table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}table{width:100%%;border-collapse:collapse;}th,td{padding:10px;border-bottom:1px solid #e7ebf2;text-align:left;vertical-align:top;}"
+                      ".small,.btn{display:inline-block;text-decoration:none;border:none;border-radius:10px;padding:12px 16px;background:#0b6ef3;color:#fff;cursor:pointer;}"
+                      ".secondary{background:#6b7a90;}.danger{background:#d64545;}.muted{color:#607086;font-size:14px;}.warn{color:#b26a00;}.ok{color:#137333;}"
+                      "label{display:block;margin:14px 0 6px;font-weight:bold;}input{width:100%%;box-sizing:border-box;border:1px solid #d8dee8;border-radius:10px;padding:12px;font-size:16px;}"
+                      ".table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch;}table{width:100%%;border-collapse:collapse;}th,td{padding:10px;border-bottom:1px solid #e7ebf2;text-align:left;vertical-align:top;}"
                      "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.actions{flex-direction:column;align-items:stretch;gap:8px;}.small,.btn{display:block;width:100%%;box-sizing:border-box;text-align:center;}.table-wrap{margin:0 -4px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}th,td{padding:8px;font-size:13px;white-space:nowrap;}}"
                      "</style></head><body><div class='wrap'><div class='card'>"
                      "<h1>Modo reuniao</h1>"
@@ -6481,23 +6625,26 @@ static UINT render_light_meeting_mode_page(NX_HTTP_SERVER *server_ptr,
         if (!net_appendf(g_net_metric_buffer,
                          sizeof(g_net_metric_buffer),
                          &offset,
-                         "<tr><td colspan='5'>Nao ha perfis nesta pagina. Volte para a primeira pagina.</td></tr>"))
+                      "<tr><td colspan='5'>Nao ha perfis nesta pagina. Volte para a primeira pagina.</td></tr>"))
         {
             return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
         }
     }
 
     if (!net_appendf(g_net_metric_buffer,
-                     sizeof(g_net_metric_buffer),
-                     &offset,
-                     "</table></div>"
-                     "<form action='/meeting_mode_start' method='post'>"
-                     "<div class='actions'>%s%s<a class='small secondary' href='/meeting_mode_clear?page=%d'>Limpar selecao</a><button class='btn' type='submit'>Iniciar modo reuniao</button><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
-                     "</form>"
-                     "</div></div></body></html>",
-                     prev_button,
-                     next_button,
-                     page))
+                      sizeof(g_net_metric_buffer),
+                      &offset,
+                      "</table></div>"
+                      "<form action='/meeting_mode_start' method='post'>"
+                      "<label for='meeting_chapter'>Capitulo da reuniao exibido no LCD</label>"
+                      "<input id='meeting_chapter' name='meeting_chapter' maxlength='%u' placeholder='Ex.: RAS' required>"
+                      "<div class='actions'>%s%s<a class='small secondary' href='/meeting_mode_clear?page=%d'>Limpar selecao</a><button class='btn' type='submit'>Iniciar modo reuniao</button><a class='small secondary' href='/admin_profiles'>Voltar</a></div>"
+                      "</form>"
+                      "</div></div></body></html>",
+                      (unsigned int) (STORAGE_CHAPTER_MAX_LEN - 1U),
+                      prev_button,
+                      next_button,
+                      page))
     {
         return render_light_login_page(server_ptr, packet_ptr, "<div class='card warn'>Nao foi possivel montar a pagina do modo reuniao.</div>");
     }
@@ -6511,13 +6658,17 @@ static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const ch
     int selected_count;
     unsigned int selected_profiles = 0U;
     unsigned int allowed_cards = 0U;
+    char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
     int user_count;
-
-    SSP_PARAMETER_NOT_USED(form_data);
 
     if (!net_admin_is_authenticated())
     {
         return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para iniciar o modo reuniao.</div>");
+    }
+
+    if (!net_get_meeting_chapter_value(form_data, false, meeting_chapter, sizeof(meeting_chapter)))
+    {
+        return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Informe o capitulo da reuniao para exibir no LCD.</div>");
     }
 
     net_meeting_mode_draft_sync_from_active();
@@ -6553,18 +6704,21 @@ static UINT handle_light_meeting_mode_start(NX_HTTP_SERVER *server_ptr, const ch
         return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Selecione ao menos um perfil com cartao para iniciar a reuniao.</div>");
     }
 
-    if (!storage_meeting_mode_start(selected_indices, selected_count, &selected_profiles, &allowed_cards))
+    if (!storage_meeting_mode_start(selected_indices, selected_count, meeting_chapter, &selected_profiles, &allowed_cards))
     {
         return light_redirect_with_flash(server_ptr, "/meeting_mode", "<div class='card warn'>Nao foi possivel iniciar o modo reuniao. Verifique se os perfis escolhidos possuem cartoes validos.</div>");
     }
 
     {
-        char message[192];
+        char message[384];
+        char chapter_html[STORAGE_CHAPTER_MAX_LEN * 6U];
 
         g_net_meeting_draft_initialized = false;
+        net_html_escape(meeting_chapter, chapter_html, sizeof(chapter_html));
         snprintf(message,
                  sizeof(message),
-                 "<div class='card ok'>Modo reuniao ativado com %u perfil(is) e %u cartao(oes) liberado(s). Apenas os membros selecionados entram por RFID.</div>",
+                 "<div class='card ok'>Modo reuniao %s ativado com %u perfil(is) e %u cartao(oes) liberado(s). Apenas os membros selecionados entram por RFID.</div>",
+                 chapter_html,
                  selected_profiles,
                  allowed_cards);
         return light_redirect_with_flash(server_ptr, "/meeting_mode", message);
@@ -7106,6 +7260,8 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     ULONG now_utc = 0U;
     char now_utc_text[24];
     char start_utc_text[24];
+    char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
+    char meeting_chapter_json[STORAGE_CHAPTER_MAX_LEN * 6U];
     bool saved = false;
 
     if (!net_api_request_is_authorized(packet_ptr))
@@ -7116,11 +7272,13 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     if (!net_meeting_schedule_parse_request(body,
                                             &start_utc,
                                             &delay_seconds,
-                                            &recurrence,
-                                            &weekdays_mask,
-                                            profiles,
-                                            &profile_count,
-                                            &error))
+                                             &recurrence,
+                                             &weekdays_mask,
+                                             meeting_chapter,
+                                             sizeof(meeting_chapter),
+                                             profiles,
+                                             &profile_count,
+                                             &error))
     {
         return net_send_json_error(server_ptr, packet_ptr, NX_HTTP_STATUS_BAD_REQUEST, error);
     }
@@ -7149,6 +7307,9 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     g_net_meeting_schedules[g_net_meeting_schedule_count].profile_count = (unsigned int) profile_count;
     g_net_meeting_schedules[g_net_meeting_schedule_count].recurrence = recurrence;
     g_net_meeting_schedules[g_net_meeting_schedule_count].weekdays_mask = weekdays_mask;
+    net_copy_trimmed_text(g_net_meeting_schedules[g_net_meeting_schedule_count].meeting_chapter,
+                          sizeof(g_net_meeting_schedules[g_net_meeting_schedule_count].meeting_chapter),
+                          meeting_chapter);
     for (int i = 0; i < profile_count; i++)
     {
         g_net_meeting_schedules[g_net_meeting_schedule_count].profile_indices[i] = (uint8_t) profiles[i];
@@ -7180,11 +7341,13 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
     time_synced = app_time_get_utc(&now_utc);
     net_format_utc_datetime(time_synced ? now_utc : 0U, now_utc_text, sizeof(now_utc_text));
     net_format_utc_datetime(start_utc, start_utc_text, sizeof(start_utc_text));
+    net_json_escape(meeting_chapter, meeting_chapter_json, sizeof(meeting_chapter_json));
     snprintf(g_net_api_json,
              sizeof(g_net_api_json),
              "{\"ok\":true,\"id\":%lu,\"pending_count\":%d,\"active\":%s,"
              "\"time_synced\":%s,\"now_utc\":\"%s\",\"now_unix\":%lu,"
              "\"start_utc\":\"%s\",\"start_unix\":%lu,"
+             "\"meeting_chapter\":\"%s\","
              "\"delay_seconds\":%lu,\"profile_count\":%d,"
              "\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
              (unsigned long) schedule_id,
@@ -7195,6 +7358,7 @@ static UINT handle_api_meeting_schedule(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
              (unsigned long) (time_synced ? now_utc : 0U),
              start_utc_text,
              (unsigned long) start_utc,
+             meeting_chapter_json,
              (unsigned long) delay_seconds,
              profile_count,
              net_meeting_recurrence_text(recurrence),
@@ -7314,6 +7478,8 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     ULONG now_utc = 0U;
     char now_utc_text[24];
     char last_start_utc_text[24];
+    char active_meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
+    char active_meeting_chapter_json[STORAGE_CHAPTER_MAX_LEN * 6U];
     bool active;
     unsigned int active_selected;
     unsigned int active_allowed;
@@ -7331,6 +7497,11 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
     active = storage_meeting_mode_is_active();
     active_selected = storage_meeting_mode_selected_profile_count();
     active_allowed = storage_meeting_mode_allowed_card_count();
+    if (!storage_meeting_mode_chapter(active_meeting_chapter, sizeof(active_meeting_chapter)))
+    {
+        active_meeting_chapter[0] = '\0';
+    }
+    net_json_escape(active_meeting_chapter, active_meeting_chapter_json, sizeof(active_meeting_chapter_json));
     time_synced = app_time_get_utc(&now_utc);
     net_format_utc_datetime(time_synced ? now_utc : 0U, now_utc_text, sizeof(now_utc_text));
 
@@ -7352,6 +7523,7 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
                            &offset,
                            "{\"ok\":true,\"active\":%s,\"pending_count\":%d,"
                            "\"time_synced\":%s,\"now_utc\":\"%s\",\"now_unix\":%lu,"
+                           "\"active_meeting_chapter\":\"%s\","
                            "\"active_selected_profiles\":%u,\"active_allowed_cards\":%u,"
                            "\"last_id\":%lu,\"last_start_utc\":\"%s\",\"last_start_unix\":%lu,"
                            "\"last_selected_profiles\":%u,\"last_allowed_cards\":%u,"
@@ -7361,6 +7533,7 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
                            time_synced ? "true" : "false",
                            now_utc_text,
                            (unsigned long) (time_synced ? now_utc : 0U),
+                           active_meeting_chapter_json,
                            active_selected,
                            active_allowed,
                            (unsigned long) last_id,
@@ -7373,18 +7546,23 @@ static UINT handle_api_meeting_status(NX_HTTP_SERVER *server_ptr, NX_PACKET *pac
         for (int i = 0; i < g_net_meeting_schedule_count; i++)
         {
             char schedule_start_utc_text[24];
+            char schedule_chapter_json[STORAGE_CHAPTER_MAX_LEN * 6U];
 
             net_format_utc_datetime(g_net_meeting_schedules[i].start_unix,
                                     schedule_start_utc_text,
                                     sizeof(schedule_start_utc_text));
+            net_json_escape(g_net_meeting_schedules[i].meeting_chapter,
+                            schedule_chapter_json,
+                            sizeof(schedule_chapter_json));
             (void) net_appendf(g_net_api_json,
                                sizeof(g_net_api_json),
                                &offset,
-                               "%s{\"id\":%lu,\"start_utc\":\"%s\",\"start_unix\":%lu,\"profile_count\":%u,\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
+                               "%s{\"id\":%lu,\"start_utc\":\"%s\",\"start_unix\":%lu,\"meeting_chapter\":\"%s\",\"profile_count\":%u,\"recurrence\":\"%s\",\"weekdays_mask\":%u}",
                                (i > 0) ? "," : "",
                                (unsigned long) g_net_meeting_schedules[i].id,
                                schedule_start_utc_text,
                                (unsigned long) g_net_meeting_schedules[i].start_unix,
+                               schedule_chapter_json,
                                g_net_meeting_schedules[i].profile_count,
                                net_meeting_recurrence_text(g_net_meeting_schedules[i].recurrence),
                                (unsigned int) g_net_meeting_schedules[i].weekdays_mask);

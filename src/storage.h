@@ -45,6 +45,7 @@ typedef struct
     uint8_t profile_indices[STORAGE_MAX_USERS];
     uint8_t recurrence;
     uint8_t weekdays_mask;
+    char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
 } storage_meeting_schedule_t;
 
 typedef enum
@@ -94,10 +95,12 @@ bool storage_profile_upsert(const storage_user_profile_t *profile, int edit_inde
 bool storage_profile_remove(int index);
 bool storage_meeting_mode_start(const int *profile_indices,
                                 int profile_count,
+                                const char *meeting_chapter,
                                 unsigned int *out_selected_profiles,
                                 unsigned int *out_allowed_cards);
 void storage_meeting_mode_stop(void);
 bool storage_meeting_mode_is_active(void);
+bool storage_meeting_mode_chapter(char *out_chapter, size_t out_size);
 unsigned int storage_meeting_mode_selected_profile_count(void);
 unsigned int storage_meeting_mode_allowed_card_count(void);
 bool storage_meeting_mode_profile_selected(const storage_user_profile_t *profile);

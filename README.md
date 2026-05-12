@@ -381,6 +381,7 @@ await fetch("http://192.168.11.2/api/meeting/schedule", {
     "X-API-KEY": "<sua-chave-da-placa>"
   },
   body: JSON.stringify({
+    meeting_chapter: "RAS",
     delay_seconds: 300,
     profile_indices: [0, 4, 12]
   })
@@ -390,13 +391,14 @@ await fetch("http://192.168.11.2/api/meeting/schedule", {
 Para horário absoluto, use `start_utc` em UTC, no formato ISO `YYYY-MM-DDTHH:MM:SSZ`. Nesse caso, o agendamento depende do NTP estar sincronizado antes do horário chegar:
 
 ```json
-{"start_utc":"2030-01-01T00:00:00Z","profile_indices":[0,4,12]}
+{"meeting_chapter":"RAS","start_utc":"2030-01-01T00:00:00Z","profile_indices":[0,4,12]}
 ```
 
 Também é possível enviar os participantes por `name` + `chapter`, quando o sistema externo já faz a filtragem da reunião. Nesse modo, o firmware resolve cada par para o perfil cadastrado e salva internamente os índices, mantendo o mesmo formato persistido em QSPI:
 
 ```json
 {
+  "meeting_chapter": "RAS",
   "start_utc": "2030-01-01T00:00:00Z",
   "profile_names": [
     {"name": "Rafael Lago", "chapter": "CS"},
@@ -410,13 +412,13 @@ O campo `profiles` também aceita a mesma lista de objetos, mas `profile_indices
 Para recorrência diária, adicione `recurrence: "daily"`:
 
 ```json
-{"start_utc":"2030-01-01T00:00:00Z","profile_indices":[0,4,12],"recurrence":"daily"}
+{"meeting_chapter":"RAS","start_utc":"2030-01-01T00:00:00Z","profile_indices":[0,4,12],"recurrence":"daily"}
 ```
 
 Para recorrência semanal, adicione `recurrence: "weekly"` e, opcionalmente, `weekdays`. Os dias usam `0=domingo`, `1=segunda`, ..., `6=sábado`:
 
 ```json
-{"start_utc":"2030-01-01T00:00:00Z","profile_indices":[0,4,12],"recurrence":"weekly","weekdays":[1,3,5]}
+{"meeting_chapter":"RAS","start_utc":"2030-01-01T00:00:00Z","profile_indices":[0,4,12],"recurrence":"weekly","weekdays":[1,3,5]}
 ```
 
 Se `recurrence` for `"weekly"` e `weekdays` não for enviado, o firmware usa automaticamente o dia da semana de `start_utc`.
@@ -439,6 +441,7 @@ Se `POST /api/meeting/cancel` for chamado sem `id`, todos os agendamentos penden
 Regras importantes:
 
 - cada perfil selecionado precisa existir e ter ao menos um cartão cadastrado
+- `meeting_chapter` é obrigatório e é o texto exibido no LCD abaixo de `MODO REUNIAO`
 - quando a seleção vier por nome, cada item precisa ter `name` e `chapter`
 - `start_utc` deve estar em UTC, por exemplo `2030-01-01T00:00:00Z`
 - `start_unix` ainda é aceito apenas por compatibilidade
@@ -563,6 +566,7 @@ Formato atual aproximado:
     "start_unix": 1893456000,
     "recurrence": 2,
     "weekdays_mask": 42,
+    "meeting_chapter": "RAS",
     "profiles": [0, 4, 12]
   }
 ]

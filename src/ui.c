@@ -2490,7 +2490,15 @@ static void ui_draw_idle_wait_screen(bool show_gear)
 {
     if (storage_meeting_mode_is_active())
     {
-        ui_draw_wait_screen(UI_MEETING_WAIT_LINE1, UI_MEETING_WAIT_LINE2, show_gear);
+        char meeting_chapter[STORAGE_CHAPTER_MAX_LEN];
+        const char *line2 = UI_MEETING_WAIT_LINE2;
+
+        if (storage_meeting_mode_chapter(meeting_chapter, sizeof(meeting_chapter)))
+        {
+            line2 = meeting_chapter;
+        }
+
+        ui_draw_wait_screen(UI_MEETING_WAIT_LINE1, line2, show_gear);
         return;
     }
 
