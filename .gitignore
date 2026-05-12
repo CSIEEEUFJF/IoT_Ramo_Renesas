@@ -1,6 +1,3 @@
-Debug/*
-!Debug/
-!Debug/IoTRamoRenesas.elf
 JLinkLog.log
 *.jlink
 *.launch

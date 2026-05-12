@@ -1,0 +1,13 @@
+################################################################################
+# Automatically-generated file. Do not edit!
+################################################################################
+
+arg1 = $(1)
+export PATH=C:\Renesas\Synergy\e2studio_v2025-01_ssp_v2.7.0\toolchains\gcc_arm\gcc-arm-none-eabi-10.3-2021.10\bin\;C:\Renesas\Synergy\e2studio_v2025-01_ssp_v2.7.0\eclipse\plugins\com.renesas.ide.exttools.busybox.win32.x86_64_1.3.6.v20230615-0931\bin\;C:\Renesas\Synergy\e2studio_v2025-01_ssp_v2.7.0\eclipse\plugins\com.renesas.ide.exttools.gnumake.win32.x86_64_4.3.1.v20240909-0854\mk\;C:\Renesas\Synergy\e2studio_v2025-01_ssp_v2.7.0\eclipse\plugins\com.renesas.ide.exttools.scandep.win32.x86_64_1.0.0.v20230915-1033\sd\;C:/Renesas/Synergy/e2studio_v2025-01_ssp_v2.7.0/eclipse//plugins/org.eclipse.justj.openjdk.hotspot.jre.full.win32.x86_64_21.0.4.v20240802-1551/jre/bin/server;C:/Renesas/Synergy/e2studio_v2025-01_ssp_v2.7.0/eclipse//plugins/org.eclipse.justj.openjdk.hotspot.jre.full.win32.x86_64_21.0.4.v20240802-1551/jre/bin;C:\Program Files\Altair\2026\feko\bin;C:\Program Files\Python314\Scripts\;C:\Program Files\Python314\;C:\WINDOWS\system32;C:\WINDOWS;C:\WINDOWS\System32\Wbem;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;C:\WINDOWS\System32\OpenSSH\;C:\Program Files\nodejs\;C:\Program Files\Neovim\bin;C:\Program Files\Git\cmd;C:\Program Files\dotnet\;C:\Program Files\Docker\Docker\resources\bin;C:\Program Files (x86)\IVI Foundation\VISA\WinNT\Bin;C:\Users\CS\AppData\Local\Microsoft\WindowsApps;C:\Users\CS\AppData\Roaming\npm;C:\Users\CS\AppData\Local\Programs\Microsoft VS Code\bin;C:\Users\CS\AppData\Local\GitHubDesktop\bin;C:\Users\CS\AppData\Local\Programs\Ollama;C:\Users\CS\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin;;C:\Renesas\Synergy\e2studio_v2025-01_ssp_v2.7.0\eclipse
+export TCINSTALL=C:\Renesas\Synergy\e2studio_v2025-01_ssp_v2.7.0\toolchains\gcc_arm\gcc-arm-none-eabi-10.3-2021.10$(call arg1,\)
+export CWD=$(CURDIR)
+export AMS_LICENSE_PATH=
+export TC_VERSION=10.3.1.20210824
+export AMS_KEEP_FILE=
+export PWD=$(CURDIR)
+export GCC_VERSION=10.3.1
