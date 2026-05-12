@@ -5764,7 +5764,7 @@ static UINT render_light_dashboard_page(NX_HTTP_SERVER *server_ptr, NX_PACKET *p
              "</div>%s</div></body></html>",
              is_admin ? "autenticada" : "bloqueada",
              light_persist_status_text(),
-             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/meeting_mode'>Reuniao</a><a class='small' href='/meeting_schedules'>Agendamentos</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
+             is_admin ? "<a class='small' href='/admin_profiles'>Perfis</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/storage_export'>Downloads</a><a class='small' href='/access_log'>Log</a><a class='small' href='/meeting_mode'>Reuniao</a><a class='small' href='/meeting_schedules'>Agendamentos</a><a class='small' href='/metrics'>Metricas</a><a class='small' href='/door'>Porta</a>" : "",
              is_admin ? "<a class='small secondary' href='/logout'>Sair</a>" : "<a class='small' href='/login'>Entrar</a>",
              (NULL != message_to_render) ? message_to_render : "");
 
@@ -5909,7 +5909,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
              "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.actions{flex-direction:column;align-items:stretch;gap:8px;}.small{display:block;width:100%%;box-sizing:border-box;text-align:center;}.table-wrap{margin:0 -4px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}th,td{padding:8px;font-size:13px;white-space:nowrap;}}"
              "</style></head><body><div class='wrap'><div class='card'>"
              "<h1>Perfis existentes</h1>"
-             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/import'>Importar perfis</a><a class='small' href='/storage_export'>Exportar storage</a><form action='/save_users' method='post'><button class='small' type='submit'>Persistir cadastros</button></form><form action='/format_qspi' method='post'><button class='small danger' type='submit'>Formatar QSPI e gravar</button></form><a class='small secondary' href='/'>Voltar</a></div>"
+             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/upload_photo'>Upload foto</a><a class='small' href='/import'>Importar perfis</a><a class='small' href='/storage_export'>Exportar storage</a><form action='/save_users' method='post'><button class='small' type='submit'>Persistir cadastros</button></form><form action='/format_qspi' method='post'><button class='small danger' type='submit'>Formatar QSPI e gravar</button></form><a class='small secondary' href='/'>Voltar</a></div>"
              "%s"
              "%s"
              "<p class='muted'>Mostrando %d a %d de %d perfis carregados.</p>"

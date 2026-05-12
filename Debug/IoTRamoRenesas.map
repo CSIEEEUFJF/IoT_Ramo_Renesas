@@ -17723,7 +17723,7 @@ LOAD c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-
 LOAD c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libnosys.a
 END GROUP
 
-.text           0x00000000    0x981e0
+.text           0x00000000    0x98250
                 0x00000000                __ROM_Start = .
  *(.vectors)
  .vectors       0x00000000       0x40 ./synergy/ssp/src/bsp/cmsis/Device/RENESAS/S7G2/Source/startup_S7G2.o
@@ -21271,450 +21271,451 @@ END GROUP
                 0x00038d68       0x25 ./src/net.o
  *fill*         0x00038d8d        0x3 ff
  .rodata.render_light_profiles_page.part.0.constprop.0.str1.4
-                0x00038d90      0xa8c ./src/net.o
-                                0xa90 (size before relaxing)
+                0x00038d90      0xac1 ./src/net.o
+                                0xac5 (size before relaxing)
+ *fill*         0x00039851        0x3 ff
  .rodata.render_light_access_log_page.part.0.constprop.0.str1.4
-                0x0003981c      0x86b ./src/net.o
- *fill*         0x0003a087        0x1 ff
+                0x00039854      0x86b ./src/net.o
+ *fill*         0x0003a0bf        0x1 ff
  .rodata.render_light_profile_form_page.part.0.constprop.0.str1.4
-                0x0003a088      0xb8a ./src/net.o
- *fill*         0x0003ac12        0x2 ff
+                0x0003a0c0      0xb8a ./src/net.o
+ *fill*         0x0003ac4a        0x2 ff
  .rodata.net_action_lock.str1.4
-                0x0003ac14       0x11 ./src/net.o
- *fill*         0x0003ac25        0x3 ff
+                0x0003ac4c       0x11 ./src/net.o
+ *fill*         0x0003ac5d        0x3 ff
  .rodata.render_light_shell.str1.4
-                0x0003ac28      0xb9d ./src/net.o
+                0x0003ac60      0xb9d ./src/net.o
                                 0xba5 (size before relaxing)
- *fill*         0x0003b7c5        0x3 ff
+ *fill*         0x0003b7fd        0x3 ff
  .rodata.render_light_login_page.str1.4
-                0x0003b7c8      0x217 ./src/net.o
- *fill*         0x0003b9df        0x1 ff
+                0x0003b800      0x217 ./src/net.o
+ *fill*         0x0003ba17        0x1 ff
  .rodata.render_light_storage_export_page.part.0.constprop.0.str1.4
-                0x0003b9e0      0x39f ./src/net.o
- *fill*         0x0003bd7f        0x1 ff
+                0x0003ba18      0x39f ./src/net.o
+ *fill*         0x0003bdb7        0x1 ff
  .rodata.render_light_storage_export_page.constprop.0.str1.4
-                0x0003bd80       0x4b ./src/net.o
- *fill*         0x0003bdcb        0x1 ff
+                0x0003bdb8       0x4b ./src/net.o
+ *fill*         0x0003be03        0x1 ff
  .rodata.net_format_utc_datetime.part.0.constprop.0.str1.4
-                0x0003bdcc       0x1f ./src/net.o
- *fill*         0x0003bdeb        0x1 ff
+                0x0003be04       0x1f ./src/net.o
+ *fill*         0x0003be23        0x1 ff
  .rodata.render_light_meeting_mode_page.constprop.0.str1.4
-                0x0003bdec      0xe5b ./src/net.o
- *fill*         0x0003cc47        0x1 ff
+                0x0003be24      0xe5b ./src/net.o
+ *fill*         0x0003cc7f        0x1 ff
  .rodata.net_format_metric_csv_line.constprop.0.str1.4
-                0x0003cc48       0x21 ./src/net.o
- *fill*         0x0003cc69        0x3 ff
+                0x0003cc80       0x21 ./src/net.o
+ *fill*         0x0003cca1        0x3 ff
  .rodata.render_light_metrics_page.part.0.constprop.0.str1.4
-                0x0003cc6c      0x653 ./src/net.o
- *fill*         0x0003d2bf        0x1 ff
+                0x0003cca4      0x653 ./src/net.o
+ *fill*         0x0003d2f7        0x1 ff
  .rodata.render_light_metrics_page.constprop.0.str1.4
-                0x0003d2c0       0x48 ./src/net.o
+                0x0003d2f8       0x48 ./src/net.o
  .rodata.net_api_request_is_authorized.str1.4
-                0x0003d308       0x1a ./src/net.o
- *fill*         0x0003d322        0x2 ff
+                0x0003d340       0x1a ./src/net.o
+ *fill*         0x0003d35a        0x2 ff
  .rodata.handle_light_save_users.str1.4
-                0x0003d324       0xd1 ./src/net.o
+                0x0003d35c       0xd1 ./src/net.o
                                  0xeb (size before relaxing)
- *fill*         0x0003d3f5        0x3 ff
+ *fill*         0x0003d42d        0x3 ff
  .rodata.net_meeting_schedule_ensure_loaded.part.0.str1.4
-                0x0003d3f8        0xf ./src/net.o
- *fill*         0x0003d407        0x1 ff
+                0x0003d430        0xf ./src/net.o
+ *fill*         0x0003d43f        0x1 ff
  .rodata.render_light_meeting_schedules_page.constprop.0.str1.4
-                0x0003d408      0x3db ./src/net.o
- *fill*         0x0003d7e3        0x1 ff
+                0x0003d440      0x3db ./src/net.o
+ *fill*         0x0003d81b        0x1 ff
  .rodata.render_light_meeting_schedule_edit_page.constprop.0.str1.4
-                0x0003d7e4      0x743 ./src/net.o
+                0x0003d81c      0x743 ./src/net.o
                                 0x747 (size before relaxing)
- *fill*         0x0003df27        0x1 ff
+ *fill*         0x0003df5f        0x1 ff
  .rodata.handle_api_meeting_status.str1.4
-                0x0003df28      0x2ab ./src/net.o
+                0x0003df60      0x2ab ./src/net.o
                                 0x2e3 (size before relaxing)
  .rodata.net_get_meeting_chapter_value.part.0.constprop.0.str1.4
-                0x0003e1d3      0x2ab ./src/net.o
+                0x0003e20b      0x2ab ./src/net.o
                                  0x18 (size before relaxing)
- *fill*         0x0003e1d3        0x1 ff
+ *fill*         0x0003e20b        0x1 ff
  .rodata.net_get_door_user_value.part.0.constprop.0.isra.0.str1.4
-                0x0003e1d4        0xa ./src/net.o
+                0x0003e20c        0xa ./src/net.o
                                  0x19 (size before relaxing)
- *fill*         0x0003e1de        0x2 ff
+ *fill*         0x0003e216        0x2 ff
  .rodata.net_process_meeting_schedule.str1.4
-                0x0003e1e0       0x61 ./src/net.o
- *fill*         0x0003e241        0x3 ff
+                0x0003e218       0x61 ./src/net.o
+ *fill*         0x0003e279        0x3 ff
  .rodata.net_parse_utc_datetime_text.str1.4
-                0x0003e244        0x4 ./src/net.o
+                0x0003e27c        0x4 ./src/net.o
                                   0x8 (size before relaxing)
  .rodata.handle_light_upload_commit.part.0.str1.4
-                0x0003e248      0x1af ./src/net.o
+                0x0003e280      0x1af ./src/net.o
                                 0x1c3 (size before relaxing)
- *fill*         0x0003e3f7        0x1 ff
+ *fill*         0x0003e42f        0x1 ff
  .rodata.handle_light_upload_commit.str1.4
-                0x0003e3f8        0x9 ./src/net.o
- *fill*         0x0003e401        0x3 ff
+                0x0003e430        0x9 ./src/net.o
+ *fill*         0x0003e439        0x3 ff
  .rodata.handle_light_upload_chunk.str1.4
-                0x0003e404       0x4a ./src/net.o
- *fill*         0x0003e44e        0x2 ff
+                0x0003e43c       0x4a ./src/net.o
+ *fill*         0x0003e486        0x2 ff
  .rodata.handle_light_add_user.str1.4
-                0x0003e450      0x2c6 ./src/net.o
+                0x0003e488      0x2c6 ./src/net.o
                                 0x2ce (size before relaxing)
- *fill*         0x0003e716        0x2 ff
+ *fill*         0x0003e74e        0x2 ff
  .rodata.handle_light_upload_begin.str1.4
-                0x0003e718       0x46 ./src/net.o
- *fill*         0x0003e75e        0x2 ff
+                0x0003e750       0x46 ./src/net.o
+ *fill*         0x0003e796        0x2 ff
  .rodata.handle_light_meeting_mode_start.constprop.0.str1.4
-                0x0003e760      0x330 ./src/net.o
+                0x0003e798      0x330 ./src/net.o
  .rodata.net_meeting_schedule_parse_request.constprop.0.str1.4
-                0x0003ea90      0x183 ./src/net.o
+                0x0003eac8      0x183 ./src/net.o
                                 0x1cb (size before relaxing)
- *fill*         0x0003ec13        0x1 ff
+ *fill*         0x0003ec4b        0x1 ff
  .rodata.handle_light_meeting_schedule_save.constprop.0.str1.4
-                0x0003ec14      0x237 ./src/net.o
- *fill*         0x0003ee4b        0x1 ff
+                0x0003ec4c      0x237 ./src/net.o
+ *fill*         0x0003ee83        0x1 ff
  .rodata.handle_api_meeting_schedule.constprop.0.str1.4
-                0x0003ee4c      0x146 ./src/net.o
- *fill*         0x0003ef92        0x2 ff
+                0x0003ee84      0x146 ./src/net.o
+ *fill*         0x0003efca        0x2 ff
  .rodata.request_notify.str1.4
-                0x0003ef94     0x334f ./src/net.o
-                               0x33ab (size before relaxing)
- *fill*         0x000422e3        0x1 ff
+                0x0003efcc     0x3387 ./src/net.o
+                               0x33e3 (size before relaxing)
+ *fill*         0x00042353        0x1 ff
  .rodata.thread_net_entry.str1.4
-                0x000422e4      0x168 ./src/net.o
+                0x00042354      0x168 ./src/net.o
                                 0x198 (size before relaxing)
  .rodata.str1.4
-                0x0004244c      0x24e ./src/net.o
- *fill*         0x0004269a        0x2 ff
+                0x000424bc      0x24e ./src/net.o
+ *fill*         0x0004270a        0x2 ff
  .rodata.CSWTCH.557
-                0x0004269c       0x3c ./src/net.o
+                0x0004270c       0x3c ./src/net.o
  .rodata.CSWTCH.626
-                0x000426d8        0xc ./src/net.o
+                0x00042748        0xc ./src/net.o
  .rodata.bearer_prefix.30
-                0x000426e4        0x8 ./src/net.o
+                0x00042754        0x8 ./src/net.o
  .rodata.busy_json.4
-                0x000426ec       0x20 ./src/net.o
+                0x0004275c       0x20 ./src/net.o
  .rodata.csv_header.6
-                0x0004270c       0x3b ./src/net.o
- *fill*         0x00042747        0x1 ff
+                0x0004277c       0x3b ./src/net.o
+ *fill*         0x000427b7        0x1 ff
  .rodata.day_names.8
-                0x00042748       0x1c ./src/net.o
+                0x000427b8       0x1c ./src/net.o
  .rodata.days_by_month.29
-                0x00042764       0x30 ./src/net.o
+                0x000427d4       0x30 ./src/net.o
  .rodata.g_profile_photo_ids
-                0x00042794       0x28 ./src/net.o
+                0x00042804       0x28 ./src/net.o
  .rodata.unauthorized_json.5
-                0x000427bc       0x24 ./src/net.o
+                0x0004282c       0x24 ./src/net.o
  .rodata._nx_dhcp_create.str1.4
-                0x000427e0       0x3b ./src/nxd_dhcp_client.o
- *fill*         0x0004281b        0x1 ff
+                0x00042850       0x3b ./src/nxd_dhcp_client.o
+ *fill*         0x0004288b        0x1 ff
  .rodata.thread_rfid_entry.str1.4
-                0x0004281c       0x1a ./src/rfid.o
+                0x0004288c       0x1a ./src/rfid.o
                                  0x8f (size before relaxing)
- *fill*         0x00042836        0x2 ff
- .rodata        0x00042838        0x3 ./src/rfid.o
- *fill*         0x0004283b        0x1 ff
- .rodata.cascade_levels.1
-                0x0004283c        0x3 ./src/rfid.o
- *fill*         0x0004283f        0x1 ff
- .rodata.hex.0  0x00042840       0x11 ./src/rfid.o
- .rodata.storage_find_json_key.str1.4
-                0x00042851        0x5 ./src/storage.o
- .rodata.storage_meeting_json_get_profiles.part.0.str1.4
-                0x00042851        0x9 ./src/storage.o
- *fill*         0x00042851        0x3 ff
- .rodata.storage_init.part.0.str1.4
-                0x00042854       0x57 ./src/storage.o
+ *fill*         0x000428a6        0x2 ff
+ .rodata        0x000428a8        0x3 ./src/rfid.o
  *fill*         0x000428ab        0x1 ff
+ .rodata.cascade_levels.1
+                0x000428ac        0x3 ./src/rfid.o
+ *fill*         0x000428af        0x1 ff
+ .rodata.hex.0  0x000428b0       0x11 ./src/rfid.o
+ .rodata.storage_find_json_key.str1.4
+                0x000428c1        0x5 ./src/storage.o
+ .rodata.storage_meeting_json_get_profiles.part.0.str1.4
+                0x000428c1        0x9 ./src/storage.o
+ *fill*         0x000428c1        0x3 ff
+ .rodata.storage_init.part.0.str1.4
+                0x000428c4       0x57 ./src/storage.o
+ *fill*         0x0004291b        0x1 ff
  .rodata.storage_meeting_json_get_profile_key_hashes.part.0.str1.4
-                0x000428ac       0x13 ./src/storage.o
+                0x0004291c       0x13 ./src/storage.o
                                  0x21 (size before relaxing)
- *fill*         0x000428bf        0x1 ff
+ *fill*         0x0004292f        0x1 ff
  .rodata.storage_prune_metrics_log_open_media.isra.0.str1.4
-                0x000428c0        0xc ./src/storage.o
+                0x00042930        0xc ./src/storage.o
                                  0x18 (size before relaxing)
  .rodata.storage_prune_access_logs_open_media.isra.0.str1.4
-                0x000428cc       0x17 ./src/storage.o
+                0x0004293c       0x17 ./src/storage.o
                                  0x23 (size before relaxing)
  .rodata.storage_append_json_escaped_string.str1.4
-                0x000428e3        0xb ./src/storage.o
- *fill*         0x000428e3        0x1 ff
+                0x00042953        0xb ./src/storage.o
+ *fill*         0x00042953        0x1 ff
  .rodata.storage_append_user_json_locked.part.0.constprop.0.str1.4
-                0x000428e4       0x42 ./src/storage.o
+                0x00042954       0x42 ./src/storage.o
                                  0x86 (size before relaxing)
- *fill*         0x00042926        0x2 ff
+ *fill*         0x00042996        0x2 ff
  .rodata.storage_clear_meeting_active_file.str1.4
-                0x00042928       0x3c ./src/storage.o
+                0x00042998       0x3c ./src/storage.o
                                  0x54 (size before relaxing)
  .rodata.storage_parse_meeting_schedules_json.constprop.0.str1.4
-                0x00042964       0x47 ./src/storage.o
+                0x000429d4       0x47 ./src/storage.o
  .rodata.storage_load_access_log_now.str1.4
-                0x00042964       0x15 ./src/storage.o
+                0x000429d4       0x15 ./src/storage.o
  .rodata.storage_read_file_chunk.str1.4
-                0x00042964        0xb ./src/storage.o
+                0x000429d4        0xb ./src/storage.o
  .rodata.storage_save_meeting_schedules_json.str1.4
-                0x00042964       0xa0 ./src/storage.o
+                0x000429d4       0xa0 ./src/storage.o
                                  0xb4 (size before relaxing)
  .rodata.storage_save_users_json_snapshot.str1.4
-                0x00042a04        0x4 ./src/storage.o
+                0x00042a74        0x4 ./src/storage.o
  .rodata.storage_load_users_file.str1.4
-                0x00042a08        0xa ./src/storage.o
+                0x00042a78        0xa ./src/storage.o
                                  0x32 (size before relaxing)
- *fill*         0x00042a12        0x2 ff
+ *fill*         0x00042a82        0x2 ff
  .rodata.storage_load_users_now.str1.4
-                0x00042a14        0xa ./src/storage.o
+                0x00042a84        0xa ./src/storage.o
                                  0x2b (size before relaxing)
- *fill*         0x00042a1e        0x2 ff
+ *fill*         0x00042a8e        0x2 ff
  .rodata.storage_meeting_mode_start_internal.str1.4
-                0x00042a20       0x21 ./src/storage.o
- *fill*         0x00042a41        0x3 ff
+                0x00042a90       0x21 ./src/storage.o
+ *fill*         0x00042ab1        0x3 ff
  .rodata.storage_thread_entry.str1.4
-                0x00042a44       0x34 ./src/storage.o
+                0x00042ab4       0x34 ./src/storage.o
                                  0x3a (size before relaxing)
  .rodata.ui_enter_idle.str1.4
-                0x00042a78       0x13 ./src/ui.o
+                0x00042ae8       0x13 ./src/ui.o
                                  0x17 (size before relaxing)
- *fill*         0x00042a8b        0x1 ff
+ *fill*         0x00042afb        0x1 ff
  .rodata.ui_enter_pin_entry.part.0.str1.4
-                0x00042a8c       0x35 ./src/ui.o
- *fill*         0x00042ac1        0x3 ff
+                0x00042afc       0x35 ./src/ui.o
+ *fill*         0x00042b31        0x3 ff
  .rodata.ui_enter_enroll_wait.part.0.str1.4
-                0x00042ac4       0x11 ./src/ui.o
+                0x00042b34       0x11 ./src/ui.o
  .rodata.ui_pin_set_digit.str1.4
-                0x00042ad5        0x5 ./src/ui.o
- *fill*         0x00042ad5        0x3 ff
+                0x00042b45        0x5 ./src/ui.o
+ *fill*         0x00042b45        0x3 ff
  .rodata.ui_pin_submit.part.0.str1.4
-                0x00042ad8       0x46 ./src/ui.o
- *fill*         0x00042b1e        0x2 ff
+                0x00042b48       0x46 ./src/ui.o
+ *fill*         0x00042b8e        0x2 ff
  .rodata.ui_draw_idle_wait_screen.str1.4
-                0x00042b20       0x43 ./src/ui.o
- *fill*         0x00042b63        0x1 ff
+                0x00042b90       0x43 ./src/ui.o
+ *fill*         0x00042bd3        0x1 ff
  .rodata.thread_ui_entry.str1.4
-                0x00042b64       0xf5 ./src/ui.o
+                0x00042bd4       0xf5 ./src/ui.o
                                 0x169 (size before relaxing)
  .rodata.str1.4
-                0x00042c59      0x1ae ./src/ui.o
- *fill*         0x00042c59        0x3 ff
+                0x00042cc9      0x1ae ./src/ui.o
+ *fill*         0x00042cc9        0x3 ff
  .rodata.CSWTCH.154
-                0x00042c5c       0xec ./src/ui.o
+                0x00042ccc       0xec ./src/ui.o
  .rodata.CSWTCH.157
-                0x00042d48       0x3d ./src/ui.o
- *fill*         0x00042d85        0x3 ff
- .rodata.a.42   0x00042d88        0x7 ./src/ui.o
- *fill*         0x00042d8f        0x1 ff
- .rodata.b.41   0x00042d90        0x7 ./src/ui.o
- *fill*         0x00042d97        0x1 ff
+                0x00042db8       0x3d ./src/ui.o
+ *fill*         0x00042df5        0x3 ff
+ .rodata.a.42   0x00042df8        0x7 ./src/ui.o
+ *fill*         0x00042dff        0x1 ff
+ .rodata.b.41   0x00042e00        0x7 ./src/ui.o
+ *fill*         0x00042e07        0x1 ff
  .rodata.c_glyph.40
-                0x00042d98        0x7 ./src/ui.o
- *fill*         0x00042d9f        0x1 ff
- .rodata.d.39   0x00042da0        0x7 ./src/ui.o
- *fill*         0x00042da7        0x1 ff
- .rodata.dot.3  0x00042da8        0x7 ./src/ui.o
- *fill*         0x00042daf        0x1 ff
+                0x00042e08        0x7 ./src/ui.o
+ *fill*         0x00042e0f        0x1 ff
+ .rodata.d.39   0x00042e10        0x7 ./src/ui.o
+ *fill*         0x00042e17        0x1 ff
+ .rodata.dot.3  0x00042e18        0x7 ./src/ui.o
+ *fill*         0x00042e1f        0x1 ff
  .rodata.e_glyph.38
-                0x00042db0        0x7 ./src/ui.o
- *fill*         0x00042db7        0x1 ff
+                0x00042e20        0x7 ./src/ui.o
+ *fill*         0x00042e27        0x1 ff
  .rodata.eight.8
-                0x00042db8        0x7 ./src/ui.o
- *fill*         0x00042dbf        0x1 ff
- .rodata.f.37   0x00042dc0        0x7 ./src/ui.o
- *fill*         0x00042dc7        0x1 ff
+                0x00042e28        0x7 ./src/ui.o
+ *fill*         0x00042e2f        0x1 ff
+ .rodata.f.37   0x00042e30        0x7 ./src/ui.o
+ *fill*         0x00042e37        0x1 ff
  .rodata.five.11
-                0x00042dc8        0x7 ./src/ui.o
- *fill*         0x00042dcf        0x1 ff
+                0x00042e38        0x7 ./src/ui.o
+ *fill*         0x00042e3f        0x1 ff
  .rodata.four.12
-                0x00042dd0        0x7 ./src/ui.o
- *fill*         0x00042dd7        0x1 ff
- .rodata.g.36   0x00042dd8        0x7 ./src/ui.o
- *fill*         0x00042ddf        0x1 ff
+                0x00042e40        0x7 ./src/ui.o
+ *fill*         0x00042e47        0x1 ff
+ .rodata.g.36   0x00042e48        0x7 ./src/ui.o
+ *fill*         0x00042e4f        0x1 ff
  .rodata.g_profile_photo_1tb42tGF1bdKx8wuNxHCLKJqAi93
-                0x00042de0     0x7080 ./src/ui.o
+                0x00042e50     0x7080 ./src/ui.o
  .rodata.g_profile_photo_2muixNKBMINsUMVrDe4tqzXoSbB3
-                0x00049e60     0x7080 ./src/ui.o
+                0x00049ed0     0x7080 ./src/ui.o
  .rodata.g_profile_photo_8x1T14YacsVy2Wl4P9jpB4fK9Yl1
-                0x00050ee0     0x7080 ./src/ui.o
+                0x00050f50     0x7080 ./src/ui.o
  .rodata.g_profile_photo_HEarkqkLwEcAlEaFr7dIVKssnXs1
-                0x00057f60     0x7080 ./src/ui.o
+                0x00057fd0     0x7080 ./src/ui.o
  .rodata.g_profile_photo_OlP079mFC5djskvnl5CQiubzz9w1
-                0x0005efe0     0x7080 ./src/ui.o
+                0x0005f050     0x7080 ./src/ui.o
  .rodata.g_profile_photo_P3bD1PAx2AYDxi16orrecD8waZh2
-                0x00066060     0x7080 ./src/ui.o
+                0x000660d0     0x7080 ./src/ui.o
  .rodata.g_profile_photo_T3GgaBjEiaYmYzDqfdS7EZdDxwq2
-                0x0006d0e0     0x7080 ./src/ui.o
+                0x0006d150     0x7080 ./src/ui.o
  .rodata.g_profile_photo_WDvzJqYvCvObJvBPgoqkkfx3NuB3
-                0x00074160     0x7080 ./src/ui.o
+                0x000741d0     0x7080 ./src/ui.o
  .rodata.g_profile_photo_assets
-                0x0007b1e0       0x78 ./src/ui.o
+                0x0007b250       0x78 ./src/ui.o
  .rodata.g_profile_photo_dfH1CdOjZ1XBqDZHwMRlhroMsFv2
-                0x0007b258     0x7080 ./src/ui.o
+                0x0007b2c8     0x7080 ./src/ui.o
  .rodata.g_profile_photo_eCuV4uTqoohOqjaZJ6bUHY7qTCH2
-                0x000822d8     0x7080 ./src/ui.o
+                0x00082348     0x7080 ./src/ui.o
  .rodata.g_ramo_logo_rgb565
-                0x00089358     0x5e80 ./src/ui.o
+                0x000893c8     0x5e80 ./src/ui.o
  .rodata.g_ui_font_advance
-                0x0008f1d8       0x62 ./src/ui.o
- *fill*         0x0008f23a        0x2 ff
+                0x0008f248       0x62 ./src/ui.o
+ *fill*         0x0008f2aa        0x2 ff
  .rodata.g_ui_font_alpha
-                0x0008f23c     0x86c0 ./src/ui.o
+                0x0008f2ac     0x86c0 ./src/ui.o
  .rodata.g_ui_font_codepoints
-                0x000978fc       0xc4 ./src/ui.o
- .rodata.h.35   0x000979c0        0x7 ./src/ui.o
- *fill*         0x000979c7        0x1 ff
- .rodata.hyphen.6
-                0x000979c8        0x7 ./src/ui.o
- *fill*         0x000979cf        0x1 ff
- .rodata.i.34   0x000979d0        0x7 ./src/ui.o
- *fill*         0x000979d7        0x1 ff
- .rodata.j.33   0x000979d8        0x7 ./src/ui.o
- *fill*         0x000979df        0x1 ff
- .rodata.k.32   0x000979e0        0x7 ./src/ui.o
- *fill*         0x000979e7        0x1 ff
- .rodata.l.31   0x000979e8        0x7 ./src/ui.o
- *fill*         0x000979ef        0x1 ff
- .rodata.lparen.5
-                0x000979f0        0x7 ./src/ui.o
- *fill*         0x000979f7        0x1 ff
- .rodata.m.30   0x000979f8        0x7 ./src/ui.o
- *fill*         0x000979ff        0x1 ff
- .rodata.n.29   0x00097a00        0x7 ./src/ui.o
- *fill*         0x00097a07        0x1 ff
- .rodata.nine.7
-                0x00097a08        0x7 ./src/ui.o
- *fill*         0x00097a0f        0x1 ff
- .rodata.o.28   0x00097a10        0x7 ./src/ui.o
- *fill*         0x00097a17        0x1 ff
- .rodata.one.15
-                0x00097a18        0x7 ./src/ui.o
- *fill*         0x00097a1f        0x1 ff
- .rodata.p.27   0x00097a20        0x7 ./src/ui.o
- *fill*         0x00097a27        0x1 ff
- .rodata.q.26   0x00097a28        0x7 ./src/ui.o
- *fill*         0x00097a2f        0x1 ff
- .rodata.r.25   0x00097a30        0x7 ./src/ui.o
+                0x0009796c       0xc4 ./src/ui.o
+ .rodata.h.35   0x00097a30        0x7 ./src/ui.o
  *fill*         0x00097a37        0x1 ff
- .rodata.rparen.4
+ .rodata.hyphen.6
                 0x00097a38        0x7 ./src/ui.o
  *fill*         0x00097a3f        0x1 ff
- .rodata.s.24   0x00097a40        0x7 ./src/ui.o
+ .rodata.i.34   0x00097a40        0x7 ./src/ui.o
  *fill*         0x00097a47        0x1 ff
- .rodata.seven.9
-                0x00097a48        0x7 ./src/ui.o
+ .rodata.j.33   0x00097a48        0x7 ./src/ui.o
  *fill*         0x00097a4f        0x1 ff
- .rodata.six.10
-                0x00097a50        0x7 ./src/ui.o
+ .rodata.k.32   0x00097a50        0x7 ./src/ui.o
  *fill*         0x00097a57        0x1 ff
- .rodata.slash.2
-                0x00097a58        0x7 ./src/ui.o
+ .rodata.l.31   0x00097a58        0x7 ./src/ui.o
  *fill*         0x00097a5f        0x1 ff
- .rodata.space.1
+ .rodata.lparen.5
                 0x00097a60        0x7 ./src/ui.o
  *fill*         0x00097a67        0x1 ff
- .rodata.t.23   0x00097a68        0x7 ./src/ui.o
+ .rodata.m.30   0x00097a68        0x7 ./src/ui.o
  *fill*         0x00097a6f        0x1 ff
- .rodata.three.13
-                0x00097a70        0x7 ./src/ui.o
+ .rodata.n.29   0x00097a70        0x7 ./src/ui.o
  *fill*         0x00097a77        0x1 ff
- .rodata.two.14
+ .rodata.nine.7
                 0x00097a78        0x7 ./src/ui.o
  *fill*         0x00097a7f        0x1 ff
- .rodata.u.22   0x00097a80        0x7 ./src/ui.o
+ .rodata.o.28   0x00097a80        0x7 ./src/ui.o
  *fill*         0x00097a87        0x1 ff
- .rodata.v.21   0x00097a88        0x7 ./src/ui.o
+ .rodata.one.15
+                0x00097a88        0x7 ./src/ui.o
  *fill*         0x00097a8f        0x1 ff
- .rodata.w.20   0x00097a90        0x7 ./src/ui.o
+ .rodata.p.27   0x00097a90        0x7 ./src/ui.o
  *fill*         0x00097a97        0x1 ff
- .rodata.x_glyph.19
-                0x00097a98        0x7 ./src/ui.o
+ .rodata.q.26   0x00097a98        0x7 ./src/ui.o
  *fill*         0x00097a9f        0x1 ff
- .rodata.y.18   0x00097aa0        0x7 ./src/ui.o
+ .rodata.r.25   0x00097aa0        0x7 ./src/ui.o
  *fill*         0x00097aa7        0x1 ff
- .rodata.z.17   0x00097aa8        0x7 ./src/ui.o
+ .rodata.rparen.4
+                0x00097aa8        0x7 ./src/ui.o
  *fill*         0x00097aaf        0x1 ff
- .rodata.zero.16
-                0x00097ab0        0x7 ./src/ui.o
+ .rodata.s.24   0x00097ab0        0x7 ./src/ui.o
  *fill*         0x00097ab7        0x1 ff
+ .rodata.seven.9
+                0x00097ab8        0x7 ./src/ui.o
+ *fill*         0x00097abf        0x1 ff
+ .rodata.six.10
+                0x00097ac0        0x7 ./src/ui.o
+ *fill*         0x00097ac7        0x1 ff
+ .rodata.slash.2
+                0x00097ac8        0x7 ./src/ui.o
+ *fill*         0x00097acf        0x1 ff
+ .rodata.space.1
+                0x00097ad0        0x7 ./src/ui.o
+ *fill*         0x00097ad7        0x1 ff
+ .rodata.t.23   0x00097ad8        0x7 ./src/ui.o
+ *fill*         0x00097adf        0x1 ff
+ .rodata.three.13
+                0x00097ae0        0x7 ./src/ui.o
+ *fill*         0x00097ae7        0x1 ff
+ .rodata.two.14
+                0x00097ae8        0x7 ./src/ui.o
+ *fill*         0x00097aef        0x1 ff
+ .rodata.u.22   0x00097af0        0x7 ./src/ui.o
+ *fill*         0x00097af7        0x1 ff
+ .rodata.v.21   0x00097af8        0x7 ./src/ui.o
+ *fill*         0x00097aff        0x1 ff
+ .rodata.w.20   0x00097b00        0x7 ./src/ui.o
+ *fill*         0x00097b07        0x1 ff
+ .rodata.x_glyph.19
+                0x00097b08        0x7 ./src/ui.o
+ *fill*         0x00097b0f        0x1 ff
+ .rodata.y.18   0x00097b10        0x7 ./src/ui.o
+ *fill*         0x00097b17        0x1 ff
+ .rodata.z.17   0x00097b18        0x7 ./src/ui.o
+ *fill*         0x00097b1f        0x1 ff
+ .rodata.zero.16
+                0x00097b20        0x7 ./src/ui.o
+ *fill*         0x00097b27        0x1 ff
  .rodata.bit_count
-                0x00097ab8       0x80 C:\Users\CS\Documents\IoT_Ramo_Renesas\synergy\ssp\src\driver\r_fmi\libs\libfmi_cm4_s7g2_gcc.a(r_fmi.o)
+                0x00097b28       0x80 C:\Users\CS\Documents\IoT_Ramo_Renesas\synergy\ssp\src\driver\r_fmi\libs\libfmi_cm4_s7g2_gcc.a(r_fmi.o)
  .rodata.bit_count_mask
-                0x00097b38        0x8 C:\Users\CS\Documents\IoT_Ramo_Renesas\synergy\ssp\src\driver\r_fmi\libs\libfmi_cm4_s7g2_gcc.a(r_fmi.o)
+                0x00097ba8        0x8 C:\Users\CS\Documents\IoT_Ramo_Renesas\synergy\ssp\src\driver\r_fmi\libs\libfmi_cm4_s7g2_gcc.a(r_fmi.o)
  .rodata.g_fmi_on_fmi
-                0x00097b40       0x18 C:\Users\CS\Documents\IoT_Ramo_Renesas\synergy\ssp\src\driver\r_fmi\libs\libfmi_cm4_s7g2_gcc.a(r_fmi.o)
-                0x00097b40                g_fmi_on_fmi
+                0x00097bb0       0x18 C:\Users\CS\Documents\IoT_Ramo_Renesas\synergy\ssp\src\driver\r_fmi\libs\libfmi_cm4_s7g2_gcc.a(r_fmi.o)
+                0x00097bb0                g_fmi_on_fmi
  .rodata.g_fmi_data
-                0x00097b58      0x400 C:\Users\CS\Documents\IoT_Ramo_Renesas\synergy\ssp\src\bsp\mcu\s7g2\libfmi_R7FS7G27H3A01CFC_gcc.a(bsp_fmi_R7FS7G27H3A01CFC.o)
-                0x00097b58                g_fmi_data
+                0x00097bc8      0x400 C:\Users\CS\Documents\IoT_Ramo_Renesas\synergy\ssp\src\bsp\mcu\s7g2\libfmi_R7FS7G27H3A01CFC_gcc.a(bsp_fmi_R7FS7G27H3A01CFC.o)
+                0x00097bc8                g_fmi_data
  .rodata._ctype_
-                0x00097f58      0x101 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-ctype_.o)
-                0x00097f58                _ctype_
- *fill*         0x00098059        0x3 ff
+                0x00097fc8      0x101 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-ctype_.o)
+                0x00097fc8                _ctype_
+ *fill*         0x000980c9        0x3 ff
  .rodata._global_impure_ptr
-                0x0009805c        0x4 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-impure.o)
-                0x0009805c                _global_impure_ptr
+                0x000980cc        0x4 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-impure.o)
+                0x000980cc                _global_impure_ptr
  .rodata.srand.str1.1
-                0x00098060       0x95 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-rand.o)
+                0x000980d0       0x95 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-rand.o)
  .rodata.__assert_func.str1.1
-                0x000980f5       0x3c c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-assert.o)
+                0x00098165       0x3c c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-assert.o)
                                  0x3d (size before relaxing)
  .rodata._svfprintf_r.str1.1
-                0x00098131       0x11 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-nano-svfprintf.o)
+                0x000981a1       0x11 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-nano-svfprintf.o)
  .rodata._vfprintf_r.str1.1
-                0x00098142       0x11 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-nano-vfprintf.o)
+                0x000981b2       0x11 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-nano-vfprintf.o)
  .rodata._printf_i.str1.1
-                0x00098142       0x22 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-nano-vfprintf_i.o)
+                0x000981b2       0x22 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-nano-vfprintf_i.o)
  .rodata.__sf_fake_stderr
-                0x00098164       0x20 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-findfp.o)
-                0x00098164                __sf_fake_stderr
+                0x000981d4       0x20 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-findfp.o)
+                0x000981d4                __sf_fake_stderr
  .rodata.__sf_fake_stdin
-                0x00098184       0x20 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-findfp.o)
-                0x00098184                __sf_fake_stdin
+                0x000981f4       0x20 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-findfp.o)
+                0x000981f4                __sf_fake_stdin
  .rodata.__sf_fake_stdout
-                0x000981a4       0x20 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-findfp.o)
-                0x000981a4                __sf_fake_stdout
+                0x00098214       0x20 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\libg_nano.a(lib_a-findfp.o)
+                0x00098214                __sf_fake_stdout
  .rodata._get_semihosting_exts.str1.1
-                0x000981c4       0x16 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\librdimon_nano.a(rdimon-syscalls.o)
-                0x000981da                __usb_dev_descriptor_start_fs = .
+                0x00098234       0x16 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/../../../../arm-none-eabi/lib/thumb/v7e-m+fp/hard\librdimon_nano.a(rdimon-syscalls.o)
+                0x0009824a                __usb_dev_descriptor_start_fs = .
  *(.usb_device_desc_fs*)
-                0x000981da                __usb_cfg_descriptor_start_fs = .
+                0x0009824a                __usb_cfg_descriptor_start_fs = .
  *(.usb_config_desc_fs*)
-                0x000981da                __usb_interface_descriptor_start_fs = .
+                0x0009824a                __usb_interface_descriptor_start_fs = .
  *(.usb_interface_desc_fs*)
-                0x000981da                __usb_descriptor_end_fs = .
-                0x000981da                __usb_dev_descriptor_start_hs = .
+                0x0009824a                __usb_descriptor_end_fs = .
+                0x0009824a                __usb_dev_descriptor_start_hs = .
  *(.usb_device_desc_hs*)
-                0x000981da                __usb_cfg_descriptor_start_hs = .
+                0x0009824a                __usb_cfg_descriptor_start_hs = .
  *(.usb_config_desc_hs*)
-                0x000981da                __usb_interface_descriptor_start_hs = .
+                0x0009824a                __usb_interface_descriptor_start_hs = .
  *(.usb_interface_desc_hs*)
-                0x000981da                __usb_descriptor_end_hs = .
+                0x0009824a                __usb_descriptor_end_hs = .
  *(.eh_frame*)
- *fill*         0x000981da        0x2 ff
- .eh_frame      0x000981dc        0x0 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/thumb/v7e-m+fp/hard/crtbegin.o
- .eh_frame      0x000981dc        0x4 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/thumb/v7e-m+fp/hard/crtend.o
-                0x000981e0                __ROM_End = .
+ *fill*         0x0009824a        0x2 ff
+ .eh_frame      0x0009824c        0x0 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/thumb/v7e-m+fp/hard/crtbegin.o
+ .eh_frame      0x0009824c        0x4 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/thumb/v7e-m+fp/hard/crtend.o
+                0x00098250                __ROM_End = .
                 0x0000007c                __Vectors_Size = (__Vectors_End - __Vectors)
                 0x00000078                __Vector_Info_Size = (__Vector_Info_End - __Vector_Info_Start)
                 0x000001b0                __Lock_Lookup_Size = (__Lock_Lookup_End - __Lock_Lookup_Start)
 
-.glue_7         0x000981e0        0x0
- .glue_7        0x000981e0        0x0 linker stubs
+.glue_7         0x00098250        0x0
+ .glue_7        0x00098250        0x0 linker stubs
 
-.glue_7t        0x000981e0        0x0
- .glue_7t       0x000981e0        0x0 linker stubs
+.glue_7t        0x00098250        0x0
+ .glue_7t       0x00098250        0x0 linker stubs
 
-.vfp11_veneer   0x000981e0        0x0
- .vfp11_veneer  0x000981e0        0x0 linker stubs
+.vfp11_veneer   0x00098250        0x0
+ .vfp11_veneer  0x00098250        0x0 linker stubs
 
-.v4_bx          0x000981e0        0x0
- .v4_bx         0x000981e0        0x0 linker stubs
+.v4_bx          0x00098250        0x0
+ .v4_bx         0x00098250        0x0 linker stubs
 
-.iplt           0x000981e0        0x0
- .iplt          0x000981e0        0x0 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/thumb/v7e-m+fp/hard/crtbegin.o
+.iplt           0x00098250        0x0
+ .iplt          0x00098250        0x0 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/thumb/v7e-m+fp/hard/crtbegin.o
 
 .ARM.extab
  *(.ARM.extab* .gnu.linkonce.armextab.*)
-                0x000981e0                __exidx_start = .
+                0x00098250                __exidx_start = .
 
-.ARM.exidx      0x000981e0        0x8
+.ARM.exidx      0x00098250        0x8
  *(.ARM.exidx* .gnu.linkonce.armexidx.*)
- .ARM.exidx     0x000981e0        0x8 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/thumb/v7e-m+fp/hard\libgcc.a(_udivmoddi4.o)
-                0x000981e8                __exidx_end = .
-                0x000981e8                __etext = .
+ .ARM.exidx     0x00098250        0x8 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/thumb/v7e-m+fp/hard\libgcc.a(_udivmoddi4.o)
+                0x00098258                __exidx_end = .
+                0x00098258                __etext = .
 
 .ssp_dtc_vector_table
                 0x1ffe0000      0x1c0
@@ -21723,7 +21724,7 @@ END GROUP
  .ssp_dtc_vector_table
                 0x1ffe0000      0x1c0 ./synergy/ssp/src/driver/r_dtc/r_dtc.o
 
-.data           0x1ffe01c0      0x2b8 load address 0x000981e8
+.data           0x1ffe01c0      0x2b8 load address 0x00098258
                 0x1ffe01c0                __data_start__ = .
  *(vtable)
  *(.data*)
@@ -22146,7 +22147,7 @@ END GROUP
                 0x1ffe0478                __data_end__ = .
                 0x0000006c                __Lock_Size = (__Lock_End - __Lock_Start)
 
-.igot.plt       0x1ffe0478        0x0 load address 0x000984a0
+.igot.plt       0x1ffe0478        0x0 load address 0x00098510
  .igot.plt      0x1ffe0478        0x0 c:/renesas/synergy/e2studio_v2025-01_ssp_v2.7.0/toolchains/gcc_arm/gcc-arm-none-eabi-10.3-2021.10/bin/../lib/gcc/arm-none-eabi/10.3.1/thumb/v7e-m+fp/hard/crtbegin.o
 
 .qspi_flash     0x60000000        0x0
@@ -22154,10 +22155,10 @@ END GROUP
  *(.qspi_flash*)
                 0x60000000                __qspi_flash_end__ = .
                 0x00000000                __qspi_flash_code_size__ = (__qspi_flash_end__ - __qspi_flash_start__)
-                0x000984a0                __qspi_flash_code_addr__ = (__etext + (__data_end__ - __data_start__))
+                0x00098510                __qspi_flash_code_addr__ = (__etext + (__data_end__ - __data_start__))
 
 .qspi_non_retentive
-                0x60000000        0x0 load address 0x000984a0
+                0x60000000        0x0 load address 0x00098510
                 0x60000000                __qspi_non_retentive_start__ = .
  *(.qspi_non_retentive*)
                 0x60000000                __qspi_non_retentive_end__ = .
