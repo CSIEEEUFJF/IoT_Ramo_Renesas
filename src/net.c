@@ -3316,6 +3316,45 @@ static bool net_profile_index_add_unique(int *profiles, int max_profiles, int *p
     return true;
 }
 
+static void net_copy_trimmed_text(char *out, size_t out_size, const char *text)
+{
+    const char *start;
+    const char *end;
+    size_t copy_len;
+
+    if ((NULL == out) || (0U == out_size))
+    {
+        return;
+    }
+
+    out[0] = '\0';
+    if (NULL == text)
+    {
+        return;
+    }
+
+    start = text;
+    while (('\0' != *start) && isspace((unsigned char) *start))
+    {
+        start++;
+    }
+
+    end = start + strlen(start);
+    while ((end > start) && isspace((unsigned char) *(end - 1)))
+    {
+        end--;
+    }
+
+    copy_len = (size_t) (end - start);
+    if (copy_len >= out_size)
+    {
+        copy_len = out_size - 1U;
+    }
+
+    memcpy(out, start, copy_len);
+    out[copy_len] = '\0';
+}
+
 static bool net_parse_profile_indices_csv(const char *text, int *profiles, int max_profiles, int *profile_count)
 {
     const char *cursor;
@@ -3516,6 +3555,229 @@ static bool net_json_get_profile_indices(const char *json, int *profiles, int ma
     return false;
 }
 
+static bool net_meeting_resolve_profile_name_chapter(const char *name,
+                                                     const char *chapter,
+                                                     int *profiles,
+                                                     int max_profiles,
+                                                     int *profile_count,
+                                                     const char **out_error)
+{
+    char target_name[NAME_MAX_LEN];
+    char target_chapter[STORAGE_CHAPTER_MAX_LEN];
+    int user_count;
+    int match_index = -1;
+    int matches = 0;
+
+    if ((NULL == profiles) || (NULL == profile_count))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_profile_names";
+        }
+        return false;
+    }
+
+    net_copy_trimmed_text(target_name, sizeof(target_name), name);
+    net_copy_trimmed_text(target_chapter, sizeof(target_chapter), chapter);
+    if (('\0' == target_name[0]) || ('\0' == target_chapter[0]))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_profile_names";
+        }
+        return false;
+    }
+
+    user_count = storage_user_count();
+    for (int index = 0; index < user_count; index++)
+    {
+        storage_user_profile_t profile;
+        char profile_name[NAME_MAX_LEN];
+        char profile_chapter[STORAGE_CHAPTER_MAX_LEN];
+
+        if (!storage_profile_get(index, &profile))
+        {
+            continue;
+        }
+
+        net_copy_trimmed_text(profile_name, sizeof(profile_name), profile.name);
+        net_copy_trimmed_text(profile_chapter, sizeof(profile_chapter), profile.chapter);
+        if ((0 == strcmp(profile_name, target_name)) &&
+            (0 == strcmp(profile_chapter, target_chapter)))
+        {
+            match_index = index;
+            matches++;
+        }
+    }
+
+    if (0 == matches)
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "unknown_profile_name";
+        }
+        return false;
+    }
+
+    if (matches > 1)
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "ambiguous_profile_name";
+        }
+        return false;
+    }
+
+    if (!net_profile_index_add_unique(profiles, max_profiles, profile_count, match_index))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "too_many_profiles";
+        }
+        return false;
+    }
+
+    return true;
+}
+
+static bool net_json_get_profiles_by_name_chapter(const char *json,
+                                                  int *profiles,
+                                                  int max_profiles,
+                                                  int *profile_count,
+                                                  const char **out_error)
+{
+    const char *limit;
+    const char *found;
+    const char *colon;
+    const char *cursor;
+
+    if ((NULL == json) || (NULL == profiles) || (NULL == profile_count))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_profile_names";
+        }
+        return false;
+    }
+
+    limit = json + strlen(json);
+    found = json_find_key(json, limit, "profile_names");
+    if (NULL == found)
+    {
+        found = json_find_key(json, limit, "participants");
+    }
+    if (NULL == found)
+    {
+        found = json_find_key(json, limit, "profiles");
+    }
+    if (NULL == found)
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_profiles";
+        }
+        return false;
+    }
+
+    colon = json_skip_whitespace(found, limit);
+    if ((NULL == colon) || (colon >= limit) || (':' != *colon))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_profile_names";
+        }
+        return false;
+    }
+
+    cursor = json_skip_whitespace(colon + 1, limit);
+    if ((NULL == cursor) || (cursor >= limit) || ('[' != *cursor))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_profile_names";
+        }
+        return false;
+    }
+
+    *profile_count = 0;
+    cursor++;
+    while (cursor < limit)
+    {
+        cursor = json_skip_whitespace(cursor, limit);
+        if ((NULL == cursor) || (cursor >= limit))
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "invalid_profile_names";
+            }
+            return false;
+        }
+
+        if (']' == *cursor)
+        {
+            return (*profile_count > 0);
+        }
+
+        if (',' == *cursor)
+        {
+            cursor++;
+            continue;
+        }
+
+        if ('{' != *cursor)
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "invalid_profile_names";
+            }
+            return false;
+        }
+
+        {
+            const char *object_end = json_find_object_end(cursor, limit);
+            char name[NAME_MAX_LEN];
+            char chapter[STORAGE_CHAPTER_MAX_LEN];
+
+            if ((NULL == object_end) ||
+                !import_extract_json_string(cursor, object_end, "name", name, sizeof(name)) ||
+                !import_extract_json_string(cursor, object_end, "chapter", chapter, sizeof(chapter)) ||
+                !net_meeting_resolve_profile_name_chapter(name,
+                                                          chapter,
+                                                          profiles,
+                                                          max_profiles,
+                                                          profile_count,
+                                                          out_error))
+            {
+                if ((NULL != out_error) && (NULL == *out_error))
+                {
+                    *out_error = "invalid_profile_names";
+                }
+                return false;
+            }
+
+            cursor = object_end + 1;
+        }
+
+        cursor = json_skip_whitespace(cursor, limit);
+        if ((NULL == cursor) || (cursor >= limit))
+        {
+            return false;
+        }
+        if (',' == *cursor)
+        {
+            cursor++;
+            continue;
+        }
+        if (']' == *cursor)
+        {
+            return (*profile_count > 0);
+        }
+        return false;
+    }
+
+    return false;
+}
+
 static bool net_form_get_profile_indices(const char *form, int *profiles, int max_profiles, int *profile_count)
 {
     char csv[192];
@@ -3532,6 +3794,102 @@ static bool net_form_get_profile_indices(const char *form, int *profiles, int ma
     }
 
     return net_parse_profile_indices_csv(csv, profiles, max_profiles, profile_count);
+}
+
+static bool net_parse_profile_names_csv(const char *text,
+                                        int *profiles,
+                                        int max_profiles,
+                                        int *profile_count,
+                                        const char **out_error)
+{
+    const char *cursor;
+
+    if ((NULL == text) || (NULL == profiles) || (NULL == profile_count))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_profile_names";
+        }
+        return false;
+    }
+
+    *profile_count = 0;
+    cursor = text;
+    while ('\0' != *cursor)
+    {
+        const char *next = strchr(cursor, ';');
+        const char *separator;
+        size_t token_len = (NULL == next) ? strlen(cursor) : (size_t) (next - cursor);
+        char token[NAME_MAX_LEN + STORAGE_CHAPTER_MAX_LEN + 8U];
+        char *name;
+        char *chapter;
+
+        if (token_len >= sizeof(token))
+        {
+            token_len = sizeof(token) - 1U;
+        }
+        memcpy(token, cursor, token_len);
+        token[token_len] = '\0';
+
+        separator = strchr(token, '|');
+        if (NULL == separator)
+        {
+            if (NULL != out_error)
+            {
+                *out_error = "invalid_profile_names";
+            }
+            return false;
+        }
+
+        name = token;
+        chapter = (char *) separator + 1;
+        *((char *) separator) = '\0';
+
+        if (!net_meeting_resolve_profile_name_chapter(name,
+                                                      chapter,
+                                                      profiles,
+                                                      max_profiles,
+                                                      profile_count,
+                                                      out_error))
+        {
+            return false;
+        }
+
+        cursor = (NULL == next) ? (cursor + strlen(cursor)) : (next + 1);
+    }
+
+    return (*profile_count > 0);
+}
+
+static bool net_form_get_profiles_by_name_chapter(const char *form,
+                                                  int *profiles,
+                                                  int max_profiles,
+                                                  int *profile_count,
+                                                  const char **out_error)
+{
+    char csv[384];
+
+    if ((NULL == form) || (NULL == profiles) || (NULL == profile_count))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_profile_names";
+        }
+        return false;
+    }
+
+    if (!query_get_value(form, "profile_names", csv, sizeof(csv)) &&
+        !query_get_value(form, "participants", csv, sizeof(csv)) &&
+        !query_get_value(form, "profiles", csv, sizeof(csv)))
+    {
+        if (NULL != out_error)
+        {
+            *out_error = "invalid_profiles";
+        }
+        return false;
+    }
+
+    return net_parse_profile_names_csv(csv, profiles, max_profiles, profile_count, out_error);
 }
 
 static uint8_t net_meeting_weekday_from_unix(ULONG unix_utc)
@@ -4119,15 +4477,36 @@ static bool net_meeting_schedule_parse_request(const char *body,
         return false;
     }
 
-    if (!(is_json
-              ? net_json_get_profile_indices(cursor, out_profiles, STORAGE_MAX_USERS, &profile_count)
-              : net_form_get_profile_indices(cursor, out_profiles, STORAGE_MAX_USERS, &profile_count)))
     {
-        if (NULL != out_error)
+        const char *profiles_error = NULL;
+        bool profiles_ok = is_json
+                               ? net_json_get_profile_indices(cursor, out_profiles, STORAGE_MAX_USERS, &profile_count)
+                               : net_form_get_profile_indices(cursor, out_profiles, STORAGE_MAX_USERS, &profile_count);
+
+        if (!profiles_ok)
         {
-            *out_error = "invalid_profiles";
+            profile_count = 0;
+            profiles_ok = is_json
+                              ? net_json_get_profiles_by_name_chapter(cursor,
+                                                                      out_profiles,
+                                                                      STORAGE_MAX_USERS,
+                                                                      &profile_count,
+                                                                      &profiles_error)
+                              : net_form_get_profiles_by_name_chapter(cursor,
+                                                                      out_profiles,
+                                                                      STORAGE_MAX_USERS,
+                                                                      &profile_count,
+                                                                      &profiles_error);
         }
-        return false;
+
+        if (!profiles_ok)
+        {
+            if (NULL != out_error)
+            {
+                *out_error = (NULL != profiles_error) ? profiles_error : "invalid_profiles";
+            }
+            return false;
+        }
     }
 
     if (!net_meeting_schedule_validate_profiles(out_profiles, profile_count, out_error))

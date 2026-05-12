@@ -393,6 +393,20 @@ Para horário absoluto, use `start_unix`. Nesse caso, o agendamento depende do N
 {"start_unix":1893456000,"profile_indices":[0,4,12]}
 ```
 
+Também é possível enviar os participantes por `name` + `chapter`, quando o sistema externo já faz a filtragem da reunião. Nesse modo, o firmware resolve cada par para o perfil cadastrado e salva internamente os índices, mantendo o mesmo formato persistido em QSPI:
+
+```json
+{
+  "start_unix": 1893456000,
+  "profile_names": [
+    {"name": "Rafael Lago", "chapter": "CS"},
+    {"name": "Maria Eduarda de Sá", "chapter": "RAS"}
+  ]
+}
+```
+
+O campo `profiles` também aceita a mesma lista de objetos, mas `profile_indices` continua sendo o formato mais direto quando os índices já são conhecidos. A comparação por `name` + `chapter` ignora apenas espaços no início e no fim; acentos, letras e pontuação precisam bater com o cadastro. Se o par não existir, for ambíguo ou apontar para um perfil sem cartão, a API rejeita o agendamento.
+
 Para recorrência diária, adicione `recurrence: "daily"`:
 
 ```json
@@ -425,6 +439,7 @@ Se `POST /api/meeting/cancel` for chamado sem `id`, todos os agendamentos penden
 Regras importantes:
 
 - cada perfil selecionado precisa existir e ter ao menos um cartão cadastrado
+- quando a seleção vier por nome, cada item precisa ter `name` e `chapter`
 - `delay_seconds` aceita até 24 horas
 - `delay_seconds` precisa de NTP sincronizado, pois o firmware converte o atraso para `start_unix` antes de salvar
 - até 8 agendamentos pendentes podem ficar salvos ao mesmo tempo
