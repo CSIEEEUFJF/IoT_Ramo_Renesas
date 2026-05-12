@@ -101,6 +101,7 @@ bool storage_meeting_schedule_save(const storage_meeting_schedule_t *schedules, 
 bool storage_admin_pin_valid(const char *pin);
 bool storage_admin_pin_configured(void);
 bool storage_persist_now(void);
+bool storage_persist_now_direct(void);
 bool storage_persist_wait(ULONG timeout_ticks);
 unsigned int storage_persist_status(void);
 void storage_debug_snapshot(storage_debug_info_t *out_info);

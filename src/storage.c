@@ -4575,6 +4575,43 @@ bool storage_persist_now(void)
     return true;
 }
 
+bool storage_persist_now_direct(void)
+{
+    bool ok;
+    size_t persist_size = 0U;
+    ULONG user_count_snapshot = 0U;
+
+    storage_init();
+
+    storage_io_lock();
+    storage_lock();
+    storage_ensure_loaded_locked();
+    if (!g_storage_loaded)
+    {
+        storage_unlock();
+        storage_io_unlock();
+        g_storage_persist_status = STORAGE_PERSIST_STATUS_FAILED;
+        g_storage_debug_last_save_status = FX_INVALID_NAME;
+        return false;
+    }
+
+    g_storage_persist_status = STORAGE_PERSIST_STATUS_PENDING;
+    g_storage_users_load_failed = false;
+    storage_capture_users_io_snapshot_locked();
+    storage_unlock();
+
+    ok = storage_save_users_json_snapshot(&persist_size, &user_count_snapshot);
+    storage_io_unlock();
+
+    storage_lock();
+    g_storage_persist_json_size = persist_size;
+    g_storage_persist_status = ok ? STORAGE_PERSIST_STATUS_SUCCESS : STORAGE_PERSIST_STATUS_FAILED;
+    g_storage_debug_last_user_count = user_count_snapshot;
+    storage_unlock();
+
+    return ok;
+}
+
 bool storage_persist_wait(ULONG timeout_ticks)
 {
     ULONG start_tick;

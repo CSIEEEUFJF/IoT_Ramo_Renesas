@@ -6244,30 +6244,19 @@ static UINT handle_light_remove_user(NX_HTTP_SERVER *server_ptr, const char *que
 
 static UINT handle_light_save_users(NX_HTTP_SERVER *server_ptr)
 {
-    bool persist_requested;
-    bool persist_ok = false;
-
     if (!net_admin_is_authenticated())
     {
         return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para persistir os perfis.</div>");
     }
 
-    persist_requested = storage_persist_now();
-    if (persist_requested)
-    {
-        persist_ok = storage_persist_wait(8U * TX_TIMER_TICKS_PER_SECOND);
-    }
-
-    if (persist_ok)
+    if (storage_persist_now_direct())
     {
         return light_redirect_with_flash(server_ptr, "/admin_profiles", "<div class='card ok'>Cadastros gravados na QSPI.</div>");
     }
 
     return light_redirect_with_flash(server_ptr,
                                      "/admin_profiles",
-                                     persist_requested
-                                         ? "<div class='card warn'>A gravacao na QSPI foi solicitada, mas nao foi confirmada no tempo esperado.</div>"
-                                         : "<div class='card warn'>Nao foi possivel iniciar a gravacao dos cadastros na QSPI.</div>");
+                                     "<div class='card warn'>Nao foi possivel gravar os cadastros na QSPI agora.</div>");
 }
 
 static UINT handle_light_save_access_log(NX_HTTP_SERVER *server_ptr)
