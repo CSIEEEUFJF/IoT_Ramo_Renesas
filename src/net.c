@@ -4633,7 +4633,7 @@ static UINT render_light_profiles_page(NX_HTTP_SERVER *server_ptr,
              "@media(max-width:720px){body{padding:12px;}.wrap{max-width:100%%;}.card{padding:14px;border-radius:14px;}.actions{flex-direction:column;align-items:stretch;gap:8px;}.small{display:block;width:100%%;box-sizing:border-box;text-align:center;}.table-wrap{margin:0 -4px;}table{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;}th,td{padding:8px;font-size:13px;white-space:nowrap;}}"
              "</style></head><body><div class='wrap'><div class='card'>"
              "<h1>Perfis existentes</h1>"
-             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/import'>Importar perfis</a><a class='small' href='/storage_export'>Exportar storage</a><form action='/save_users' method='post'><button class='small' type='submit'>Persistir cadastros</button></form><a class='small secondary' href='/'>Voltar</a></div>"
+             "<div class='actions'><a class='small' href='/'>Inicio</a><a class='small' href='/profile_form'>Novo perfil</a><a class='small' href='/import'>Importar perfis</a><a class='small' href='/storage_export'>Exportar storage</a><form action='/save_users' method='post'><button class='small' type='submit'>Persistir cadastros</button></form><form action='/format_qspi' method='post'><button class='small danger' type='submit'>Formatar QSPI e gravar</button></form><a class='small secondary' href='/'>Voltar</a></div>"
              "%s"
              "%s"
              "<p class='muted'>Mostrando %d a %d de %d perfis carregados.</p>"
@@ -6246,6 +6246,25 @@ static UINT handle_light_save_users(NX_HTTP_SERVER *server_ptr)
                                      "<div class='card warn'>Nao foi possivel gravar os cadastros na QSPI agora.</div>");
 }
 
+static UINT handle_light_format_qspi(NX_HTTP_SERVER *server_ptr)
+{
+    if (!net_admin_is_authenticated())
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Autentique-se para formatar a QSPI.</div>");
+    }
+
+    if (storage_format_qspi_and_persist())
+    {
+        return light_redirect_with_flash(server_ptr,
+                                         "/admin_profiles",
+                                         "<div class='card ok'>QSPI formatada em FileX e cadastros gravados novamente.</div>");
+    }
+
+    return light_redirect_with_flash(server_ptr,
+                                     "/admin_profiles",
+                                     "<div class='card warn'>Nao foi possivel formatar a QSPI ou regravar os cadastros. Verifique o diagnostico QSPI.</div>");
+}
+
 static UINT handle_light_save_access_log(NX_HTTP_SERVER *server_ptr)
 {
     if (!net_admin_is_authenticated())
@@ -6984,6 +7003,10 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         if (0 == strcmp(path, "/save_users"))
         {
             return handle_light_save_users(server_ptr);
+        }
+        if (0 == strcmp(path, "/format_qspi"))
+        {
+            return handle_light_format_qspi(server_ptr);
         }
         if (0 == strcmp(path, "/upload_photo_begin"))
         {

@@ -64,6 +64,7 @@ static bool g_storage_access_log_loaded = false;
 static bool g_storage_metrics_loaded = false;
 static bool g_storage_thread_ready = false;
 static bool g_storage_persist_requested = false;
+static bool g_storage_format_requested = false;
 static bool g_storage_access_log_persist_requested = false;
 static bool g_storage_metrics_persist_requested = false;
 static bool g_storage_photo_persist_requested = false;
@@ -123,6 +124,7 @@ typedef struct st_storage_photo_file_header
 static void storage_thread_entry(ULONG initial_input);
 static void storage_refresh_metrics_snapshot(void);
 static void storage_ensure_loaded_locked(void);
+static bool storage_format_media_now(void);
 static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_user_count);
 static bool storage_load_users_file(const char *filename, bool commit_profiles);
 static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_size);
@@ -189,6 +191,40 @@ static UINT storage_media_open_internal(void)
 static bool storage_media_open(void)
 {
     return (FX_SUCCESS == storage_media_open_internal());
+}
+
+static bool storage_format_media_now(void)
+{
+    ssp_err_t format_status;
+    UINT open_status;
+
+    storage_media_lock();
+    g_storage_debug_last_stage = 19U;
+
+    if (g_storage_media_ready)
+    {
+        (void) fx_media_close(&g_fx_media0);
+        g_storage_media_ready = false;
+        tx_thread_sleep(2U);
+    }
+
+    format_status = fx_media_init0_format();
+    if (SSP_SUCCESS != format_status)
+    {
+        g_storage_debug_last_media_status = (ULONG) format_status;
+        storage_media_unlock();
+        return false;
+    }
+
+    open_status = fx_media_init0_open();
+    g_storage_debug_last_media_status = open_status;
+    if (FX_SUCCESS == open_status)
+    {
+        g_storage_media_ready = true;
+    }
+
+    storage_media_unlock();
+    return (FX_SUCCESS == open_status);
 }
 
 static bool storage_read_file_chunk(const char *filename,
@@ -3562,6 +3598,32 @@ static void storage_thread_entry(ULONG initial_input)
                 (void) storage_load_metrics_now();
                 continue;
             }
+            else if (g_storage_format_requested)
+            {
+                g_storage_debug_last_stage = 19U;
+                g_storage_format_requested = false;
+                storage_unlock();
+
+                storage_io_lock();
+                storage_lock();
+                g_storage_users_load_failed = false;
+                storage_capture_users_io_snapshot_locked();
+                storage_unlock();
+
+                ok = storage_format_media_now();
+                if (ok)
+                {
+                    ok = storage_save_users_json_snapshot(&persist_size, &user_count_snapshot);
+                }
+                storage_io_unlock();
+
+                storage_lock();
+                g_storage_persist_json_size = persist_size;
+                g_storage_persist_status = ok ? STORAGE_PERSIST_STATUS_SUCCESS : STORAGE_PERSIST_STATUS_FAILED;
+                g_storage_debug_last_user_count = user_count_snapshot;
+                storage_unlock();
+                continue;
+            }
             else if (g_storage_persist_requested)
             {
                 bool needs_load = false;
@@ -4580,46 +4642,54 @@ bool storage_persist_now(void)
 
 bool storage_persist_now_direct(void)
 {
+    bool requested;
     bool ok;
-    size_t persist_size = 0U;
-    ULONG user_count_snapshot = 0U;
 
     storage_init();
     g_storage_debug_direct_persist_requests++;
     g_storage_debug_last_stage = 18U;
 
-    storage_lock();
-    storage_ensure_loaded_locked();
-    if (!g_storage_loaded)
-    {
-        storage_unlock();
-        g_storage_persist_status = STORAGE_PERSIST_STATUS_FAILED;
-        g_storage_debug_last_save_status = FX_INVALID_NAME;
-        return false;
-    }
-    storage_unlock();
-
-    storage_io_lock();
-    storage_lock();
-    g_storage_persist_status = STORAGE_PERSIST_STATUS_PENDING;
-    g_storage_users_load_failed = false;
-    storage_capture_users_io_snapshot_locked();
-    storage_unlock();
-
-    ok = storage_save_users_json_snapshot(&persist_size, &user_count_snapshot);
-    storage_io_unlock();
-
-    storage_lock();
-    g_storage_persist_json_size = persist_size;
-    g_storage_persist_status = ok ? STORAGE_PERSIST_STATUS_SUCCESS : STORAGE_PERSIST_STATUS_FAILED;
-    g_storage_debug_last_user_count = user_count_snapshot;
+    /*
+     * Keep FileX/QSPI writes in the dedicated storage worker.  The web thread
+     * waits for completion, but does not touch the media directly.
+     */
+    requested = storage_persist_now();
+    ok = requested && storage_persist_wait(5U * TX_TIMER_TICKS_PER_SECOND);
     if (ok)
     {
         g_storage_debug_direct_persist_successes++;
     }
-    storage_unlock();
 
     return ok;
+}
+
+bool storage_format_qspi_and_persist(void)
+{
+    UINT semaphore_status;
+
+    storage_init();
+    if (!g_storage_thread_ready)
+    {
+        return false;
+    }
+
+    storage_lock();
+    g_storage_format_requested = true;
+    g_storage_persist_status = STORAGE_PERSIST_STATUS_PENDING;
+    g_storage_debug_last_stage = 19U;
+    storage_unlock();
+
+    semaphore_status = tx_semaphore_put(&g_storage_persist_semaphore);
+    if (TX_SUCCESS != semaphore_status)
+    {
+        storage_lock();
+        g_storage_format_requested = false;
+        g_storage_persist_status = STORAGE_PERSIST_STATUS_FAILED;
+        storage_unlock();
+        return false;
+    }
+
+    return storage_persist_wait(15U * TX_TIMER_TICKS_PER_SECOND);
 }
 
 bool storage_persist_wait(ULONG timeout_ticks)
@@ -4748,6 +4818,11 @@ bool storage_metrics_persist_now(void)
     }
 
     storage_lock();
+    if (g_storage_persist_requested || (STORAGE_PERSIST_STATUS_PENDING == g_storage_persist_status))
+    {
+        storage_unlock();
+        return true;
+    }
     g_storage_metrics_persist_requested = true;
     storage_unlock();
 
