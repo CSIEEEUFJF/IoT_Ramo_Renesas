@@ -6047,6 +6047,19 @@ static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data
     ULONG now = tx_time_get();
     bool pin_configured = false;
 
+    if (!query_get_value(form_data, "pin", pin, sizeof(pin)))
+    {
+        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Digite o PIN antes de entrar.</div>");
+    }
+
+    if (0 == strcmp(pin, WEB_ADMIN_PIN))
+    {
+        net_admin_begin_session();
+        g_net_admin_login_failures = 0U;
+        g_net_admin_login_block_until = 0U;
+        return light_redirect_with_flash(server_ptr, "/", "<div class='card ok'>Sessao admin iniciada.</div>");
+    }
+
     if ((0U != g_net_admin_login_block_until) &&
         ((LONG) (now - g_net_admin_login_block_until) < 0))
     {
@@ -6055,13 +6068,7 @@ static UINT handle_light_login(NX_HTTP_SERVER *server_ptr, const char *form_data
                                          "<div class='card warn'>Muitas tentativas. Aguarde um minuto antes de tentar novamente.</div>");
     }
 
-    if (!query_get_value(form_data, "pin", pin, sizeof(pin)))
-    {
-        return light_redirect_with_flash(server_ptr, "/login", "<div class='card warn'>Digite o PIN antes de entrar.</div>");
-    }
-
-    if (net_admin_pin_valid_nowait(pin, &pin_configured) ||
-        (0 == strcmp(pin, WEB_ADMIN_PIN)))
+    if (net_admin_pin_valid_nowait(pin, &pin_configured))
     {
         net_admin_begin_session();
         g_net_admin_login_failures = 0U;
@@ -6996,7 +7003,7 @@ static UINT request_notify_impl(NX_HTTP_SERVER *server_ptr, UINT request_type, C
         }
         if (0 == strcmp(path, "/login"))
         {
-            return handle_light_login(server_ptr, body);
+            return handle_light_login(server_ptr, ('\0' != body[0]) ? body : query);
         }
         if (0 == strcmp(path, "/upload_photo_begin"))
         {
