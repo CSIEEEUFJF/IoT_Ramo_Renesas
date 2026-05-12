@@ -204,9 +204,24 @@ function parseDoorOpenPayload(body, requestUrl) {
     return payload;
   }
 
+  const trimmedBody = body.trim();
+  if (!trimmedBody) {
+    return payload;
+  }
+
+  if (!trimmedBody.startsWith("{")) {
+    const formBody = new URLSearchParams(trimmedBody);
+    const userFromForm = formBody.get("user_name") ||
+      formBody.get("name") ||
+      formBody.get("user");
+
+    payload.user_name = (userFromForm || trimmedBody).trim();
+    return payload;
+  }
+
   let parsedBody;
   try {
-    parsedBody = JSON.parse(body);
+    parsedBody = JSON.parse(trimmedBody);
   } catch (error) {
     throw new Error("invalid_json");
   }

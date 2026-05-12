@@ -98,6 +98,15 @@ curl.exe -i -X POST "http://127.0.0.1:8080/door/open?user_name=Nome%20do%20usuar
   -H "Content-Length: 0"
 ```
 
+Ou como formulario simples:
+
+```powershell
+curl.exe -i -X POST "http://127.0.0.1:8080/door/open" `
+  -H "Authorization: Bearer gere-um-token-longo-e-aleatorio" `
+  -H "Content-Type: application/x-www-form-urlencoded" `
+  --data-binary "user_name=Nome do usuario"
+```
+
 Exemplo no navegador, somente se esse navegador fizer parte de uma aplicacao confiavel e `ALLOW_ORIGIN` estiver restrito ao dominio dela:
 
 ```env
