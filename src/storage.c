@@ -178,6 +178,17 @@ static UINT storage_media_open_internal(void)
     #endif
 
     status = fx_media_init0_open();
+    if (FX_SUCCESS != status)
+    {
+        /*
+         * FileX media is shared with the HTTP server and should stay mounted
+         * during runtime.  If a previous close left the handle inconsistent,
+         * reset it once before reporting the failure.
+         */
+        (void) fx_media_close(&g_fx_media0);
+        tx_thread_sleep(2U);
+        status = fx_media_init0_open();
+    }
     g_storage_debug_last_media_status = status;
     if (FX_SUCCESS == status)
     {
@@ -247,8 +258,6 @@ static bool storage_read_file_chunk(const char *filename,
     {
         (void) fx_file_close(file_ptr);
     }
-    (void) fx_media_close(&g_fx_media0);
-    g_storage_media_ready = false;
     storage_media_unlock();
 
     if (NULL != out_read)
@@ -306,8 +315,6 @@ static bool storage_get_file_size(const char *filename, ULONG *out_size)
     {
         (void) fx_file_close(file_ptr);
     }
-    (void) fx_media_close(&g_fx_media0);
-    g_storage_media_ready = false;
     storage_media_unlock();
 
     if (NULL != out_size)
@@ -1600,8 +1607,6 @@ static void storage_restore_users_backup_after_failed_save(void)
         (void) fx_file_delete(&g_fx_media0, USERS_FILE_NAME);
         (void) fx_file_rename(&g_fx_media0, USERS_BACKUP_FILE_NAME, USERS_FILE_NAME);
         (void) fx_media_flush(&g_fx_media0);
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
     }
     storage_media_unlock();
 }
@@ -1641,6 +1646,9 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
     storage_media_lock();
     if (!storage_media_open())
     {
+        status = g_storage_debug_last_media_status;
+        g_storage_debug_last_save_status = status;
+        g_storage_debug_last_stage = 11U;
         storage_media_unlock();
         return false;
     }
@@ -1649,8 +1657,8 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
     status = fx_file_create(&g_fx_media0, USERS_TEMP_FILE_NAME);
     if ((FX_SUCCESS != status) && (FX_ALREADY_CREATED != status))
     {
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
+        g_storage_debug_last_save_status = status;
+        g_storage_debug_last_stage = 12U;
         storage_media_unlock();
         return false;
     }
@@ -1659,8 +1667,8 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
     if (FX_SUCCESS != status)
     {
         (void) fx_file_delete(&g_fx_media0, USERS_TEMP_FILE_NAME);
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
+        g_storage_debug_last_save_status = status;
+        g_storage_debug_last_stage = 13U;
         storage_media_unlock();
         return false;
     }
@@ -1781,15 +1789,9 @@ static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_u
         }
     }
 
-    if (FX_SUCCESS == status)
+    if (FX_SUCCESS != status)
     {
-        status = fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
-    }
-    else
-    {
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
+        (void) fx_file_delete(&g_fx_media0, USERS_TEMP_FILE_NAME);
     }
 
     storage_media_unlock();
@@ -1850,8 +1852,6 @@ static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_si
         status = fx_file_rename(&g_fx_media0, ACCESS_LOG_FILE_NAME, ACCESS_LOG_ARCHIVE_FILE_NAME);
         if (FX_SUCCESS != status)
         {
-            (void) fx_media_close(&g_fx_media0);
-            g_storage_media_ready = false;
             storage_media_unlock();
             return false;
         }
@@ -1865,8 +1865,6 @@ static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_si
             status = fx_file_create(&g_fx_media0, ACCESS_LOG_FILE_NAME);
             if ((FX_SUCCESS != status) && (FX_ALREADY_CREATED != status))
             {
-                (void) fx_media_close(&g_fx_media0);
-                g_storage_media_ready = false;
                 storage_media_unlock();
                 return false;
             }
@@ -1875,8 +1873,6 @@ static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_si
         }
         if (FX_SUCCESS != status)
         {
-            (void) fx_media_close(&g_fx_media0);
-            g_storage_media_ready = false;
             storage_media_unlock();
             return false;
         }
@@ -1897,8 +1893,6 @@ static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_si
     else
     {
         fx_file_close(&g_access_log_file);
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
         storage_media_unlock();
         return false;
     }
@@ -1906,20 +1900,6 @@ static bool storage_save_access_log_buffer(const char *log_buffer, size_t log_si
     if (FX_SUCCESS == status)
     {
         status = fx_media_flush(&g_fx_media0);
-    }
-
-    if (FX_SUCCESS == status)
-    {
-        status = fx_media_close(&g_fx_media0);
-        if (FX_SUCCESS == status)
-        {
-            g_storage_media_ready = false;
-        }
-    }
-    else
-    {
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
     }
 
     storage_media_unlock();
@@ -1950,8 +1930,6 @@ static bool storage_save_metrics_buffer(const char *log_buffer, size_t log_size)
         status = fx_file_create(&g_fx_media0, "metrics.log");
         if ((FX_SUCCESS != status) && (FX_ALREADY_CREATED != status))
         {
-            (void) fx_media_close(&g_fx_media0);
-            g_storage_media_ready = false;
             storage_media_unlock();
             app_metric_add_no_persist("Storage persist latency", "metrics.log", tx_time_get() - start_tick, false);
             return false;
@@ -1960,8 +1938,6 @@ static bool storage_save_metrics_buffer(const char *log_buffer, size_t log_size)
         status = fx_file_open(&g_fx_media0, &g_metrics_file, "metrics.log", FX_OPEN_FOR_WRITE);
         if (FX_SUCCESS != status)
         {
-            (void) fx_media_close(&g_fx_media0);
-            g_storage_media_ready = false;
             storage_media_unlock();
             app_metric_add_no_persist("Storage persist latency", "metrics.log", tx_time_get() - start_tick, false);
             return false;
@@ -1984,8 +1960,6 @@ static bool storage_save_metrics_buffer(const char *log_buffer, size_t log_size)
     else
     {
         fx_file_close(&g_metrics_file);
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
         storage_media_unlock();
         app_metric_add_no_persist("Storage persist latency", "metrics.log", tx_time_get() - start_tick, false);
         return false;
@@ -1994,20 +1968,6 @@ static bool storage_save_metrics_buffer(const char *log_buffer, size_t log_size)
     if (FX_SUCCESS == status)
     {
         status = fx_media_flush(&g_fx_media0);
-    }
-
-    if (FX_SUCCESS == status)
-    {
-        status = fx_media_close(&g_fx_media0);
-        if (FX_SUCCESS == status)
-        {
-            g_storage_media_ready = false;
-        }
-    }
-    else
-    {
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
     }
 
     storage_media_unlock();
@@ -2115,8 +2075,6 @@ static bool storage_save_meeting_schedules_json(const storage_meeting_schedule_t
     status = fx_file_create(&g_fx_media0, MEETING_SCHEDULE_TEMP_FILE_NAME);
     if ((FX_SUCCESS != status) && (FX_ALREADY_CREATED != status))
     {
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
         storage_media_unlock();
         app_metric_add_no_persist("Storage persist latency", "meeting.json", tx_time_get() - start_tick, false);
         return false;
@@ -2188,16 +2146,9 @@ static bool storage_save_meeting_schedules_json(const storage_meeting_schedule_t
         }
     }
 
-    if (FX_SUCCESS == status)
-    {
-        status = fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
-    }
-    else
+    if (FX_SUCCESS != status)
     {
         (void) fx_file_delete(&g_fx_media0, MEETING_SCHEDULE_TEMP_FILE_NAME);
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
     }
 
     storage_media_unlock();
@@ -2726,8 +2677,6 @@ static bool storage_save_photo_file(const char *photo_id)
         status = fx_file_create(&g_fx_media0, filename);
         if ((FX_SUCCESS != status) && (FX_ALREADY_CREATED != status))
         {
-            (void) fx_media_close(&g_fx_media0);
-            g_storage_media_ready = false;
             storage_media_unlock();
             return false;
         }
@@ -2735,8 +2684,6 @@ static bool storage_save_photo_file(const char *photo_id)
         status = fx_file_open(&g_fx_media0, &g_photo_file, filename, FX_OPEN_FOR_WRITE);
         if (FX_SUCCESS != status)
         {
-            (void) fx_media_close(&g_fx_media0);
-            g_storage_media_ready = false;
             storage_media_unlock();
             return false;
         }
@@ -2779,8 +2726,6 @@ static bool storage_save_photo_file(const char *photo_id)
     else
     {
         fx_file_close(&g_photo_file);
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
         storage_media_unlock();
         return false;
     }
@@ -2788,20 +2733,6 @@ static bool storage_save_photo_file(const char *photo_id)
     if (FX_SUCCESS == status)
     {
         status = fx_media_flush(&g_fx_media0);
-    }
-
-    if (FX_SUCCESS == status)
-    {
-        status = fx_media_close(&g_fx_media0);
-        if (FX_SUCCESS == status)
-        {
-            g_storage_media_ready = false;
-        }
-    }
-    else
-    {
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
     }
 
     g_storage_debug_last_stage = (FX_SUCCESS == status) ? 35U : 34U;
@@ -2841,8 +2772,6 @@ static bool storage_load_photo_file(const char *photo_id)
     status = fx_file_open(&g_fx_media0, &g_photo_file, filename, FX_OPEN_FOR_READ);
     if (FX_SUCCESS != status)
     {
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
         storage_media_unlock();
         return false;
     }
@@ -2859,8 +2788,6 @@ static bool storage_load_photo_file(const char *photo_id)
         !ui_prepare_uploaded_photo_rgb565(photo_id, header.width, header.height))
     {
         fx_file_close(&g_photo_file);
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
         storage_media_unlock();
         return false;
     }
@@ -2891,10 +2818,6 @@ static bool storage_load_photo_file(const char *photo_id)
     }
 
     fx_file_close(&g_photo_file);
-    if (FX_SUCCESS == fx_media_close(&g_fx_media0))
-    {
-        g_storage_media_ready = false;
-    }
     storage_media_unlock();
 
     g_storage_debug_last_stage = (FX_SUCCESS == status) ? 45U : 44U;
@@ -3153,20 +3076,10 @@ static bool storage_load_users_file(const char *filename, bool commit_profiles)
 
         fx_file_close(&g_users_file);
         g_storage_debug_last_load_status = status;
-        {
-            UINT close_status = fx_media_close(&g_fx_media0);
-            if (FX_SUCCESS == status)
-            {
-                status = close_status;
-                g_storage_debug_last_load_status = status;
-            }
-        }
-        g_storage_media_ready = false;
     }
     else
     {
-        (void) fx_media_close(&g_fx_media0);
-        g_storage_media_ready = false;
+        g_storage_debug_last_load_status = status;
     }
     storage_media_unlock();
 
@@ -3332,10 +3245,6 @@ static bool storage_load_access_log_now(void)
                                                    ACCESS_LOG_SIZE,
                                                    &entry_count) || loaded_any;
 
-    if (FX_SUCCESS == fx_media_close(&g_fx_media0))
-    {
-        g_storage_media_ready = false;
-    }
     storage_media_unlock();
 
     if (entry_count > 0U)
@@ -3400,10 +3309,6 @@ static bool storage_load_metrics_now(void)
         actual_bytes = 0U;
     }
 
-    if (FX_SUCCESS == fx_media_close(&g_fx_media0))
-    {
-        g_storage_media_ready = false;
-    }
     storage_media_unlock();
 
     if ((FX_SUCCESS == status) && (actual_bytes > 0U))
@@ -4394,8 +4299,6 @@ int storage_meeting_schedule_load(storage_meeting_schedule_t *out_schedules, int
     {
         (void) fx_file_close(&g_meeting_schedule_file);
     }
-    (void) fx_media_close(&g_fx_media0);
-    g_storage_media_ready = false;
     storage_media_unlock();
 
     if (FX_SUCCESS == status)
