@@ -2738,6 +2738,18 @@ static void ui_update_status_from_event(ui_status_t *status, const app_event_t *
             break;
 
         case EVENT_DOOR_OPEN:
+            ui_set_status(status,
+                          "",
+                          "Acesso autorizado",
+                          "",
+                          UI_COLOR_OK,
+                          UI_STATUS_HOLD_TICKS,
+                          false);
+            status->view = UI_VIEW_RESULT;
+            app_set_ui_mode(APP_UI_MODE_IDLE);
+            app_set_enrollment_mode(false);
+            break;
+
         case EVENT_LIGHT_ON:
         case EVENT_LIGHT_OFF:
             break;

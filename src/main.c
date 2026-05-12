@@ -664,9 +664,15 @@ void app_post_event(app_event_type_t type, const char * data)
     switch (type)
     {
         case EVENT_DOOR_OPEN:
-            app_metric_begin_door((NULL != data) && ('\0' != data[0]) ? data : "manual");
+        {
+            const char *door_user = ((NULL != data) && ('\0' != data[0])) ? data : "Abertura manual";
+
+            app_set_last_identity(NULL, door_user);
+            app_metric_begin_ui_result("autorizado");
+            app_metric_begin_door(door_user);
             app_set_door(true);
             break;
+        }
 
         case EVENT_LIGHT_ON:
             app_set_light(true);
@@ -724,9 +730,12 @@ void app_post_door_open_event(const char *source, const char *user)
     app_event_t ev = { .type = EVENT_DOOR_OPEN };
     app_access_log_entry_t access_log_entry;
     const char *door_source = ((NULL != source) && ('\0' != source[0])) ? source : "API";
+    const char *door_user = ((NULL != user) && ('\0' != user[0])) ? user : door_source;
 
     memset(&access_log_entry, 0, sizeof(access_log_entry));
 
+    app_set_last_identity(NULL, door_user);
+    app_metric_begin_ui_result("autorizado");
     app_metric_begin_door(door_source);
     app_set_door(true);
 
@@ -734,7 +743,7 @@ void app_post_door_open_event(const char *source, const char *user)
     ev.data[sizeof(ev.data) - 1U] = '\0';
 
     app_state_lock();
-    app_access_log_add_with_user_locked(EVENT_DOOR_OPEN, door_source, user, &access_log_entry);
+    app_access_log_add_with_user_locked(EVENT_DOOR_OPEN, door_source, door_user, &access_log_entry);
     app_state_unlock();
     (void) storage_access_log_enqueue(&access_log_entry);
 
