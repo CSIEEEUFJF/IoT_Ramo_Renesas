@@ -71,6 +71,8 @@ typedef struct
     ULONG last_json_size;
     ULONG direct_persist_requests;
     ULONG direct_persist_successes;
+    ULONG format_status;
+    ULONG erase_status;
 } storage_debug_info_t;
 
 void storage_init(void);

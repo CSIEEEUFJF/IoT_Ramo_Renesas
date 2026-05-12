@@ -4353,7 +4353,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
     ULONG link_status = 0U;
     bool is_admin = net_admin_is_authenticated();
     storage_debug_info_t storage_debug;
-    char storage_debug_line[320];
+    char storage_debug_line[420];
 
     nx_ip_address_get(&g_ip0, &ip_address, &network_mask);
     ip_to_string(ip_address, ip_text, sizeof(ip_text));
@@ -4364,7 +4364,7 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
     {
         snprintf(storage_debug_line,
                  sizeof(storage_debug_line),
-                 "<p class='muted'>QSPI diag: <strong>stage=%lu media=%lu save=%lu load=%lu bytes=%lu users=%lu runs=%lu loaded=%u failed=%u direct=%lu/%lu</strong></p>",
+                 "<p class='muted'>QSPI diag: <strong>stage=%lu media=%lu save=%lu load=%lu bytes=%lu users=%lu runs=%lu loaded=%u failed=%u direct=%lu/%lu fmt=%lu erase=%lu</strong></p>",
                  (unsigned long) storage_debug.last_stage,
                  (unsigned long) storage_debug.last_media_status,
                  (unsigned long) storage_debug.last_save_status,
@@ -4375,7 +4375,9 @@ static UINT render_light_shell(NX_HTTP_SERVER *server_ptr,
                  storage_debug.loaded ? 1U : 0U,
                  storage_debug.load_failed ? 1U : 0U,
                  (unsigned long) storage_debug.direct_persist_successes,
-                 (unsigned long) storage_debug.direct_persist_requests);
+                 (unsigned long) storage_debug.direct_persist_requests,
+                 (unsigned long) storage_debug.format_status,
+                 (unsigned long) storage_debug.erase_status);
     }
     else
     {
@@ -6257,7 +6259,7 @@ static UINT handle_light_format_qspi(NX_HTTP_SERVER *server_ptr)
     {
         return light_redirect_with_flash(server_ptr,
                                          "/admin_profiles",
-                                         "<div class='card ok'>QSPI formatada em FileX e cadastros gravados novamente.</div>");
+                                         "<div class='card ok'>Formatacao da QSPI solicitada. Aguarde alguns instantes e recarregue a pagina.</div>");
     }
 
     return light_redirect_with_flash(server_ptr,

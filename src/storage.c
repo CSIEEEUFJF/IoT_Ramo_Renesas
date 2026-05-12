@@ -42,6 +42,9 @@ extern ssp_err_t fx_media_init0_format(void);
 #define STORAGE_THREAD_STACK_SIZE 4096U
 #define STORAGE_PHOTO_COPY_ROWS 8U
 #define STORAGE_PHOTO_FILE_MAGIC 0x50485247UL
+#define STORAGE_QSPI_BASE_ADDRESS ((uint8_t *) 0x60000000)
+#define STORAGE_QSPI_ERASE_SIZE_BYTES (8U * 1024U * 1024U)
+#define STORAGE_QSPI_ERASE_TIMEOUT_TICKS (120U * TX_TIMER_TICKS_PER_SECOND)
 
 #define STORAGE_PERSIST_STATUS_IDLE     (0U)
 #define STORAGE_PERSIST_STATUS_PENDING  (1U)
@@ -112,6 +115,8 @@ volatile ULONG g_storage_debug_last_read_bytes = 0U;
 volatile ULONG g_storage_debug_last_user_count = 0U;
 volatile ULONG g_storage_debug_direct_persist_requests = 0U;
 volatile ULONG g_storage_debug_direct_persist_successes = 0U;
+volatile ULONG g_storage_debug_last_format_status = 0U;
+volatile ULONG g_storage_debug_last_erase_status = 0U;
 
 typedef struct st_storage_photo_file_header
 {
@@ -124,6 +129,7 @@ typedef struct st_storage_photo_file_header
 static void storage_thread_entry(ULONG initial_input);
 static void storage_refresh_metrics_snapshot(void);
 static void storage_ensure_loaded_locked(void);
+static bool storage_erase_qspi_now_locked(void);
 static bool storage_format_media_now(void);
 static bool storage_save_users_json_snapshot(size_t *out_json_size, ULONG *out_user_count);
 static bool storage_load_users_file(const char *filename, bool commit_profiles);
@@ -193,6 +199,66 @@ static bool storage_media_open(void)
     return (FX_SUCCESS == storage_media_open_internal());
 }
 
+static bool storage_erase_qspi_now_locked(void)
+{
+    ssp_err_t status;
+    bool in_progress = true;
+    ULONG start_tick;
+
+    g_storage_debug_last_stage = 26U;
+    g_storage_debug_last_erase_status = SSP_SUCCESS;
+
+    status = g_qspi0.p_api->open(g_qspi0.p_ctrl, g_qspi0.p_cfg);
+    if ((SSP_SUCCESS != status) && (SSP_ERR_ALREADY_OPEN != status))
+    {
+        g_storage_debug_last_erase_status = (ULONG) status;
+        return false;
+    }
+
+    status = g_qspi0.p_api->erase(g_qspi0.p_ctrl,
+                                  STORAGE_QSPI_BASE_ADDRESS,
+                                  STORAGE_QSPI_ERASE_SIZE_BYTES);
+    if (SSP_SUCCESS != status)
+    {
+        g_storage_debug_last_erase_status = (ULONG) status;
+        (void) g_qspi0.p_api->close(g_qspi0.p_ctrl);
+        return false;
+    }
+
+    start_tick = tx_time_get();
+    while (in_progress)
+    {
+        status = g_qspi0.p_api->statusGet(g_qspi0.p_ctrl, &in_progress);
+        if (SSP_SUCCESS != status)
+        {
+            g_storage_debug_last_erase_status = (ULONG) status;
+            (void) g_qspi0.p_api->close(g_qspi0.p_ctrl);
+            return false;
+        }
+        if (!in_progress)
+        {
+            break;
+        }
+        if ((tx_time_get() - start_tick) > STORAGE_QSPI_ERASE_TIMEOUT_TICKS)
+        {
+            g_storage_debug_last_erase_status = SSP_ERR_TIMEOUT;
+            (void) g_qspi0.p_api->close(g_qspi0.p_ctrl);
+            return false;
+        }
+        tx_thread_sleep(1U);
+    }
+
+    status = g_qspi0.p_api->close(g_qspi0.p_ctrl);
+    if ((SSP_SUCCESS != status) && (SSP_ERR_NOT_OPEN != status))
+    {
+        g_storage_debug_last_erase_status = (ULONG) status;
+        return false;
+    }
+
+    g_storage_debug_last_erase_status = SSP_SUCCESS;
+    return true;
+}
+
 static bool storage_format_media_now(void)
 {
     ssp_err_t format_status;
@@ -200,6 +266,7 @@ static bool storage_format_media_now(void)
 
     storage_media_lock();
     g_storage_debug_last_stage = 19U;
+    g_storage_debug_last_format_status = SSP_SUCCESS;
 
     if (g_storage_media_ready)
     {
@@ -208,7 +275,17 @@ static bool storage_format_media_now(void)
         tx_thread_sleep(2U);
     }
 
+    if (!storage_erase_qspi_now_locked())
+    {
+        g_storage_debug_last_media_status = g_storage_debug_last_erase_status;
+        storage_media_unlock();
+        return false;
+    }
+
+    tx_thread_sleep(2U);
+    g_storage_debug_last_stage = 19U;
     format_status = fx_media_init0_format();
+    g_storage_debug_last_format_status = (ULONG) format_status;
     if (SSP_SUCCESS != format_status)
     {
         g_storage_debug_last_media_status = (ULONG) format_status;
@@ -4689,7 +4766,7 @@ bool storage_format_qspi_and_persist(void)
         return false;
     }
 
-    return storage_persist_wait(15U * TX_TIMER_TICKS_PER_SECOND);
+    return true;
 }
 
 bool storage_persist_wait(ULONG timeout_ticks)
@@ -4751,6 +4828,8 @@ void storage_debug_snapshot(storage_debug_info_t *out_info)
     out_info->last_user_count = g_storage_debug_last_user_count;
     out_info->direct_persist_requests = g_storage_debug_direct_persist_requests;
     out_info->direct_persist_successes = g_storage_debug_direct_persist_successes;
+    out_info->format_status = g_storage_debug_last_format_status;
+    out_info->erase_status = g_storage_debug_last_erase_status;
 }
 
 bool storage_access_log_enqueue(const app_access_log_entry_t *entry)
@@ -4818,7 +4897,9 @@ bool storage_metrics_persist_now(void)
     }
 
     storage_lock();
-    if (g_storage_persist_requested || (STORAGE_PERSIST_STATUS_PENDING == g_storage_persist_status))
+    if (g_storage_format_requested ||
+        g_storage_persist_requested ||
+        (STORAGE_PERSIST_STATUS_PENDING == g_storage_persist_status))
     {
         storage_unlock();
         return true;
