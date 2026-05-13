@@ -1,0 +1,12 @@
+services:
+  door-relay:
+    build: .
+    image: iot-ramo-door-relay:latest
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

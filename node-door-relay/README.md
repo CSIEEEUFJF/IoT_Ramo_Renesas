@@ -14,6 +14,8 @@ Relay HTTP em Node.js para abrir a porta da placa sem expor diretamente a `API_K
 
 - `server.js`: servidor HTTP do relay
 - `.env.example`: variáveis de ambiente necessárias
+- `Dockerfile`: imagem Docker do relay
+- `compose.yaml`: exemplo de Docker Compose para publicar a porta `8080`
 - `package.json`: scripts básicos
 
 ## Configuração
@@ -45,6 +47,42 @@ Ou com `npm`:
 ```powershell
 cd C:\Users\CS\Documents\IoT_Ramo_Renesas\node-door-relay
 npm start
+```
+
+## Execução com Docker
+
+O container nao copia o arquivo `.env` para dentro da imagem. Passe as variaveis em tempo de execucao.
+
+Build da imagem:
+
+```powershell
+cd C:\Users\CS\Documents\IoT_Ramo_Renesas\node-door-relay
+docker build -t iot-ramo-door-relay:latest .
+```
+
+Execucao direta com Docker:
+
+```powershell
+docker run --rm -p 8080:8080 --env-file .env -e HOST=0.0.0.0 iot-ramo-door-relay:latest
+```
+
+Execucao com Docker Compose:
+
+```powershell
+cd C:\Users\CS\Documents\IoT_Ramo_Renesas\node-door-relay
+docker compose up -d --build
+```
+
+Verificacao:
+
+```powershell
+curl.exe -i "http://127.0.0.1:8080/health"
+```
+
+Para parar o Compose:
+
+```powershell
+docker compose down
 ```
 
 ## Rotas
