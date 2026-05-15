@@ -2,6 +2,7 @@ services:
   door-relay:
     build: .
     image: iot-ramo-door-relay:latest
+    pull_policy: build
     env_file:
       - .env
     environment:

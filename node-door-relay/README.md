@@ -85,6 +85,17 @@ Para parar o Compose:
 docker compose down
 ```
 
+Se o build falhar com `unexpected commit digest` ou erro ao gravar camada da imagem `node:20-alpine`, limpe o cache corrompido do Docker no servidor e reconstrua sem cache:
+
+```bash
+cd /home/ramo/porta
+docker compose down
+docker builder prune -af
+docker image rm node:20-alpine iot-ramo-door-relay:latest 2>/dev/null || true
+docker compose build --no-cache --pull
+docker compose up -d
+```
+
 ## Rotas
 
 ### `GET /health`
